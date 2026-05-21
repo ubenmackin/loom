@@ -1,0 +1,62 @@
+version: "2"
+# golangci-lint configuration
+# See: https://golangci-lint.readthedocs.io/
+
+run:
+  timeout: 10m
+  tests: false
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - ineffassign
+    - unused
+    - misspell
+    - unconvert
+    - gocritic
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+    misspell:
+      locale: US
+    staticcheck:
+      checks:
+        - all
+        - -SA1009
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [gocritic]
+      - path: _generated\.go
+        linters: [all]
+      - path: vendor/
+        linters: [all]
+      - path: node_modules/
+        linters: [all]
+    paths:
+      - node_modules/
+      - vendor/
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes: [runic]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

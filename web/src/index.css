@@ -1,0 +1,104 @@
+@import "tailwindcss";
+
+/* Dark mode class strategy for TailwindCSS v4 */
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Loom brand palette (light mode) */
+  --color-loom-50: #eef2ff;
+  --color-loom-100: #e0e7ff;
+  --color-loom-500: #6366f1;
+  --color-loom-600: #4f46e5;
+  --color-loom-700: #4338ca;
+  --color-loom-900: #312e81;
+
+  /* Dark mode accent colors */
+  --color-purple-active: rgb(159, 79, 248);
+  --color-amber-primary: rgb(193, 158, 91);
+  --color-amber-muted: rgb(100, 80, 50);
+  --color-charcoal-dark: rgb(24, 24, 24);
+  --color-charcoal-darkest: rgb(10, 10, 10);
+  --color-gray-border: rgb(35, 35, 35);
+  --color-light-neutral: #fafafa;
+  --color-gold-highlight: #d4a843;
+
+  /* Monospace font */
+  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+}
+
+/* ── Loom Utility Classes ─────────────────────────────────────────────── */
+
+.sharp-tag {
+  @apply inline-block px-1.5 py-0.5 border font-mono text-[10px] rounded-none
+         bg-neutral-100 dark:bg-neutral-800
+         border-gray-300 dark:border-gray-border;
+}
+
+.sharp-tag-primary {
+  @apply border-purple-active text-purple-active;
+}
+
+.sharp-tag-amber {
+  @apply border-amber-primary text-amber-primary;
+}
+
+.sharp-tag-success {
+  @apply border-green-500 text-green-500;
+}
+
+.sharp-tag-error {
+  @apply border-red-500 text-red-500;
+}
+
+.mono-bracket {
+  @apply font-mono text-xs text-neutral-500 dark:text-neutral-400;
+}
+
+.glow-button {
+  @apply rounded-none px-4 py-2 font-bold uppercase text-xs tracking-wider
+         bg-purple-active hover:bg-purple-600 text-white
+         border border-purple-active/20
+         shadow-[0_0_15px_rgba(159,79,248,0.2)]
+         transition-colors;
+}
+
+.glow-button-amber {
+  @apply rounded-none px-4 py-2 font-bold uppercase text-xs tracking-wider
+         bg-amber-primary hover:bg-amber-muted text-white
+         border border-amber-primary/20
+         shadow-[0_0_15px_rgba(193,158,91,0.2)]
+         transition-colors;
+}
+
+.status-dot {
+  @apply w-2 h-2 rounded-full inline-block;
+}
+
+.status-dot-success {
+  @apply bg-green-500;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.6);
+}
+
+.status-dot-warning {
+  @apply bg-amber-500;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.6);
+}
+
+.status-dot-error {
+  @apply bg-red-500;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.6);
+}
+
+.status-dot-info {
+  @apply bg-blue-500;
+  box-shadow: 0 0 6px rgba(59, 130, 246, 0.6);
+}
+
+.status-dot-pulse {
+  animation: dot-pulse 2s ease-in-out infinite;
+}
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}

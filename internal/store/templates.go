@@ -1,0 +1,180 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/ubenmackin/loom/internal/models"
+)
+
+// TemplateStore provides CRUD operations for prompt templates.
+type TemplateStore struct {
+	db *sql.DB
+}
+
+// NewTemplateStore creates a new TemplateStore.
+func NewTemplateStore(db *sql.DB) *TemplateStore {
+	return &TemplateStore{db: db}
+}
+
+// Create inserts a new prompt template. If the ID is empty, a UUID is generated.
+func (s *TemplateStore) Create(ctx context.Context, t *models.PromptTemplate) error {
+	if t.ID == "" {
+		t.ID = uuid.New().String()
+	}
+
+	now := time.Now().UTC()
+	t.CreatedAt = now
+	t.UpdatedAt = now
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO prompt_templates (id, task_type, template, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		t.ID, t.TaskType, t.Template, t.CreatedAt, t.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert prompt template: %w", err)
+	}
+	return nil
+}
+
+// GetByTaskType retrieves a prompt template by its task type.
+func (s *TemplateStore) GetByTaskType(ctx context.Context, taskType string) (*models.PromptTemplate, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, task_type, template, created_at, updated_at
+		 FROM prompt_templates WHERE task_type = ?`, taskType)
+
+	t := &models.PromptTemplate{}
+	var createdAt, updatedAt sql.NullTime
+
+	err := row.Scan(&t.ID, &t.TaskType, &t.Template, &createdAt, &updatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("template for task_type %q: %w", taskType, sql.ErrNoRows)
+		}
+		return nil, fmt.Errorf("query template by task_type %q: %w", taskType, err)
+	}
+
+	if createdAt.Valid {
+		t.CreatedAt = createdAt.Time
+	}
+	if updatedAt.Valid {
+		t.UpdatedAt = updatedAt.Time
+	}
+
+	return t, nil
+}
+
+// List returns all prompt templates.
+func (s *TemplateStore) List(ctx context.Context) ([]*models.PromptTemplate, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, task_type, template, created_at, updated_at
+		 FROM prompt_templates ORDER BY task_type`)
+	if err != nil {
+		return nil, fmt.Errorf("list prompt templates: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var templates []*models.PromptTemplate
+	for rows.Next() {
+		t := &models.PromptTemplate{}
+		var createdAt, updatedAt sql.NullTime
+
+		if err := rows.Scan(&t.ID, &t.TaskType, &t.Template, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan prompt template: %w", err)
+		}
+
+		if createdAt.Valid {
+			t.CreatedAt = createdAt.Time
+		}
+		if updatedAt.Valid {
+			t.UpdatedAt = updatedAt.Time
+		}
+
+		templates = append(templates, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate prompt templates: %w", err)
+	}
+
+	return templates, nil
+}
+
+// Upsert creates or updates a prompt template by task_type.
+func (s *TemplateStore) Upsert(ctx context.Context, t *models.PromptTemplate) error {
+	now := time.Now().UTC()
+
+	// Check if a template with this task_type already exists.
+	var existingID string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id FROM prompt_templates WHERE task_type = ?`, t.TaskType,
+	).Scan(&existingID)
+
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check existing template for task_type %q: %w", t.TaskType, err)
+	}
+
+	if existingID != "" {
+		// Update existing.
+		t.ID = existingID
+		t.UpdatedAt = now
+
+		result, err := s.db.ExecContext(ctx,
+			`UPDATE prompt_templates SET template=?, updated_at=? WHERE id=?`,
+			t.Template, t.UpdatedAt, t.ID,
+		)
+		if err != nil {
+			return fmt.Errorf("upsert update template for task_type %q: %w", t.TaskType, err)
+		}
+
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("rows affected upsert template: %w", err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("template %q: %w", t.ID, sql.ErrNoRows)
+		}
+	} else {
+		// Create new.
+		if t.ID == "" {
+			t.ID = uuid.New().String()
+		}
+		t.CreatedAt = now
+		t.UpdatedAt = now
+
+		_, err := s.db.ExecContext(ctx,
+			`INSERT INTO prompt_templates (id, task_type, template, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?)`,
+			t.ID, t.TaskType, t.Template, t.CreatedAt, t.UpdatedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("upsert insert template for task_type %q: %w", t.TaskType, err)
+		}
+	}
+
+	return nil
+}
+
+// Delete removes a prompt template by ID.
+func (s *TemplateStore) Delete(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM prompt_templates WHERE id = ?`, id,
+	)
+	if err != nil {
+		return fmt.Errorf("delete template %q: %w", id, err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected delete template %q: %w", id, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("template %q: %w", id, sql.ErrNoRows)
+	}
+
+	return nil
+}

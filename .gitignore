@@ -11,10 +11,8 @@
 *.dll
 *.so
 *.dylib
-/runic
-/runic-agent
-/runic-agent-linux-*
-/runic-server
+/server
+/loom-server
 bin/
 *.test
 *.out

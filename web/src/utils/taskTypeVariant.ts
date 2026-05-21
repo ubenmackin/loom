@@ -1,0 +1,16 @@
+import type { TaskTypeType } from '../types'
+
+export function taskTypeVariant(type: TaskTypeType): 'default' | 'primary' | 'amber' | 'success' | 'error' {
+  switch (type) {
+    case 'code':
+      return 'primary'
+    case 'build':
+      return 'amber'
+    case 'review':
+      return 'success'
+    default: {
+      const _exhaustive: never = type
+      return 'default'
+    }
+  }
+}

@@ -1,0 +1,36 @@
+[Unit]
+Description=Loom — Agent-First JIT Kanban Board
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=loom
+Group=loom
+WorkingDirectory=/opt/loom
+ExecStart=/opt/loom/dist/loom-server --db-path /opt/loom/data/loom.db --port 8080 --web-dir /opt/loom/web/dist
+Restart=on-failure
+RestartSec=10s
+Environment=LOOM_DB_PATH=/opt/loom/data/loom.db
+Environment=LOOM_PORT=8080
+Environment=LOOM_WEB_DIR=/opt/loom/web/dist
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/loom/data
+ReadOnlyPaths=/opt/loom/web /opt/loom/dist
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=512M
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=loom-server
+
+[Install]
+WantedBy=multi-user.target
