@@ -5,19 +5,20 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ubenmackin/loom/internal/models"
 )
 
-var sessionCounter int64
+var sessionCounter atomic.Int64
 
 func createTestSession(t *testing.T, store *SessionStore, harnessType string, capabilities []string) *models.Session {
 	t.Helper()
-	sessionCounter++
+	n := sessionCounter.Add(1)
 	session := &models.Session{
-		ID:          fmt.Sprintf("sess-%d", sessionCounter),
+		ID:          fmt.Sprintf("sess-%d", n),
 		HarnessType: harnessType,
 		Status:      models.SessionStatusActive,
 	}

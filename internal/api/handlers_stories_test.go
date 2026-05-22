@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -16,6 +17,17 @@ import (
 
 func newTestRouterStories(t *testing.T) (chi.Router, *store.StoryStore, *store.TaskStore, *store.SessionStore, *store.CommentStore, *store.TemplateStore, *store.ActivityStore) {
 	t.Helper()
+
+	// Set agent secret so SessionAuthenticator allows /sessions and /work routes via X-Agent-Secret.
+	origAgentSecret := os.Getenv("LOOM_AGENT_SECRET")
+	os.Setenv("LOOM_AGENT_SECRET", "test-agent-secret")
+	t.Cleanup(func() {
+		if origAgentSecret == "" {
+			os.Unsetenv("LOOM_AGENT_SECRET")
+		} else {
+			os.Setenv("LOOM_AGENT_SECRET", origAgentSecret)
+		}
+	})
 
 	dbConn := setupTestDB(t)
 

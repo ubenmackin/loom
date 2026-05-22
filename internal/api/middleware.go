@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/ubenmackin/loom/internal/config"
 	"github.com/ubenmackin/loom/internal/models"
 )
 
@@ -43,33 +44,11 @@ func Recovery(next http.Handler) http.Handler {
 	return middleware.Recoverer(next)
 }
 
-// getAllowedOrigins reads the LOOM_ALLOWED_ORIGINS environment variable
-// and returns a list of allowed origins. Defaults to localhost patterns.
-func getAllowedOrigins() []string {
-	raw := os.Getenv("LOOM_ALLOWED_ORIGINS")
-	if raw == "" {
-		return []string{
-			"http://localhost:3000",
-			"http://localhost:5173",
-			"http://127.0.0.1:3000",
-			"http://127.0.0.1:5173",
-		}
-	}
-	var origins []string
-	for _, o := range strings.Split(raw, ",") {
-		o = strings.TrimSpace(o)
-		if o != "" {
-			origins = append(origins, o)
-		}
-	}
-	return origins
-}
-
 // CORS returns a middleware that sets CORS headers. Allowed origins are
 // read from the LOOM_ALLOWED_ORIGINS environment variable (comma-separated).
 // Defaults to localhost patterns for development.
 func CORS(next http.Handler) http.Handler {
-	allowedOrigins := getAllowedOrigins()
+	allowedOrigins := config.GetAllowedOrigins()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
@@ -80,14 +59,7 @@ func CORS(next http.Handler) http.Handler {
 		}
 
 		// Check if the request origin is in the allowed list.
-		allowed := false
-		for _, ao := range allowedOrigins {
-			if ao == "*" || ao == origin {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
+		if !config.IsOriginAllowed(origin, allowedOrigins) {
 			// Origin not allowed — proceed without CORS headers.
 			next.ServeHTTP(w, r)
 			return

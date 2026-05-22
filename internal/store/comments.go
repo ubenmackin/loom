@@ -10,6 +10,21 @@ import (
 	"github.com/ubenmackin/loom/internal/models"
 )
 
+// nextCommentID generates the next comment ID in the format COMMENT-NNNNNN.
+// It uses the work_item_sequence table for atomic, race-free ID generation,
+// consistent with the pattern used by stories and tasks.
+func (s *CommentStore) nextCommentID(ctx context.Context) (string, error) {
+	res, err := s.db.ExecContext(ctx, "INSERT INTO work_item_sequence (type) VALUES ('comment')")
+	if err != nil {
+		return "", fmt.Errorf("generate comment id: %w", err)
+	}
+	seqID, err := res.LastInsertId()
+	if err != nil {
+		return "", fmt.Errorf("get last insert id for comment: %w", err)
+	}
+	return fmt.Sprintf("COMMENT-%06d", seqID), nil
+}
+
 // CommentStore provides CRUD operations for comments.
 type CommentStore struct {
 	db *sql.DB
@@ -18,40 +33,6 @@ type CommentStore struct {
 // NewCommentStore creates a new CommentStore.
 func NewCommentStore(db *sql.DB) *CommentStore {
 	return &CommentStore{db: db}
-}
-
-// nextCommentID generates the next comment ID in the format COMMENT-NNNNNN.
-// It uses a BEGIN IMMEDIATE transaction to serialize the MAX+1 operation
-// and prevent TOCTOU races between concurrent creates.
-func (s *CommentStore) nextCommentID(ctx context.Context) (string, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", fmt.Errorf("begin transaction for comment id: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var maxID sql.NullString
-	err = tx.QueryRowContext(ctx, "SELECT id FROM comments ORDER BY CAST(SUBSTR(id, 8) AS INTEGER) DESC LIMIT 1").Scan(&maxID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("query max comment id: %w", err)
-	}
-
-	var nextID string
-	if !maxID.Valid || maxID.String == "" {
-		nextID = "COMMENT-000001"
-	} else {
-		var n int
-		if _, err := fmt.Sscanf(maxID.String, "COMMENT-%d", &n); err != nil {
-			return "", fmt.Errorf("parse comment id %q: %w", maxID.String, err)
-		}
-		nextID = fmt.Sprintf("COMMENT-%06d", n+1)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return "", fmt.Errorf("commit comment id transaction: %w", err)
-	}
-
-	return nextID, nil
 }
 
 // Create inserts a new comment. If the ID is empty, it is auto-generated.

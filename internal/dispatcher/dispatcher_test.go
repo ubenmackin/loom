@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,13 +95,13 @@ func createTestTask(t *testing.T, s *store.TaskStore, storyID, title, status, ta
 	return task
 }
 
-var sessionCounter int64
+var sessionCounter atomic.Int64
 
 func createTestSession(t *testing.T, s *store.SessionStore, harnessType string, capabilities []string) *models.Session {
 	t.Helper()
-	sessionCounter++
+	n := sessionCounter.Add(1)
 	session := &models.Session{
-		ID:          fmt.Sprintf("sess-%d", sessionCounter),
+		ID:          fmt.Sprintf("sess-%d", n),
 		HarnessType: harnessType,
 		Status:      models.SessionStatusActive,
 	}

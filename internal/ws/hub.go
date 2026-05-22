@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"os"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/ubenmackin/loom/internal/config"
 )
 
 // Event types that can be broadcast to clients.
@@ -62,42 +62,10 @@ const (
 	maxMessageSize = 1024
 )
 
-// getAllowedOrigins reads the LOOM_ALLOWED_ORIGINS environment variable
-// and returns a list of allowed origins. Defaults to localhost patterns.
-func getAllowedOrigins() []string {
-	raw := os.Getenv("LOOM_ALLOWED_ORIGINS")
-	if raw == "" {
-		return []string{
-			"http://localhost:3000",
-			"http://localhost:5173",
-			"http://127.0.0.1:3000",
-			"http://127.0.0.1:5173",
-		}
-	}
-	var origins []string
-	for _, o := range strings.Split(raw, ",") {
-		o = strings.TrimSpace(o)
-		if o != "" {
-			origins = append(origins, o)
-		}
-	}
-	return origins
-}
-
-// isOriginAllowed checks if the given origin is in the allowed list.
-func isOriginAllowed(origin string, allowed []string) bool {
-	for _, ao := range allowed {
-		if ao == "*" || ao == origin {
-			return true
-		}
-	}
-	return false
-}
-
 // NewHub creates a new Hub with buffered channels for client management.
 // Allowed WebSocket origins are read from the LOOM_ALLOWED_ORIGINS env var.
 func NewHub() *Hub {
-	allowedOrigins := getAllowedOrigins()
+	allowedOrigins := config.GetAllowedOrigins()
 
 	return &Hub{
 		clients:        make(map[*Client]bool),
@@ -114,7 +82,7 @@ func NewHub() *Hub {
 				if origin == "" {
 					return true // Non-browser clients (e.g., curl) are allowed.
 				}
-				return isOriginAllowed(origin, allowedOrigins)
+				return config.IsOriginAllowed(origin, allowedOrigins)
 			},
 		},
 	}

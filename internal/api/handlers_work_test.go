@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -145,6 +146,17 @@ func setSessionLastSeen(t *testing.T, dbConn *sql.DB, sessionID string, tstamp t
 func newTestRouter(t *testing.T) (chi.Router, *sql.DB, *store.StoryStore, *store.TaskStore, *store.SessionStore, *store.CommentStore, *store.TemplateStore, *store.ActivityStore, *dispatcher.Dispatcher) {
 	t.Helper()
 
+	// Set agent secret so SessionAuthenticator allows /sessions and /work routes via X-Agent-Secret.
+	origAgentSecret := os.Getenv("LOOM_AGENT_SECRET")
+	os.Setenv("LOOM_AGENT_SECRET", "test-agent-secret")
+	t.Cleanup(func() {
+		if origAgentSecret == "" {
+			os.Unsetenv("LOOM_AGENT_SECRET")
+		} else {
+			os.Setenv("LOOM_AGENT_SECRET", origAgentSecret)
+		}
+	})
+
 	dbConn := setupTestDB(t)
 
 	storyStore := store.NewStoryStore(dbConn)
@@ -226,6 +238,27 @@ func doRequest(t *testing.T, mux chi.Router, method, path string, body any) *htt
 	// inherit the token stored under the parent test name (e.g. "TestListStories").
 	if token := lookupAuthToken(t.Name()); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	// Extract session_id from body to set as X-Session-ID header for SessionAuthenticator.
+	if body != nil {
+		if m, ok := body.(map[string]string); ok {
+			if sid, exists := m["session_id"]; exists && sid != "" {
+				req.Header.Set("X-Session-ID", sid)
+			}
+		} else if m, ok := body.(map[string]any); ok {
+			if sid, exists := m["session_id"]; exists {
+				if s, ok := sid.(string); ok && s != "" {
+					req.Header.Set("X-Session-ID", s)
+				}
+			}
+		}
+	}
+
+	// Set X-Agent-Secret header if LOOM_AGENT_SECRET is configured (for test environments).
+	// This allows requests to /sessions and /work routes to pass SessionAuthenticator.
+	if secret := os.Getenv("LOOM_AGENT_SECRET"); secret != "" {
+		req.Header.Set("X-Agent-Secret", secret)
 	}
 
 	rr := httptest.NewRecorder()

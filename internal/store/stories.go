@@ -51,60 +51,23 @@ func isValidTransition(current, next string) bool {
 	return false
 }
 
-// nextStoryID generates the next story ID in the format STORY-NNNNNN.
-// It uses a BEGIN IMMEDIATE transaction to serialize the MAX+1 operation
-// and prevent TOCTOU races between concurrent creates.
-func (s *StoryStore) nextStoryID(ctx context.Context) (string, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", fmt.Errorf("begin transaction for story id: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var maxID sql.NullString
-	err = tx.QueryRowContext(ctx, "SELECT id FROM stories ORDER BY CAST(SUBSTR(id, 7) AS INTEGER) DESC LIMIT 1").Scan(&maxID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("query max story id: %w", err)
-	}
-
-	var nextID string
-	if !maxID.Valid || maxID.String == "" {
-		nextID = "STORY-000001"
-	} else {
-		var n int
-		if _, err := fmt.Sscanf(maxID.String, "STORY-%d", &n); err != nil {
-			return "", fmt.Errorf("parse story id %q: %w", maxID.String, err)
-		}
-		nextID = fmt.Sprintf("STORY-%06d", n+1)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return "", fmt.Errorf("commit story id transaction: %w", err)
-	}
-
-	return nextID, nil
-}
-
 // Create inserts a new story. If the ID is empty, it is auto-generated.
 func (s *StoryStore) Create(ctx context.Context, story *models.Story) error {
-	if story.ID == "" {
-		id, err := s.nextStoryID(ctx)
-		if err != nil {
-			return fmt.Errorf("generate story id: %w", err)
-		}
-		story.ID = id
-	}
-
-	// Generate a global unique numeric ID across all work items
+	// Generate both string ID and numeric ID from a single atomic sequence insert.
+	// This eliminates the TOCTOU race that occurred when the string ID was generated
+	// via a separate MAX+1 query committed before the actual INSERT.
 	res, err := s.db.ExecContext(ctx, "INSERT INTO work_item_sequence (type) VALUES ('story')")
 	if err != nil {
-		return fmt.Errorf("generate numeric id for story: %w", err)
+		return fmt.Errorf("generate story id: %w", err)
 	}
-	numericID, err := res.LastInsertId()
+	seqID, err := res.LastInsertId()
 	if err != nil {
-		return fmt.Errorf("get numeric id for story: %w", err)
+		return fmt.Errorf("get last insert id for story: %w", err)
 	}
-	story.NumericID = int(numericID)
+	if story.ID == "" {
+		story.ID = fmt.Sprintf("STORY-%06d", seqID)
+	}
+	story.NumericID = int(seqID)
 
 	now := time.Now().UTC()
 	story.CreatedAt = now

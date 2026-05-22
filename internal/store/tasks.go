@@ -29,40 +29,6 @@ func NewTaskStore(db *sql.DB) *TaskStore {
 	return &TaskStore{db: db}
 }
 
-// nextTaskID generates the next task ID in the format TASK-NNNNNN.
-// It uses a BEGIN IMMEDIATE transaction to serialize the MAX+1 operation
-// and prevent TOCTOU races between concurrent creates.
-func (s *TaskStore) nextTaskID(ctx context.Context) (string, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", fmt.Errorf("begin transaction for task id: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var maxID sql.NullString
-	err = tx.QueryRowContext(ctx, "SELECT id FROM tasks ORDER BY CAST(SUBSTR(id, 5) AS INTEGER) DESC LIMIT 1").Scan(&maxID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("query max task id: %w", err)
-	}
-
-	var nextID string
-	if !maxID.Valid || maxID.String == "" {
-		nextID = "TASK-000001"
-	} else {
-		var n int
-		if _, err := fmt.Sscanf(maxID.String, "TASK-%d", &n); err != nil {
-			return "", fmt.Errorf("parse task id %q: %w", maxID.String, err)
-		}
-		nextID = fmt.Sprintf("TASK-%06d", n+1)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return "", fmt.Errorf("commit task id transaction: %w", err)
-	}
-
-	return nextID, nil
-}
-
 // scanTask is a helper to scan a task row from a *sql.Row or *sql.Rows.
 func scanTask(scanner interface{ Scan(...interface{}) error }) (*models.Task, error) {
 	t := &models.Task{}
@@ -104,24 +70,21 @@ func scanTask(scanner interface{ Scan(...interface{}) error }) (*models.Task, er
 
 // Create inserts a new task. If the ID is empty, it is auto-generated.
 func (s *TaskStore) Create(ctx context.Context, t *models.Task) error {
-	if t.ID == "" {
-		id, err := s.nextTaskID(ctx)
-		if err != nil {
-			return fmt.Errorf("generate task id: %w", err)
-		}
-		t.ID = id
-	}
-
-	// Generate a global unique numeric ID across all work items
+	// Generate both string ID and numeric ID from a single atomic sequence insert.
+	// This eliminates the TOCTOU race that occurred when the string ID was generated
+	// via a separate MAX+1 query committed before the actual INSERT.
 	res, err := s.db.ExecContext(ctx, "INSERT INTO work_item_sequence (type) VALUES ('task')")
 	if err != nil {
-		return fmt.Errorf("generate numeric id for task: %w", err)
+		return fmt.Errorf("generate task id: %w", err)
 	}
-	numericID, err := res.LastInsertId()
+	seqID, err := res.LastInsertId()
 	if err != nil {
-		return fmt.Errorf("get numeric id for task: %w", err)
+		return fmt.Errorf("get last insert id for task: %w", err)
 	}
-	t.NumericID = int(numericID)
+	if t.ID == "" {
+		t.ID = fmt.Sprintf("TASK-%06d", seqID)
+	}
+	t.NumericID = int(seqID)
 
 	now := time.Now().UTC()
 	t.CreatedAt = now
