@@ -112,5 +112,7 @@ findings/
 # Database files (if any local DB files)
 # -----------------------------------------------------------------------------
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
