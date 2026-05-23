@@ -21,9 +21,9 @@ import StoryDetail from './StoryDetail'
 import TaskDetail from './TaskDetail'
 import CreateStoryForm from './CreateStoryForm'
 import type { CreateStoryData } from './CreateStoryForm'
-import { Status, type StatusType, type Story, type Task } from '../types'
-import { updateStory, updateTask, updateTaskStatus } from '../api/client'
-import { useQueryClient } from '@tanstack/react-query'
+import { Status, type StatusType, type Story, type Task, type User, type Session } from '../types'
+import { updateStory, updateTask, updateTaskStatus, getUsers, fetchSessions } from '../api/client'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 const COLUMNS: { status: StatusType; label: string }[] = [
   { status: Status.New, label: 'New' },
@@ -48,6 +48,16 @@ export default function Board() {
   const [isFormOpen, setIsFormOpen] = useState(false)
   const createStoryMutation = useCreateStory()
   const queryClient = useQueryClient()
+
+  const { data: users = [] } = useQuery<User[]>({
+    queryKey: ['users'],
+    queryFn: getUsers,
+  })
+
+  const { data: sessions = [] } = useQuery<Session[]>({
+    queryKey: ['sessions'],
+    queryFn: fetchSessions,
+  })
 
   const [selectedStoryId, setSelectedStoryId] = useState<string | null>(null)
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
@@ -93,6 +103,17 @@ export default function Board() {
     }
     return tasks
   }, [data?.tasks_by_status])
+
+  const assigneeNameMap: Record<string, string> = useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const u of users) {
+      map[u.id] = u.display_name || u.username
+    }
+    for (const s of sessions) {
+      map[s.id] = s.id
+    }
+    return map
+  }, [users, sessions])
 
   // Pre-compute tasksByStory for each column — avoids rebuilding per render
   const columnTasksByStory = useMemo(() => {
@@ -250,6 +271,7 @@ export default function Board() {
                     story={story}
                     isDraggable={true}
                     onClick={() => setSelectedStoryId(story.id)}
+                    assigneeName={story.assigned_to ? assigneeNameMap[story.assigned_to] || story.assigned_to : undefined}
                   />
                 ))}
               </SortableContext>

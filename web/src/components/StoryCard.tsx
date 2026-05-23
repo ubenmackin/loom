@@ -10,9 +10,10 @@ interface StoryCardProps {
   story: Story
   onClick?: () => void
   isDraggable?: boolean
+  assigneeName?: string
 }
 
-function StoryCard({ story, onClick, isDraggable = false }: StoryCardProps) {
+function StoryCard({ story, onClick, isDraggable = false, assigneeName }: StoryCardProps) {
   const {
     attributes,
     listeners,
@@ -71,7 +72,7 @@ function StoryCard({ story, onClick, isDraggable = false }: StoryCardProps) {
       {/* Assigned agent */}
       {story.assigned_to && (
         <div className="mt-1.5 font-mono text-xs dark:text-amber-primary text-neutral-500">
-          {story.assigned_to}
+          {assigneeName || story.assigned_to}
         </div>
       )}
 

@@ -50,11 +50,11 @@ function ActivityItem({ entry, onStoryClick }: { entry: ActivityLogEntry; onStor
             onClick={() => onStoryClick(entry.work_item_id)}
             className="text-purple-active cursor-pointer hover:underline font-bold"
           >
-            {entry.work_item_id.slice(0, 8)}
+            {entry.work_item_id}
           </button>
         ) : (
           <span className="text-purple-active">
-            {entry.work_item_id.slice(0, 8)}
+            {entry.work_item_id}
           </span>
         )}
       </span>

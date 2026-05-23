@@ -33,6 +33,7 @@ type updateStoryRequest struct {
 	AssignedTo     *string `json:"assigned_to,omitempty"`
 	AssigneeType   *string `json:"assignee_type,omitempty"`
 	SortOrder      *int    `json:"sort_order,omitempty"`
+	Status         *string `json:"status,omitempty"`
 }
 
 type updateStatusRequest struct {
@@ -182,6 +183,17 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture old values before applying updates.
+	oldTitle := story.Title
+	oldDescription := story.Description
+	oldPriority := story.Priority
+	oldRequiresBuild := story.RequiresBuild
+	oldRequiresReview := story.RequiresReview
+	oldAssignedTo := story.AssignedTo
+	oldAssigneeType := string(story.AssigneeType)
+	oldSortOrder := story.SortOrder
+	oldStatus := string(story.Status)
+
 	var req updateStoryRequest
 	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
@@ -221,6 +233,13 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 	if req.SortOrder != nil {
 		story.SortOrder = *req.SortOrder
 	}
+	if req.Status != nil {
+		if !validStatus(*req.Status) {
+			respondError(w, http.StatusBadRequest, "invalid status value")
+			return
+		}
+		story.Status = models.Status(*req.Status)
+	}
 
 	if err := h.stories.Update(r.Context(), story); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -230,6 +249,47 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to update story: "+err.Error())
 		return
 	}
+
+	// Build a list of changed fields.
+	var changed []string
+	if story.Title != oldTitle {
+		changed = append(changed, "title")
+	}
+	if story.Description != oldDescription {
+		changed = append(changed, "description")
+	}
+	if story.Priority != oldPriority {
+		changed = append(changed, "priority")
+	}
+	if story.RequiresBuild != oldRequiresBuild {
+		changed = append(changed, "requires_build")
+	}
+	if story.RequiresReview != oldRequiresReview {
+		changed = append(changed, "requires_review")
+	}
+	if story.AssignedTo != oldAssignedTo {
+		changed = append(changed, "assigned_to")
+	}
+	if string(story.AssigneeType) != oldAssigneeType {
+		changed = append(changed, "assignee_type")
+	}
+	if story.SortOrder != oldSortOrder {
+		changed = append(changed, "sort_order")
+	}
+	if string(story.Status) != oldStatus {
+		changed = append(changed, "status")
+	}
+	currentUser := GetUser(r)
+	details := "Changed: " + strings.Join(changed, ", ")
+	if currentUser != nil {
+		details = "Updated by user " + currentUser.Username + ": " + details
+	}
+	h.logActivity(r.Context(), &models.ActivityLogEntry{
+		WorkItemID:   story.ID,
+		WorkItemType: models.WorkItemTypeStory,
+		Action:       "story_updated",
+		Details:      details,
+	})
 
 	respondJSON(w, http.StatusOK, story)
 }
@@ -262,7 +322,20 @@ func (h *handlers) updateStoryStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.stories.UpdateStatus(r.Context(), id, models.Status(req.Status)); err != nil {
+	// Fetch current story to capture the old status before the update.
+	oldStory, err := h.stories.GetByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "story not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to get story: "+err.Error())
+		return
+	}
+	oldStatus := string(oldStory.Status)
+	newStatus := req.Status
+
+	if err := h.stories.UpdateStatus(r.Context(), id, models.Status(newStatus)); err != nil {
 		if errors.Is(err, store.ErrInvalidTransition) {
 			respondError(w, http.StatusBadRequest, err.Error())
 			return
@@ -281,6 +354,17 @@ func (h *handlers) updateStoryStatus(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to get updated story: "+err.Error())
 		return
 	}
+	currentUser := GetUser(r)
+	details := oldStatus + " → " + newStatus
+	if currentUser != nil {
+		details = "Status changed by user " + currentUser.Username + ": " + details
+	}
+	h.logActivity(r.Context(), &models.ActivityLogEntry{
+		WorkItemID:   id,
+		WorkItemType: models.WorkItemTypeStory,
+		Action:       "status_changed",
+		Details:      details,
+	})
 
 	respondJSON(w, http.StatusOK, story)
 }
