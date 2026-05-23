@@ -1,0 +1,12 @@
+# Task List: plan-b8a042
+- [X] [TASK-001] Audit Go Models & Database Layer (models.go, sqlite.go, seed.go, config.go, main.go) | Details: plan.md#task-001
+- [X] [TASK-002] Audit Go Store Layer — Core Entities (stories.go, tasks.go + tests, errors.go) | Details: plan.md#task-002
+- [X] [TASK-003] Audit Go Store Layer — Supporting Entities (sessions, comments, activity, templates, users) | Details: plan.md#task-003
+- [X] [TASK-004] Audit Go API Handlers — Core CRUD (stories, tasks, board, templates + router) | Details: plan.md#task-004
+- [X] [TASK-005] Audit Go API Handlers — Auth, Sessions, Work, Comments, Activity + middleware | Details: plan.md#task-005
+- [X] [TASK-006] Audit Go Dispatcher — Task Orchestration Engine (all 6 dispatcher files) | Details: plan.md#task-006
+- [X] [TASK-007] Audit Go MCP Server & WebSocket Hub (server.go, tools.go, hub.go) | Details: plan.md#task-007
+- [ ] [TASK-008] Audit Go Test Helpers & Cross-Cutting Concerns (testhelpers.go) | Details: plan.md#task-008
+- [ ] [TASK-009] Audit Frontend React Components (14 component files) | Details: plan.md#task-009
+- [ ] [TASK-010] Audit Frontend Hooks, Stores & Pages (6 hooks, 2 stores, 2 pages) | Details: plan.md#task-010
+- [ ] [TASK-011] Audit Frontend API Client, Types & Utilities (client.ts, types, 5 utils, App, main) | Details: plan.md#task-011
