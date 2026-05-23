@@ -6,6 +6,8 @@ export const Status = {
   InProgress: 'in_progress',
   Blocked: 'blocked',
   Done: 'done',
+  Canceled: 'canceled',
+  Archived: 'archived',
 } as const
 
 export type StatusType = (typeof Status)[keyof typeof Status]
@@ -44,6 +46,7 @@ export type WorkItemTypeType = (typeof WorkItemType)[keyof typeof WorkItemType]
 
 export interface Story {
   id: string
+  numeric_id?: number
   title: string
   description?: string
   status: StatusType
@@ -59,6 +62,7 @@ export interface Story {
 
 export interface Task {
   id: string
+  numeric_id?: number
   story_id: string
   title: string
   description?: string
@@ -121,6 +125,11 @@ export interface PromptTemplate {
 
 // ── Board State ─────────────────────────────────────────────────────────
 
+export interface StoryWithTasks {
+  story: Story
+  tasks: Task[]
+}
+
 export interface BoardStats {
   total_stories: number
   total_tasks: number
@@ -128,12 +137,15 @@ export interface BoardStats {
   in_progress_tasks: number
   blocked_tasks: number
   done_tasks: number
+  canceled_tasks: number
+  archived_tasks: number
   stale_tasks: number
 }
 
 export interface BoardState {
   stories: Story[]
   tasks_by_status: Record<string, Task[]>
+  tasks_by_story_and_status?: Record<string, Record<string, Task[]>>
   stats: BoardStats
 }
 
@@ -169,8 +181,23 @@ export interface StoryFilter {
 }
 
 export interface TaskFilter {
-  status?: StatusType
   story_id?: string
   task_type?: TaskTypeType
   assigned_to?: string
+  status?: StatusType
+  priority?: number
+}
+
+export interface User {
+  id: string
+  username: string
+  email: string
+  display_name?: string
+  role: 'admin' | 'normal'
+  created_at: string
+}
+
+export interface AuthResponse {
+  user: User
+  token: string
 }

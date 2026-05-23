@@ -3,40 +3,72 @@ package models
 
 import "time"
 
-// Status constants for stories and tasks.
+// UserRole represents the access level of a human user.
+type UserRole string
+
 const (
-	StatusNew        = "new"
-	StatusReady      = "ready"
-	StatusInProgress = "in_progress"
-	StatusBlocked    = "blocked"
-	StatusDone       = "done"
+	RoleAdmin  UserRole = "admin"
+	RoleNormal UserRole = "normal"
 )
 
-// Session status constants.
+func (r UserRole) String() string { return string(r) }
+
+// Status represents the lifecycle state of a story or task.
+type Status string
+
 const (
-	SessionStatusActive       = "active"
-	SessionStatusStale        = "stale"
-	SessionStatusDisconnected = "disconnected"
+	StatusNew        Status = "new"
+	StatusReady      Status = "ready"
+	StatusInProgress Status = "in_progress"
+	StatusBlocked    Status = "blocked"
+	StatusDone       Status = "done"
+	StatusCancelled  Status = "canceled"
+	StatusArchived   Status = "archived"
 )
 
-// TaskType constants.
+func (s Status) String() string { return string(s) }
+
+// SessionStatus represents the connection state of an agent session.
+type SessionStatus string
+
 const (
-	TaskTypeCode   = "code"
-	TaskTypeBuild  = "build"
-	TaskTypeReview = "review"
+	SessionStatusActive       SessionStatus = "active"
+	SessionStatusStale        SessionStatus = "stale"
+	SessionStatusDisconnected SessionStatus = "disconnected"
 )
 
-// AssigneeType constants.
+func (s SessionStatus) String() string { return string(s) }
+
+// TaskType represents the category of work a task performs.
+type TaskType string
+
 const (
-	AssigneeTypeHuman   = "human"
-	AssigneeTypeSession = "session"
+	TaskTypeCode   TaskType = "code"
+	TaskTypeBuild  TaskType = "build"
+	TaskTypeReview TaskType = "review"
 )
 
-// WorkItemType constants.
+func (t TaskType) String() string { return string(t) }
+
+// AssigneeType identifies whether a work item is assigned to a session or a human user.
+type AssigneeType string
+
 const (
-	WorkItemTypeStory = "story"
-	WorkItemTypeTask  = "task"
+	AssigneeTypeHuman   AssigneeType = "human"
+	AssigneeTypeSession AssigneeType = "session"
 )
+
+func (a AssigneeType) String() string { return string(a) }
+
+// WorkItemType distinguishes between stories and tasks.
+type WorkItemType string
+
+const (
+	WorkItemTypeStory WorkItemType = "story"
+	WorkItemTypeTask  WorkItemType = "task"
+)
+
+func (w WorkItemType) String() string { return string(w) }
 
 // User represents a human user of the board.
 type User struct {
@@ -45,56 +77,57 @@ type User struct {
 	Email        string    `json:"email"`
 	PasswordHash string    `json:"-"`
 	DisplayName  string    `json:"display_name,omitempty"`
+	Role         UserRole  `json:"role"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 
 // Session represents an agent session connected to the board.
 type Session struct {
-	ID           string    `json:"id"`
-	HarnessType  string    `json:"harness_type"`
-	Capabilities string    `json:"capabilities,omitempty"` // JSON string
-	Metadata     string    `json:"metadata,omitempty"`     // JSON string
-	LastSeenAt   time.Time `json:"last_seen_at"`
-	Status       string    `json:"status"` // active | stale | disconnected
-	CreatedAt    time.Time `json:"created_at"`
+	ID           string        `json:"id"`
+	HarnessType  string        `json:"harness_type"`
+	Capabilities string        `json:"capabilities,omitempty"` // JSON string
+	Metadata     string        `json:"metadata,omitempty"`     // JSON string
+	LastSeenAt   time.Time     `json:"last_seen_at"`
+	Status       SessionStatus `json:"status"` // active | stale | disconnected
+	CreatedAt    time.Time     `json:"created_at"`
 }
 
 // Story represents a user story on the Kanban board.
 type Story struct {
-	ID             string    `json:"id"`
-	NumericID      int       `json:"numeric_id"`
-	Title          string    `json:"title"`
-	Description    string    `json:"description,omitempty"`
-	Status         string    `json:"status"`
-	Priority       int       `json:"priority"`
-	RequiresBuild  bool      `json:"requires_build"`
-	RequiresReview bool      `json:"requires_review"`
-	AssignedTo     string    `json:"assigned_to,omitempty"`
-	AssigneeType   string    `json:"assignee_type,omitempty"`
-	SortOrder      int       `json:"sort_order"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             string       `json:"id"`
+	NumericID      int          `json:"numeric_id"`
+	Title          string       `json:"title"`
+	Description    string       `json:"description,omitempty"`
+	Status         Status       `json:"status"`
+	Priority       int          `json:"priority"`
+	RequiresBuild  bool         `json:"requires_build"`
+	RequiresReview bool         `json:"requires_review"`
+	AssignedTo     string       `json:"assigned_to,omitempty"`
+	AssigneeType   AssigneeType `json:"assignee_type,omitempty"`
+	SortOrder      int          `json:"sort_order"`
+	CreatedAt      time.Time    `json:"created_at"`
+	UpdatedAt      time.Time    `json:"updated_at"`
 }
 
 // Task represents a task (child of a story) on the Kanban board.
 type Task struct {
-	ID           string    `json:"id"`
-	NumericID    int       `json:"numeric_id"`
-	StoryID      string    `json:"story_id"`
-	Title        string    `json:"title"`
-	Description  string    `json:"description,omitempty"`
-	Status       string    `json:"status"`
-	Priority     int       `json:"priority"`
-	TaskType     string    `json:"task_type"`
-	Estimate     *int      `json:"estimate,omitempty"`
-	AssignedTo   string    `json:"assigned_to,omitempty"`
-	AssigneeType string    `json:"assignee_type,omitempty"`
-	SortOrder    int       `json:"sort_order"`
-	Context      string    `json:"context,omitempty"` // JSON stored as text
-	Instructions string    `json:"instructions,omitempty"`
-	IsStale      bool      `json:"is_stale"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           string       `json:"id"`
+	NumericID    int          `json:"numeric_id"`
+	StoryID      string       `json:"story_id"`
+	Title        string       `json:"title"`
+	Description  string       `json:"description,omitempty"`
+	Status       Status       `json:"status"`
+	Priority     int          `json:"priority"`
+	TaskType     TaskType     `json:"task_type"`
+	Estimate     *int         `json:"estimate,omitempty"`
+	AssignedTo   string       `json:"assigned_to,omitempty"`
+	AssigneeType AssigneeType `json:"assignee_type,omitempty"`
+	SortOrder    int          `json:"sort_order"`
+	Context      string       `json:"context,omitempty"` // JSON stored as text
+	Instructions string       `json:"instructions,omitempty"`
+	IsStale      bool         `json:"is_stale"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
 }
 
 // TaskDependency represents a finish-to-start dependency between tasks.
@@ -105,30 +138,30 @@ type TaskDependency struct {
 
 // Comment represents a comment by a human or agent on a work item.
 type Comment struct {
-	ID           string    `json:"id"`
-	WorkItemID   string    `json:"work_item_id"`
-	WorkItemType string    `json:"work_item_type"`
-	AuthorID     string    `json:"author_id"`
-	AuthorType   string    `json:"author_type"`
-	Body         string    `json:"body,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           string       `json:"id"`
+	WorkItemID   string       `json:"work_item_id"`
+	WorkItemType WorkItemType `json:"work_item_type"`
+	AuthorID     string       `json:"author_id"`
+	AuthorType   string       `json:"author_type"`
+	Body         string       `json:"body,omitempty"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
 }
 
 // ActivityLogEntry represents an immutable entry in the system activity log.
 type ActivityLogEntry struct {
-	ID           string    `json:"id"`
-	WorkItemID   string    `json:"work_item_id"`
-	WorkItemType string    `json:"work_item_type"`
-	Action       string    `json:"action"`
-	Details      string    `json:"details,omitempty"` // JSON as text
-	CreatedAt    time.Time `json:"created_at"`
+	ID           string       `json:"id"`
+	WorkItemID   string       `json:"work_item_id"`
+	WorkItemType WorkItemType `json:"work_item_type"`
+	Action       string       `json:"action"`
+	Details      string       `json:"details,omitempty"` // JSON as text
+	CreatedAt    time.Time    `json:"created_at"`
 }
 
 // PromptTemplate represents a template for generating agent instructions.
 type PromptTemplate struct {
 	ID        string    `json:"id"`
-	TaskType  string    `json:"task_type"`
+	TaskType  TaskType  `json:"task_type"`
 	Template  string    `json:"template"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

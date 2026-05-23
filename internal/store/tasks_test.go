@@ -2,21 +2,23 @@ package store
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/ubenmackin/loom/internal/models"
+	"github.com/ubenmackin/loom/internal/testhelpers"
 )
 
 func TestTaskCreate(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	taskStore := NewTaskStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Task Story", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Task Story"; s.Status = models.StatusNew })
 
 	task := &models.Task{
 		StoryID:  story.ID,
@@ -45,13 +47,18 @@ func TestTaskCreate(t *testing.T) {
 func TestTaskGetByID(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	taskStore := NewTaskStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Get Task Story", models.StatusNew)
-	task := createTestTask(t, taskStore, story.ID, "Get Task", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Get Task Story"; s.Status = models.StatusNew })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Get Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	got, err := taskStore.GetByID(ctx, task.ID)
 	if err != nil {
@@ -72,17 +79,32 @@ func TestTaskGetByID(t *testing.T) {
 func TestTaskList(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	taskStore := NewTaskStore(dbConn)
 	ctx := context.Background()
 
-	storyA := createTestStory(t, storyStore, "Story A", models.StatusNew)
-	storyB := createTestStory(t, storyStore, "Story B", models.StatusNew)
+	storyA := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Story A"; s.Status = models.StatusNew })
+	storyB := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Story B"; s.Status = models.StatusNew })
 
-	createTestTask(t, taskStore, storyA.ID, "Task A1", models.StatusReady, models.TaskTypeCode)
-	createTestTask(t, taskStore, storyA.ID, "Task A2", models.StatusNew, models.TaskTypeBuild)
-	createTestTask(t, taskStore, storyB.ID, "Task B1", models.StatusReady, models.TaskTypeCode)
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = storyA.ID
+		ts.Title = "Task A1"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = storyA.ID
+		ts.Title = "Task A2"
+		ts.Status = models.StatusNew
+		ts.TaskType = models.TaskTypeBuild
+	})
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = storyB.ID
+		ts.Title = "Task B1"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	t.Run("no filter", func(t *testing.T) {
 		all, err := taskStore.List(ctx, TaskFilter{})
@@ -128,13 +150,18 @@ func TestTaskList(t *testing.T) {
 func TestTaskUpdate(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	taskStore := NewTaskStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Update Task Story", models.StatusNew)
-	task := createTestTask(t, taskStore, story.ID, "Update Task", models.StatusNew, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Update Task Story"; s.Status = models.StatusNew })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Update Task"
+		ts.Status = models.StatusNew
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	task.Title = "Updated Task Title"
 	task.Priority = 10
@@ -163,14 +190,19 @@ func TestTaskUpdate(t *testing.T) {
 func TestTaskUpdateStatus(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	taskStore := NewTaskStore(dbConn)
 	ctx := context.Background()
 
 	t.Run("valid transition", func(t *testing.T) {
-		story := createTestStory(t, storyStore, "Valid Status Story", models.StatusNew)
-		task := createTestTask(t, taskStore, story.ID, "Valid Status Task", models.StatusNew, models.TaskTypeCode)
+		story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Valid Status Story"; s.Status = models.StatusNew })
+		task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+			ts.StoryID = story.ID
+			ts.Title = "Valid Status Task"
+			ts.Status = models.StatusNew
+			ts.TaskType = models.TaskTypeCode
+		})
 
 		if err := taskStore.UpdateStatus(ctx, task.ID, models.StatusReady); err != nil {
 			t.Fatalf("UpdateStatus() error = %v", err)
@@ -186,15 +218,20 @@ func TestTaskUpdateStatus(t *testing.T) {
 	})
 
 	t.Run("invalid transition", func(t *testing.T) {
-		story := createTestStory(t, storyStore, "Invalid Status Story", models.StatusNew)
-		task := createTestTask(t, taskStore, story.ID, "Invalid Status Task", models.StatusNew, models.TaskTypeCode)
+		story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Invalid Status Story"; s.Status = models.StatusNew })
+		task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+			ts.StoryID = story.ID
+			ts.Title = "Invalid Status Task"
+			ts.Status = models.StatusNew
+			ts.TaskType = models.TaskTypeCode
+		})
 
 		err := taskStore.UpdateStatus(ctx, task.ID, models.StatusDone)
 		if err == nil {
 			t.Fatal("UpdateStatus() expected error for new->done, got nil")
 		}
-		if !strings.Contains(err.Error(), "invalid transition") {
-			t.Errorf("UpdateStatus() error = %v, want 'invalid transition'", err)
+		if !errors.Is(err, ErrInvalidTransition) {
+			t.Errorf("UpdateStatus() error = %v, want ErrInvalidTransition", err)
 		}
 	})
 }
@@ -202,14 +239,24 @@ func TestTaskUpdateStatus(t *testing.T) {
 func TestAddDependency(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	taskStore := NewTaskStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Dependency Story", models.StatusNew)
-	taskA := createTestTask(t, taskStore, story.ID, "Task A", models.StatusDone, models.TaskTypeCode)
-	taskB := createTestTask(t, taskStore, story.ID, "Task B", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Dependency Story"; s.Status = models.StatusNew })
+	taskA := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task A"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
+	taskB := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task B"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	if err := taskStore.AddDependency(ctx, taskB.ID, taskA.ID); err != nil {
 		t.Fatalf("AddDependency() error = %v", err)
@@ -231,14 +278,24 @@ func TestAddDependency(t *testing.T) {
 func TestAddDependency_Cycle(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	taskStore := NewTaskStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Cycle Story", models.StatusNew)
-	taskA := createTestTask(t, taskStore, story.ID, "Cycle A", models.StatusReady, models.TaskTypeCode)
-	taskB := createTestTask(t, taskStore, story.ID, "Cycle B", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Cycle Story"; s.Status = models.StatusNew })
+	taskA := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Cycle A"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
+	taskB := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Cycle B"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	// A depends on B (B -> A in dependency graph: A depends on B)
 	if err := taskStore.AddDependency(ctx, taskA.ID, taskB.ID); err != nil {
@@ -250,42 +307,57 @@ func TestAddDependency_Cycle(t *testing.T) {
 	if err == nil {
 		t.Fatal("AddDependency(B, A) expected cycle error, got nil")
 	}
-	if !strings.Contains(err.Error(), "cycle") {
-		t.Errorf("AddDependency(B, A) error = %v, want 'cycle'", err)
+	if !errors.Is(err, ErrCycleDetected) {
+		t.Errorf("AddDependency(B, A) error = %v, want ErrCycleDetected", err)
 	}
 }
 
 func TestAddDependency_SelfCycle(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	taskStore := NewTaskStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Self Cycle Story", models.StatusNew)
-	taskA := createTestTask(t, taskStore, story.ID, "Self Cycle A", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Self Cycle Story"; s.Status = models.StatusNew })
+	taskA := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Self Cycle A"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	err := taskStore.AddDependency(ctx, taskA.ID, taskA.ID)
 	if err == nil {
 		t.Fatal("AddDependency(A, A) expected self-dependency error, got nil")
 	}
-	if !strings.Contains(err.Error(), "depend on itself") {
-		t.Errorf("AddDependency(A, A) error = %v, want 'depend on itself'", err)
+	if !errors.Is(err, ErrSelfDependency) {
+		t.Errorf("AddDependency(A, A) error = %v, want ErrSelfDependency", err)
 	}
 }
 
 func TestRemoveDependency(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	taskStore := NewTaskStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Remove Dep Story", models.StatusNew)
-	taskA := createTestTask(t, taskStore, story.ID, "Remove A", models.StatusDone, models.TaskTypeCode)
-	taskB := createTestTask(t, taskStore, story.ID, "Remove B", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Remove Dep Story"; s.Status = models.StatusNew })
+	taskA := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Remove A"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
+	taskB := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Remove B"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	if err := taskStore.AddDependency(ctx, taskB.ID, taskA.ID); err != nil {
 		t.Fatalf("AddDependency() error = %v", err)
@@ -308,15 +380,30 @@ func TestRemoveDependency(t *testing.T) {
 func TestGetBlockers(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	taskStore := NewTaskStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Blockers Story", models.StatusNew)
-	taskA := createTestTask(t, taskStore, story.ID, "Blocker A", models.StatusDone, models.TaskTypeCode)
-	taskB := createTestTask(t, taskStore, story.ID, "Blocker B", models.StatusInProgress, models.TaskTypeCode)
-	taskC := createTestTask(t, taskStore, story.ID, "Dependent C", models.StatusBlocked, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Blockers Story"; s.Status = models.StatusNew })
+	taskA := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Blocker A"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
+	taskB := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Blocker B"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeCode
+	})
+	taskC := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Dependent C"
+		ts.Status = models.StatusBlocked
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	// C depends on A and B
 	if err := taskStore.AddDependency(ctx, taskC.ID, taskA.ID); err != nil {
@@ -343,15 +430,30 @@ func TestGetBlockers(t *testing.T) {
 func TestDetectCycle(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	taskStore := NewTaskStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Detect Cycle Story", models.StatusNew)
-	taskA := createTestTask(t, taskStore, story.ID, "Cycle Detect A", models.StatusReady, models.TaskTypeCode)
-	taskB := createTestTask(t, taskStore, story.ID, "Cycle Detect B", models.StatusReady, models.TaskTypeCode)
-	taskC := createTestTask(t, taskStore, story.ID, "Cycle Detect C", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Detect Cycle Story"; s.Status = models.StatusNew })
+	taskA := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Cycle Detect A"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
+	taskB := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Cycle Detect B"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
+	taskC := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Cycle Detect C"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	// Create chain: B depends on A, C depends on B
 	if err := taskStore.AddDependency(ctx, taskB.ID, taskA.ID); err != nil {
@@ -390,15 +492,30 @@ func TestDetectCycle(t *testing.T) {
 func TestGetByStory(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	taskStore := NewTaskStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "GetByStory Story", models.StatusNew)
-	createTestTask(t, taskStore, story.ID, "Task 1", models.StatusReady, models.TaskTypeCode)
-	createTestTask(t, taskStore, story.ID, "Task 2", models.StatusNew, models.TaskTypeBuild)
-	createTestTask(t, taskStore, story.ID, "Task 3", models.StatusDone, models.TaskTypeReview)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "GetByStory Story"; s.Status = models.StatusNew })
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task 1"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task 2"
+		ts.Status = models.StatusNew
+		ts.TaskType = models.TaskTypeBuild
+	})
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task 3"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeReview
+	})
 
 	tasks, err := taskStore.GetByStory(ctx, story.ID)
 	if err != nil {

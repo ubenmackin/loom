@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { X } from 'lucide-react'
 import SharpTag from './SharpTag'
 
@@ -24,6 +24,18 @@ export default function CreateStoryForm({ open, onSubmit, onCancel }: CreateStor
   const [requiresReview, setRequiresReview] = useState(false)
   const [error, setError] = useState('')
 
+  // ESC key handler — must be before any early return (React hooks order rule)
+  useEffect(() => {
+    if (!open) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onCancel()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [open, onCancel])
+
   if (!open) return null
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -40,12 +52,6 @@ export default function CreateStoryForm({ open, onSubmit, onCancel }: CreateStor
       requires_build: requiresBuild,
       requires_review: requiresReview,
     })
-    // Reset form
-    setTitle('')
-    setDescription('')
-    setPriority(0)
-    setRequiresBuild(false)
-    setRequiresReview(false)
   }
 
   const handleCancel = () => {
@@ -120,13 +126,14 @@ export default function CreateStoryForm({ open, onSubmit, onCancel }: CreateStor
             <input
               type="number"
               value={priority}
+              min="0"
               onChange={(e) => setPriority(parseInt(e.target.value, 10) || 0)}
               className="w-20 rounded-none border border-gray-200 dark:border-gray-border bg-transparent p-2 font-mono text-sm text-neutral-800 dark:text-light-neutral"
             />
           </div>
 
           {/* Requires Build */}
-          <div className="flex items-center gap-2">
+          <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
               checked={requiresBuild}
@@ -137,10 +144,10 @@ export default function CreateStoryForm({ open, onSubmit, onCancel }: CreateStor
             <span className="text-xs text-neutral-500 dark:text-neutral-400">
               Requires build
             </span>
-          </div>
+          </label>
 
           {/* Requires Review */}
-          <div className="flex items-center gap-2">
+          <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
               checked={requiresReview}
@@ -151,7 +158,7 @@ export default function CreateStoryForm({ open, onSubmit, onCancel }: CreateStor
             <span className="text-xs text-neutral-500 dark:text-neutral-400">
               Requires review
             </span>
-          </div>
+          </label>
 
           {/* Actions */}
           <div className="pt-3 border-t border-gray-200 dark:border-gray-border flex items-center justify-end gap-2">

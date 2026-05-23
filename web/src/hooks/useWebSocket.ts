@@ -14,8 +14,13 @@ export function useWebSocket(): UseWebSocketReturn {
   const wsRef = useRef<WebSocket | null>(null)
   const retryRef = useRef<number>(0)
   const mountedRef = useRef(true)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const connect = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host || 'localhost:8080'
     const url = `${protocol}//${host}/api/ws`
@@ -35,8 +40,8 @@ export function useWebSocket(): UseWebSocketReturn {
         const parsed: WebSocketEvent = JSON.parse(event.data)
         setLastEvent(parsed)
         queryClient.invalidateQueries({ queryKey: ['board'] })
-      queryClient.invalidateQueries({ queryKey: ['activity'] })
-      queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        queryClient.invalidateQueries({ queryKey: ['activity'] })
+        queryClient.invalidateQueries({ queryKey: ['sessions'] })
       } catch {
         // ignore malformed messages
       }
@@ -50,7 +55,7 @@ export function useWebSocket(): UseWebSocketReturn {
       // Exponential backoff: 250ms, 500ms, 1s, 2s, 4s, capped at 30s
       const delay = Math.min(250 * Math.pow(2, retryRef.current), 30000)
       retryRef.current += 1
-      setTimeout(() => {
+      reconnectTimerRef.current = setTimeout(() => {
         if (mountedRef.current) connect()
       }, delay)
     }
@@ -66,6 +71,9 @@ export function useWebSocket(): UseWebSocketReturn {
 
     return () => {
       mountedRef.current = false
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
+      }
       if (wsRef.current) {
         wsRef.current.close()
         wsRef.current = null

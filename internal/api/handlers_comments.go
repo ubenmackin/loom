@@ -1,15 +1,13 @@
 package api
 
 import (
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ubenmackin/loom/internal/models"
+	"github.com/ubenmackin/loom/internal/store"
 )
 
 // --- Request/Response types ---
@@ -40,22 +38,26 @@ func (h *handlers) registerCommentRoutes(r chi.Router) {
 // --- Handlers ---
 
 // getComments handles GET /api/work-items/{id}/comments
-// The "type" query parameter specifies the work item type ("story" or "task").
 func (h *handlers) getComments(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
-	workItemType := r.URL.Query().Get("type")
-	if workItemType == "" {
-		workItemType = models.WorkItemTypeTask // default to task
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		respondError(w, http.StatusBadRequest, "missing work item id")
+		return
 	}
 
-	if workItemType != models.WorkItemTypeStory && workItemType != models.WorkItemTypeTask {
+	workItemType := r.URL.Query().Get("type")
+	if workItemType == "" {
+		workItemType = string(models.WorkItemTypeTask)
+	}
+
+	if !validWorkItemType(workItemType) {
 		respondError(w, http.StatusBadRequest, "type must be 'story' or 'task'")
 		return
 	}
 
 	resolvedID, err := h.resolveWorkItemID(r.Context(), id, workItemType)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "work item not found")
 			return
 		}
@@ -64,7 +66,7 @@ func (h *handlers) getComments(w http.ResponseWriter, r *http.Request) {
 	}
 	id = resolvedID
 
-	comments, err := h.comments.GetByWorkItem(r.Context(), id, workItemType)
+	comments, err := h.comments.GetByWorkItem(r.Context(), id, models.WorkItemType(workItemType))
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to get comments: "+err.Error())
 		return
@@ -78,20 +80,25 @@ func (h *handlers) getComments(w http.ResponseWriter, r *http.Request) {
 
 // createComment handles POST /api/work-items/{id}/comments
 func (h *handlers) createComment(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
-	workItemType := r.URL.Query().Get("type")
-	if workItemType == "" {
-		workItemType = models.WorkItemTypeTask
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		respondError(w, http.StatusBadRequest, "missing work item id")
+		return
 	}
 
-	if workItemType != models.WorkItemTypeStory && workItemType != models.WorkItemTypeTask {
+	workItemType := r.URL.Query().Get("type")
+	if workItemType == "" {
+		workItemType = string(models.WorkItemTypeTask)
+	}
+
+	if !validWorkItemType(workItemType) {
 		respondError(w, http.StatusBadRequest, "type must be 'story' or 'task'")
 		return
 	}
 
 	resolvedID, err := h.resolveWorkItemID(r.Context(), id, workItemType)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "work item not found")
 			return
 		}
@@ -101,7 +108,7 @@ func (h *handlers) createComment(w http.ResponseWriter, r *http.Request) {
 	id = resolvedID
 
 	var req createCommentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -121,7 +128,7 @@ func (h *handlers) createComment(w http.ResponseWriter, r *http.Request) {
 
 	comment := &models.Comment{
 		WorkItemID:   id,
-		WorkItemType: workItemType,
+		WorkItemType: models.WorkItemType(workItemType),
 		AuthorID:     req.AuthorID,
 		AuthorType:   req.AuthorType,
 		Body:         req.Body,
@@ -137,7 +144,7 @@ func (h *handlers) createComment(w http.ResponseWriter, r *http.Request) {
 
 // updateComment handles PUT /api/comments/{id}
 func (h *handlers) updateComment(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
+	id := chi.URLParam(r, "id")
 	if id == "" {
 		respondError(w, http.StatusBadRequest, "missing comment id")
 		return
@@ -145,7 +152,7 @@ func (h *handlers) updateComment(w http.ResponseWriter, r *http.Request) {
 
 	existing, err := h.comments.GetByID(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "comment not found")
 			return
 		}
@@ -154,7 +161,7 @@ func (h *handlers) updateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req updateCommentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -164,13 +171,9 @@ func (h *handlers) updateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract author identity from context or request.
-	// Use X-Session-ID header or a query param for agent authors.
-	// For human authors, the author_id should be provided in the request.
 	sessionID := GetSessionID(r)
 	authorID := sessionID
 	if authorID == "" {
-		// Fallback: check for an author_id query parameter.
 		authorID = r.URL.Query().Get("author_id")
 	}
 
@@ -180,15 +183,17 @@ func (h *handlers) updateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	existing.Body = req.Body
-	existing.AuthorID = authorID // Set for the store layer authorization check.
+	if existing.AuthorID != authorID {
+		respondError(w, http.StatusForbidden, store.ErrUnauthorizedAuthor.Error())
+		return
+	}
 
 	if err := h.comments.Update(r.Context(), existing); err != nil {
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "only the author") {
-			respondError(w, http.StatusForbidden, errMsg)
+		if errors.Is(err, store.ErrUnauthorizedAuthor) {
+			respondError(w, http.StatusForbidden, err.Error())
 			return
 		}
-		respondError(w, http.StatusInternalServerError, "failed to update comment: "+errMsg)
+		respondError(w, http.StatusInternalServerError, "failed to update comment: "+err.Error())
 		return
 	}
 
@@ -197,13 +202,12 @@ func (h *handlers) updateComment(w http.ResponseWriter, r *http.Request) {
 
 // deleteComment handles DELETE /api/comments/{id}
 func (h *handlers) deleteComment(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
+	id := chi.URLParam(r, "id")
 	if id == "" {
 		respondError(w, http.StatusBadRequest, "missing comment id")
 		return
 	}
 
-	// Extract author identity from context or request.
 	sessionID := GetSessionID(r)
 	authorID := sessionID
 	if authorID == "" {
@@ -216,16 +220,15 @@ func (h *handlers) deleteComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.comments.Delete(r.Context(), id, authorID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "comment not found")
 			return
 		}
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "only the author") {
-			respondError(w, http.StatusForbidden, errMsg)
+		if errors.Is(err, store.ErrUnauthorizedAuthor) {
+			respondError(w, http.StatusForbidden, err.Error())
 			return
 		}
-		respondError(w, http.StatusInternalServerError, "failed to delete comment: "+errMsg)
+		respondError(w, http.StatusInternalServerError, "failed to delete comment: "+err.Error())
 		return
 	}
 

@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/ubenmackin/loom/internal/dispatcher"
 	"github.com/ubenmackin/loom/internal/models"
 	"github.com/ubenmackin/loom/internal/store"
+	"github.com/ubenmackin/loom/internal/testhelpers"
 )
 
 func newTestRouterStories(t *testing.T) (chi.Router, *store.StoryStore, *store.TaskStore, *store.SessionStore, *store.CommentStore, *store.TemplateStore, *store.ActivityStore) {
@@ -29,7 +32,7 @@ func newTestRouterStories(t *testing.T) (chi.Router, *store.StoryStore, *store.T
 		}
 	})
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 
 	storyStore := store.NewStoryStore(dbConn)
 	taskStore := store.NewTaskStore(dbConn)
@@ -40,7 +43,7 @@ func newTestRouterStories(t *testing.T) (chi.Router, *store.StoryStore, *store.T
 	userStore := store.NewUserStore(dbConn)
 
 	// Create a test user and session token so protected routes work in tests.
-	testUser, err := userStore.CreateUser(context.Background(), "testuser", "test@example.com", "Test User", "password123")
+	testUser, err := userStore.CreateUser(context.Background(), "testuser", "test@example.com", "Test User", "password123", models.RoleNormal)
 	if err != nil {
 		t.Fatalf("create test user: %v", err)
 	}
@@ -52,16 +55,16 @@ func newTestRouterStories(t *testing.T) (chi.Router, *store.StoryStore, *store.T
 	t.Cleanup(func() { testAuthTokens.Delete(t.Name()) })
 
 	broadcaster := &testBroadcaster{}
-	d := dispatcher.NewDispatcher(
-		storyStore,
-		taskStore,
-		sessionStore,
-		templateStore,
-		commentStore,
-		activityStore,
-		broadcaster,
-		30*time.Minute,
-	)
+	d := dispatcher.NewDispatcher(dispatcher.DispatcherDeps{
+		StoryStore:         storyStore,
+		TaskStore:          taskStore,
+		SessionStore:       sessionStore,
+		TemplateStore:      templateStore,
+		CommentStore:       commentStore,
+		ActivityStore:      activityStore,
+		Broadcaster:        broadcaster,
+		StalenessThreshold: 30 * time.Minute,
+	})
 
 	apiRouter := NewRouter(
 		storyStore,
@@ -99,7 +102,7 @@ func TestCreateStory(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	if resp["id"] == "" {
 		t.Fatal("createStory response missing ID")
@@ -111,7 +114,7 @@ func TestCreateStory(t *testing.T) {
 	}
 
 	status, _ := resp["status"].(string)
-	if status != models.StatusNew {
+	if models.Status(status) != models.StatusNew {
 		t.Errorf("createStory status = %q, want %q", status, models.StatusNew)
 	}
 
@@ -140,8 +143,13 @@ func TestGetStory(t *testing.T) {
 
 	mux, storyStore, taskStore, _, _, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Get Story", models.StatusReady)
-	createTestTask(t, taskStore, story.ID, "Task 1", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Get Story"; s.Status = models.StatusReady })
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task 1"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	rr := doRequest(t, mux, "GET", "/api/stories/"+story.ID, nil)
 
@@ -150,7 +158,7 @@ func TestGetStory(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	storyData, ok := resp["story"].(map[string]any)
 	if !ok {
@@ -189,9 +197,9 @@ func TestListStories(t *testing.T) {
 
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
-	createTestStory(t, storyStore, "Story A", models.StatusNew)
-	createTestStory(t, storyStore, "Story B", models.StatusReady)
-	createTestStory(t, storyStore, "Story C", models.StatusNew)
+	testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Story A"; s.Status = models.StatusNew })
+	testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Story B"; s.Status = models.StatusReady })
+	testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Story C"; s.Status = models.StatusNew })
 
 	t.Run("list all", func(t *testing.T) {
 		rr := doRequest(t, mux, "GET", "/api/stories", nil)
@@ -201,7 +209,7 @@ func TestListStories(t *testing.T) {
 		}
 
 		var stories []map[string]any
-		decodeJSON(t, rr, &stories)
+		decodeRespJSON(t, rr, &stories)
 
 		if len(stories) != 3 {
 			t.Fatalf("listStories returned %d stories, want 3", len(stories))
@@ -216,7 +224,7 @@ func TestListStories(t *testing.T) {
 		}
 
 		var stories []map[string]any
-		decodeJSON(t, rr, &stories)
+		decodeRespJSON(t, rr, &stories)
 
 		if len(stories) != 2 {
 			t.Fatalf("listStories(status=new) returned %d stories, want 2", len(stories))
@@ -231,7 +239,7 @@ func TestListStories(t *testing.T) {
 		}
 
 		var stories []map[string]any
-		decodeJSON(t, rr, &stories)
+		decodeRespJSON(t, rr, &stories)
 
 		if len(stories) != 1 {
 			t.Fatalf("listStories(status=ready) returned %d stories, want 1", len(stories))
@@ -244,7 +252,7 @@ func TestUpdateStory(t *testing.T) {
 
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Original Title", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Original Title"; s.Status = models.StatusNew })
 
 	rr := doRequest(t, mux, "PUT", "/api/stories/"+story.ID, map[string]any{
 		"title":    "Updated Title",
@@ -256,7 +264,7 @@ func TestUpdateStory(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	title, _ := resp["title"].(string)
 	if title != "Updated Title" {
@@ -288,7 +296,7 @@ func TestUpdateStory_PartialUpdate(t *testing.T) {
 
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Partial Update", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Partial Update"; s.Status = models.StatusNew })
 	story.Priority = 3
 	if err := storyStore.Update(context.Background(), story); err != nil {
 		t.Fatalf("set initial priority: %v", err)
@@ -303,7 +311,7 @@ func TestUpdateStory_PartialUpdate(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	desc, _ := resp["description"].(string)
 	if desc != "New description" {
@@ -321,7 +329,7 @@ func TestDeleteStory(t *testing.T) {
 
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Delete Story", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Delete Story"; s.Status = models.StatusNew })
 
 	rr := doRequest(t, mux, "DELETE", "/api/stories/"+story.ID, nil)
 
@@ -340,7 +348,7 @@ func TestDeleteStory_NotNew(t *testing.T) {
 
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Delete Not New", models.StatusReady)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Delete Not New"; s.Status = models.StatusReady })
 
 	rr := doRequest(t, mux, "DELETE", "/api/stories/"+story.ID, nil)
 
@@ -349,7 +357,7 @@ func TestDeleteStory_NotNew(t *testing.T) {
 	}
 
 	var resp map[string]string
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	if resp["error"] == "" {
 		t.Fatal("deleteStory response missing error message")
@@ -389,7 +397,7 @@ func TestCreateStory_WithAllFields(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	if resp["title"] != "Full Story" {
 		t.Errorf("createStory title = %v, want %q", resp["title"], "Full Story")
@@ -418,7 +426,7 @@ func TestListStories_Empty(t *testing.T) {
 	}
 
 	var stories []any
-	decodeJSON(t, rr, &stories)
+	decodeRespJSON(t, rr, &stories)
 
 	if len(stories) != 0 {
 		t.Fatalf("listStories returned %d stories, want 0", len(stories))
@@ -430,7 +438,7 @@ func TestGetStory_EmptyTasks(t *testing.T) {
 
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "No Tasks Story", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "No Tasks Story"; s.Status = models.StatusNew })
 
 	rr := doRequest(t, mux, "GET", "/api/stories/"+story.ID, nil)
 
@@ -439,7 +447,7 @@ func TestGetStory_EmptyTasks(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	tasks, ok := resp["tasks"].([]any)
 	if !ok {
@@ -456,7 +464,7 @@ func TestUpdateStoryStatus(t *testing.T) {
 
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Status Update Story", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Status Update Story"; s.Status = models.StatusNew })
 
 	rr := doRequest(t, mux, "PATCH", "/api/stories/"+story.ID+"/status", map[string]string{
 		"status": "ready",
@@ -467,10 +475,10 @@ func TestUpdateStoryStatus(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	status, _ := resp["status"].(string)
-	if status != models.StatusReady {
+	if models.Status(status) != models.StatusReady {
 		t.Errorf("updateStoryStatus status = %q, want %q", status, models.StatusReady)
 	}
 }
@@ -480,7 +488,7 @@ func TestUpdateStoryStatus_Invalid(t *testing.T) {
 
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Invalid Status Story", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Invalid Status Story"; s.Status = models.StatusNew })
 
 	rr := doRequest(t, mux, "PATCH", "/api/stories/"+story.ID+"/status", map[string]string{
 		"status": "done",
@@ -508,7 +516,7 @@ func TestUpdateStory_InvalidJSON(t *testing.T) {
 
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Invalid JSON Story", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Invalid JSON Story"; s.Status = models.StatusNew })
 
 	rr := doRequest(t, mux, "PUT", "/api/stories/"+story.ID, nil)
 
@@ -522,7 +530,7 @@ func TestCreateTaskUnderStory(t *testing.T) {
 
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Task Under Story", models.StatusReady)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Task Under Story"; s.Status = models.StatusReady })
 
 	rr := doRequest(t, mux, "POST", "/api/stories/"+story.ID+"/tasks", map[string]any{
 		"title":     "New Task",
@@ -535,7 +543,7 @@ func TestCreateTaskUnderStory(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	id, _ := resp["id"].(string)
 	if id == "" {
@@ -572,8 +580,13 @@ func TestGetBoard(t *testing.T) {
 
 	mux, storyStore, taskStore, _, _, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Board Story", models.StatusReady)
-	createTestTask(t, taskStore, story.ID, "Board Task", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Board Story"; s.Status = models.StatusReady })
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Board Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	rr := doRequest(t, mux, "GET", "/api/board", nil)
 
@@ -582,7 +595,7 @@ func TestGetBoard(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	stories, ok := resp["stories"].([]any)
 	if !ok {
@@ -628,7 +641,7 @@ func TestSessionRegister(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	harnessType, _ := resp["harness_type"].(string)
 	if harnessType != "opencode" {
@@ -636,7 +649,7 @@ func TestSessionRegister(t *testing.T) {
 	}
 
 	status, _ := resp["status"].(string)
-	if status != models.SessionStatusActive {
+	if models.SessionStatus(status) != models.SessionStatusActive {
 		t.Errorf("registerSession status = %q, want %q", status, models.SessionStatusActive)
 	}
 }
@@ -658,7 +671,11 @@ func TestSessionGet(t *testing.T) {
 
 	mux, _, _, sessionStore, _, _, _ := newTestRouterStories(t)
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
 	rr := doRequest(t, mux, "GET", "/api/sessions/"+session.ID, nil)
 
@@ -667,7 +684,7 @@ func TestSessionGet(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	id, _ := resp["id"].(string)
 	if id != session.ID {
@@ -680,7 +697,9 @@ func TestSessionDisconnect(t *testing.T) {
 
 	mux, _, _, sessionStore, _, _, _ := newTestRouterStories(t)
 
-	session := createTestSession(t, sessionStore, "opencode", nil)
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+	})
 
 	rr := doRequest(t, mux, "DELETE", "/api/sessions/"+session.ID, nil)
 
@@ -715,10 +734,19 @@ func TestSessionGetTasks(t *testing.T) {
 
 	mux, storyStore, taskStore, sessionStore, _, _, _ := newTestRouterStories(t)
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
-	story := createTestStory(t, storyStore, "Session Tasks Story", models.StatusReady)
-	task := createTestTask(t, taskStore, story.ID, "Session Task", models.StatusInProgress, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Session Tasks Story"; s.Status = models.StatusReady })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Session Task"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeCode
+	})
 	task.AssignedTo = session.ID
 	task.AssigneeType = models.AssigneeTypeSession
 	if err := taskStore.Update(context.Background(), task); err != nil {
@@ -732,7 +760,7 @@ func TestSessionGetTasks(t *testing.T) {
 	}
 
 	var tasks []map[string]any
-	decodeJSON(t, rr, &tasks)
+	decodeRespJSON(t, rr, &tasks)
 
 	if len(tasks) != 1 {
 		t.Fatalf("getSessionTasks returned %d tasks, want 1", len(tasks))
@@ -754,7 +782,7 @@ func TestCreateTemplate(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	template, _ := resp["template"].(string)
 	if template != "Implement {{task.title}} for {{story.title}}" {
@@ -769,7 +797,10 @@ func TestGetTemplate(t *testing.T) {
 
 	mux, _, _, _, _, templateStore, _ := newTestRouterStories(t)
 
-	createTestTemplate(t, templateStore, "code", "Code template")
+	testhelpers.CreateTestTemplate(t, templateStore, func(tmpl *models.PromptTemplate) {
+		tmpl.TaskType = "code"
+		tmpl.Template = "Code template"
+	})
 
 	rr := doRequest(t, mux, "GET", "/api/templates/code", nil)
 
@@ -778,7 +809,7 @@ func TestGetTemplate(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	template, _ := resp["template"].(string)
 	if template != "Code template" {
@@ -791,8 +822,14 @@ func TestListTemplates(t *testing.T) {
 
 	mux, _, _, _, _, templateStore, _ := newTestRouterStories(t)
 
-	createTestTemplate(t, templateStore, "code", "Code template")
-	createTestTemplate(t, templateStore, "build", "Build template")
+	testhelpers.CreateTestTemplate(t, templateStore, func(tmpl *models.PromptTemplate) {
+		tmpl.TaskType = "code"
+		tmpl.Template = "Code template"
+	})
+	testhelpers.CreateTestTemplate(t, templateStore, func(tmpl *models.PromptTemplate) {
+		tmpl.TaskType = "build"
+		tmpl.Template = "Build template"
+	})
 
 	rr := doRequest(t, mux, "GET", "/api/templates", nil)
 
@@ -801,7 +838,7 @@ func TestListTemplates(t *testing.T) {
 	}
 
 	var templates []map[string]any
-	decodeJSON(t, rr, &templates)
+	decodeRespJSON(t, rr, &templates)
 
 	if len(templates) != 2 {
 		t.Fatalf("listTemplates returned %d templates, want 2", len(templates))
@@ -814,7 +851,10 @@ func TestUpsertTemplate(t *testing.T) {
 	mux, _, _, _, _, templateStore, _ := newTestRouterStories(t)
 
 	// Create initial template.
-	createTestTemplate(t, templateStore, "review", "Original review template")
+	testhelpers.CreateTestTemplate(t, templateStore, func(tmpl *models.PromptTemplate) {
+		tmpl.TaskType = "review"
+		tmpl.Template = "Original review template"
+	})
 
 	// Upsert with new template text.
 	rr := doRequest(t, mux, "PUT", "/api/templates/review", map[string]any{
@@ -833,7 +873,7 @@ func TestUpsertTemplate(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	template, _ := resp["template"].(string)
 	if template != "Updated review template" {
@@ -846,7 +886,7 @@ func TestCreateComment(t *testing.T) {
 
 	mux, storyStore, _, _, commentStore, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Comment Story", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Comment Story"; s.Status = models.StatusNew })
 
 	rr := doRequest(t, mux, "POST", "/api/work-items/"+story.ID+"/comments", map[string]any{
 		"work_item_type": "story",
@@ -860,7 +900,7 @@ func TestCreateComment(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	body, _ := resp["body"].(string)
 	if body != "This is a comment" {
@@ -875,7 +915,7 @@ func TestGetComments(t *testing.T) {
 
 	mux, storyStore, _, _, commentStore, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Get Comments Story", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Get Comments Story"; s.Status = models.StatusNew })
 	createTestComment(t, commentStore, story.ID, "story", "user-1", "human", "Comment 1")
 	createTestComment(t, commentStore, story.ID, "story", "user-2", "human", "Comment 2")
 
@@ -886,7 +926,7 @@ func TestGetComments(t *testing.T) {
 	}
 
 	var comments []map[string]any
-	decodeJSON(t, rr, &comments)
+	decodeRespJSON(t, rr, &comments)
 
 	if len(comments) != 2 {
 		t.Fatalf("getComments returned %d comments, want 2", len(comments))
@@ -898,7 +938,7 @@ func TestUpdateStory_RequiresBuild(t *testing.T) {
 
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Requires Build Story", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Requires Build Story"; s.Status = models.StatusNew })
 
 	rr := doRequest(t, mux, "PUT", "/api/stories/"+story.ID, map[string]any{
 		"requires_build": true,
@@ -909,7 +949,7 @@ func TestUpdateStory_RequiresBuild(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	requiresBuild, _ := resp["requires_build"].(bool)
 	if !requiresBuild {
@@ -922,7 +962,7 @@ func TestUpdateStory_RequiresReview(t *testing.T) {
 
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Requires Review Story", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Requires Review Story"; s.Status = models.StatusNew })
 
 	rr := doRequest(t, mux, "PUT", "/api/stories/"+story.ID, map[string]any{
 		"requires_review": true,
@@ -933,7 +973,7 @@ func TestUpdateStory_RequiresReview(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	requiresReview, _ := resp["requires_review"].(bool)
 	if !requiresReview {
@@ -953,18 +993,45 @@ func TestCreateStory_EmptyBody(t *testing.T) {
 	}
 }
 
+func TestCreateStory_MalformedJSON(t *testing.T) {
+	t.Parallel()
+
+	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+
+	// Send raw malformed JSON body (not valid JSON).
+	req := httptest.NewRequest("POST", "/api/stories", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	if token := lookupAuthToken(t.Name()); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("createStory malformed JSON status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if resp["error"] == "" {
+		t.Fatal("expected error message in response")
+	}
+}
+
 func TestListStories_AssignedToFilter(t *testing.T) {
 	t.Parallel()
 
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
-	storyA := createTestStory(t, storyStore, "Assigned Story A", models.StatusNew)
+	storyA := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Assigned Story A"; s.Status = models.StatusNew })
 	storyA.AssignedTo = "user-1"
 	if err := storyStore.Update(context.Background(), storyA); err != nil {
 		t.Fatalf("update storyA: %v", err)
 	}
 
-	storyB := createTestStory(t, storyStore, "Assigned Story B", models.StatusNew)
+	storyB := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Assigned Story B"; s.Status = models.StatusNew })
 	storyB.AssignedTo = "user-2"
 	if err := storyStore.Update(context.Background(), storyB); err != nil {
 		t.Fatalf("update storyB: %v", err)
@@ -977,7 +1044,7 @@ func TestListStories_AssignedToFilter(t *testing.T) {
 	}
 
 	var stories []map[string]any
-	decodeJSON(t, rr, &stories)
+	decodeRespJSON(t, rr, &stories)
 
 	if len(stories) != 1 {
 		t.Fatalf("listStories(assigned_to=user-1) returned %d stories, want 1", len(stories))
@@ -994,7 +1061,7 @@ func TestUpdateStoryStatus_MissingStatus(t *testing.T) {
 
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
-	story := createTestStory(t, storyStore, "Missing Status Story", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Missing Status Story"; s.Status = models.StatusNew })
 
 	rr := doRequest(t, mux, "PATCH", "/api/stories/"+story.ID+"/status", map[string]string{})
 

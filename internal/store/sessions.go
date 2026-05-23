@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/ubenmackin/loom/internal/models"
@@ -19,6 +20,28 @@ type SessionStore struct {
 // NewSessionStore creates a new SessionStore.
 func NewSessionStore(db *sql.DB) *SessionStore {
 	return &SessionStore{db: db}
+}
+
+// scanSessionRow is a helper to scan a session row from a *sql.Row or *sql.Rows.
+func scanSessionRow(scanner interface{ Scan(...any) error }) (*models.Session, error) {
+	session := &models.Session{}
+	var capabilities, metadata sql.NullString
+	var lastSeenAt, createdAt sql.NullTime
+
+	err := scanner.Scan(
+		&session.ID, &session.HarnessType, &capabilities, &metadata,
+		&lastSeenAt, &session.Status, &createdAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	session.Capabilities = stringOrZero(capabilities)
+	session.Metadata = stringOrZero(metadata)
+	session.LastSeenAt = timeOrZero(lastSeenAt)
+	session.CreatedAt = timeOrZero(createdAt)
+
+	return session, nil
 }
 
 // Register inserts a new session.
@@ -48,28 +71,12 @@ func (s *SessionStore) GetByID(ctx context.Context, id string) (*models.Session,
 		`SELECT id, harness_type, capabilities, metadata, last_seen_at, status, created_at
 		 FROM sessions WHERE id = ?`, id)
 
-	session := &models.Session{}
-	var capabilities, metadata sql.NullString
-	var lastSeenAt, createdAt sql.NullTime
-
-	err := row.Scan(
-		&session.ID, &session.HarnessType, &capabilities, &metadata,
-		&lastSeenAt, &session.Status, &createdAt,
-	)
+	session, err := scanSessionRow(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("session %q: %w", id, sql.ErrNoRows)
+			return nil, fmt.Errorf("session %q: %w", id, ErrNotFound)
 		}
 		return nil, fmt.Errorf("query session %q: %w", id, err)
-	}
-
-	session.Capabilities = capabilities.String
-	session.Metadata = metadata.String
-	if lastSeenAt.Valid {
-		session.LastSeenAt = lastSeenAt.Time
-	}
-	if createdAt.Valid {
-		session.CreatedAt = createdAt.Time
 	}
 
 	return session, nil
@@ -90,7 +97,7 @@ func (s *SessionStore) UpdateLastSeen(ctx context.Context, id string) error {
 		return fmt.Errorf("rows affected session %q: %w", id, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("session %q: %w", id, sql.ErrNoRows)
+		return fmt.Errorf("session %q: %w", id, ErrNotFound)
 	}
 
 	return nil
@@ -110,7 +117,7 @@ func (s *SessionStore) Disconnect(ctx context.Context, id string) error {
 		return fmt.Errorf("rows affected disconnect session %q: %w", id, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("session %q: %w", id, sql.ErrNoRows)
+		return fmt.Errorf("session %q: %w", id, ErrNotFound)
 	}
 
 	return nil
@@ -129,7 +136,11 @@ func (s *SessionStore) GetStaleSessions(ctx context.Context, threshold time.Dura
 	if err != nil {
 		return nil, fmt.Errorf("get stale sessions: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	return scanSessions(rows)
 }
@@ -137,8 +148,6 @@ func (s *SessionStore) GetStaleSessions(ctx context.Context, threshold time.Dura
 // GetByCapabilities returns sessions whose capabilities JSON array contains
 // the given capability string.
 func (s *SessionStore) GetByCapabilities(ctx context.Context, capability string) ([]*models.Session, error) {
-	// First get all active sessions, then filter by capabilities in Go.
-	// This is simpler and more reliable than trying to query JSON in SQLite.
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, harness_type, capabilities, metadata, last_seen_at, status, created_at
 		 FROM sessions
@@ -147,7 +156,11 @@ func (s *SessionStore) GetByCapabilities(ctx context.Context, capability string)
 	if err != nil {
 		return nil, fmt.Errorf("get sessions by capability: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	all, err := scanSessions(rows)
 	if err != nil {
@@ -161,7 +174,6 @@ func (s *SessionStore) GetByCapabilities(ctx context.Context, capability string)
 		}
 		var caps []string
 		if err := json.Unmarshal([]byte(session.Capabilities), &caps); err != nil {
-			// If capabilities is not valid JSON, skip it.
 			continue
 		}
 		for _, c := range caps {
@@ -182,11 +194,8 @@ type SessionWithTaskCount struct {
 }
 
 // GetByCapabilitiesWithTaskCount returns active sessions matching the given
-// capability, each annotated with its current assigned-task count. This
-// collapses the N+1 query pattern of GetByCapabilities + per-session
-// GetTasksForSession into a single SQL LEFT JOIN.
+// capability, each annotated with its current assigned-task count.
 func (s *SessionStore) GetByCapabilitiesWithTaskCount(ctx context.Context, capability string) ([]SessionWithTaskCount, error) {
-	// Join sessions with a subquery that counts assigned tasks per session.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.harness_type, s.capabilities, s.metadata, s.last_seen_at, s.status, s.created_at,
 		       COALESCE(t.task_count, 0)
@@ -202,7 +211,11 @@ func (s *SessionStore) GetByCapabilitiesWithTaskCount(ctx context.Context, capab
 	if err != nil {
 		return nil, fmt.Errorf("get sessions by capability with task count: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	var results []SessionWithTaskCount
 	for rows.Next() {
@@ -219,17 +232,11 @@ func (s *SessionStore) GetByCapabilitiesWithTaskCount(ctx context.Context, capab
 			return nil, fmt.Errorf("scan session with task count: %w", err)
 		}
 
-		session.Capabilities = capabilities.String
-		session.Metadata = metadata.String
-		if lastSeenAt.Valid {
-			session.LastSeenAt = lastSeenAt.Time
-		}
-		if createdAt.Valid {
-			session.CreatedAt = createdAt.Time
-		}
+		session.Capabilities = stringOrZero(capabilities)
+		session.Metadata = stringOrZero(metadata)
+		session.LastSeenAt = timeOrZero(lastSeenAt)
+		session.CreatedAt = timeOrZero(createdAt)
 
-		// Filter by capability in Go (same approach as GetByCapabilities,
-		// since capabilities are stored as a JSON array).
 		if session.Capabilities == "" {
 			continue
 		}
@@ -280,7 +287,7 @@ func (s *SessionStore) FlagStale(ctx context.Context, id string) error {
 		return fmt.Errorf("rows affected flag stale session %q: %w", id, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("session %q: %w", id, sql.ErrNoRows)
+		return fmt.Errorf("session %q: %w", id, ErrNotFound)
 	}
 
 	return nil
@@ -296,7 +303,11 @@ func (s *SessionStore) ListActive(ctx context.Context) ([]*models.Session, error
 	if err != nil {
 		return nil, fmt.Errorf("list active sessions: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	return scanSessions(rows)
 }
@@ -309,7 +320,11 @@ func (s *SessionStore) ListAll(ctx context.Context) ([]*models.Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list all sessions: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	return scanSessions(rows)
 }
@@ -318,24 +333,9 @@ func (s *SessionStore) ListAll(ctx context.Context) ([]*models.Session, error) {
 func scanSessions(rows *sql.Rows) ([]*models.Session, error) {
 	var sessions []*models.Session
 	for rows.Next() {
-		session := &models.Session{}
-		var capabilities, metadata sql.NullString
-		var lastSeenAt, createdAt sql.NullTime
-
-		if err := rows.Scan(
-			&session.ID, &session.HarnessType, &capabilities, &metadata,
-			&lastSeenAt, &session.Status, &createdAt,
-		); err != nil {
+		session, err := scanSessionRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
-		}
-
-		session.Capabilities = capabilities.String
-		session.Metadata = metadata.String
-		if lastSeenAt.Valid {
-			session.LastSeenAt = lastSeenAt.Time
-		}
-		if createdAt.Valid {
-			session.CreatedAt = createdAt.Time
 		}
 
 		sessions = append(sessions, session)

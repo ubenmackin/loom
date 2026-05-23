@@ -118,13 +118,13 @@ func (d *Dispatcher) createBuildTask(ctx context.Context, story *models.Story, e
 	}
 
 	details, _ := json.Marshal(map[string]string{"story_id": story.ID, "task_type": "build"})
-	d.logActivity(ctx, buildTask.ID, models.WorkItemTypeTask, "gate_created", string(details))
+	d.logActivity(ctx, buildTask.ID, string(models.WorkItemTypeTask), "gate_created", string(details))
 
 	d.hub.Broadcast("gate_task_created", map[string]string{
 		"task_id":   buildTask.ID,
 		"story_id":  story.ID,
-		"task_type": models.TaskTypeBuild,
-		"status":    models.StatusReady,
+		"task_type": string(models.TaskTypeBuild),
+		"status":    string(models.StatusReady),
 	})
 
 	slog.Info("dispatcher: created build gate task",
@@ -172,13 +172,13 @@ func (d *Dispatcher) createReviewTask(ctx context.Context, story *models.Story, 
 	}
 
 	details, _ := json.Marshal(map[string]string{"story_id": story.ID, "task_type": "review"})
-	d.logActivity(ctx, reviewTask.ID, models.WorkItemTypeTask, "gate_created", string(details))
+	d.logActivity(ctx, reviewTask.ID, string(models.WorkItemTypeTask), "gate_created", string(details))
 
 	d.hub.Broadcast("gate_task_created", map[string]string{
 		"task_id":   reviewTask.ID,
 		"story_id":  story.ID,
-		"task_type": models.TaskTypeReview,
-		"status":    models.StatusReady,
+		"task_type": string(models.TaskTypeReview),
+		"status":    string(models.StatusReady),
 	})
 
 	slog.Info("dispatcher: created review gate task",
@@ -186,7 +186,7 @@ func (d *Dispatcher) createReviewTask(ctx context.Context, story *models.Story, 
 }
 
 // resolveDependencies finds all tasks that depend on the just-completed task
-// and transitions any that are no longer blocked to "ready".
+// and attempts to unblock any that are no longer blocked.
 func (d *Dispatcher) resolveDependencies(ctx context.Context, completedTaskID string) {
 	dependents, err := d.tasks.GetDependents(ctx, completedTaskID)
 	if err != nil {
@@ -200,34 +200,14 @@ func (d *Dispatcher) resolveDependencies(ctx context.Context, completedTaskID st
 			continue
 		}
 
-		// Check if ALL dependencies of this dependent task are now Done.
-		blockers, err := d.tasks.GetBlockers(ctx, dep.ID)
-		if err != nil {
-			slog.Error("dispatcher: failed to get blockers for dependent task",
-				"task_id", dep.ID, "error", err)
-			continue
-		}
+		d.tryUnblockTask(ctx, dep.ID)
 
-		if len(blockers) == 0 {
-			// All dependencies resolved — transition to ready.
-			if err := d.tasks.UpdateStatus(ctx, dep.ID, models.StatusReady); err != nil {
-				slog.Error("dispatcher: failed to unblock dependent task",
-					"task_id", dep.ID, "error", err)
-				continue
-			}
+		details, _ := json.Marshal(map[string]string{
+			"resolved_by": completedTaskID,
+		})
+		d.logActivity(ctx, dep.ID, string(models.WorkItemTypeTask), "unblocked", string(details))
 
-			details, _ := json.Marshal(map[string]string{
-				"resolved_by": completedTaskID,
-			})
-			d.logActivity(ctx, dep.ID, models.WorkItemTypeTask, "unblocked", string(details))
-
-			d.hub.Broadcast("task_status_changed", map[string]string{
-				"task_id": dep.ID,
-				"status":  models.StatusReady,
-			})
-
-			slog.Info("dispatcher: resolved dependency, task unblocked",
-				"task_id", dep.ID, "resolved_by", completedTaskID)
-		}
+		slog.Info("dispatcher: resolved dependency, task unblocked",
+			"task_id", dep.ID, "resolved_by", completedTaskID)
 	}
 }

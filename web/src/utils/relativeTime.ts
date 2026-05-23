@@ -1,6 +1,8 @@
 export function relativeTime(dateStr: string): string {
+  const date = new Date(dateStr)
+  if (isNaN(date.getTime())) return 'Invalid date'
   const now = Date.now()
-  const then = new Date(dateStr).getTime()
+  const then = date.getTime()
   const diffMs = now - then
   const diffSec = Math.floor(diffMs / 1000)
   if (diffSec < 60) return 'just now'

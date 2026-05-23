@@ -11,9 +11,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/ubenmackin/loom/internal/config"
 	"github.com/ubenmackin/loom/internal/models"
@@ -118,12 +118,9 @@ func respondJSON(w http.ResponseWriter, status int, data any) {
 func respondError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
-}
-
-// parseID extracts a URL parameter using chi.URLParam.
-func parseID(r *http.Request, param string) string {
-	return chi.URLParam(r, param)
+	if err := json.NewEncoder(w).Encode(map[string]string{"error": message}); err != nil {
+		slog.Error("failed to encode error response", "status", status, "error", err)
+	}
 }
 
 // contextKeyUser is the context key for the authenticated user.
@@ -159,6 +156,20 @@ func (h *handlers) UserAuthenticator(next http.Handler) http.Handler {
 	})
 }
 
+// agentSecret is the shared secret for agent authentication, read once at init.
+var (
+	agentSecret     string
+	agentSecretOnce sync.Once
+)
+
+// getAgentSecret returns the shared agent secret, reading it from the environment once.
+func getAgentSecret() string {
+	agentSecretOnce.Do(func() {
+		agentSecret = os.Getenv("LOOM_AGENT_SECRET")
+	})
+	return agentSecret
+}
+
 // SessionAuthenticator is a middleware that authenticates agent requests to
 // the /sessions and /work route groups. It requires either:
 //  1. A valid X-Session-ID header for an existing, active session, OR
@@ -168,12 +179,12 @@ func (h *handlers) UserAuthenticator(next http.Handler) http.Handler {
 // This prevents unauthenticated clients from registering sessions, claiming
 // tasks, or modifying board state.
 func (h *handlers) SessionAuthenticator(next http.Handler) http.Handler {
-	agentSecret := os.Getenv("LOOM_AGENT_SECRET")
+	secret := getAgentSecret()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Allow requests that present the shared agent secret.
-		if agentSecret != "" {
-			if secret := r.Header.Get("X-Agent-Secret"); secret != "" && secret == agentSecret {
+		if secret != "" {
+			if reqSecret := r.Header.Get("X-Agent-Secret"); reqSecret != "" && reqSecret == secret {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -213,7 +224,7 @@ func (h *handlers) resolveWorkItemID(ctx context.Context, idStr string, itemType
 		return "", errors.New("missing id")
 	}
 	if numID, err := strconv.Atoi(idStr); err == nil {
-		if itemType == models.WorkItemTypeStory {
+		if itemType == string(models.WorkItemTypeStory) {
 			story, err := h.stories.GetByNumericID(ctx, numID)
 			if err != nil {
 				return "", err

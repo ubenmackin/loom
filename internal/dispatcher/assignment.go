@@ -20,6 +20,23 @@ func (d *Dispatcher) runAssignmentPass(ctx context.Context) {
 		return
 	}
 
+	// Batch fetch blockers for all unassigned tasks.
+	taskIDs := make([]string, 0, len(readyTasks))
+	for _, t := range readyTasks {
+		if t.AssignedTo == "" {
+			taskIDs = append(taskIDs, t.ID)
+		}
+	}
+
+	blockerMap := make(map[string][]string)
+	if len(taskIDs) > 0 {
+		blockerMap, err = d.tasks.GetBlockersForTasks(ctx, taskIDs)
+		if err != nil {
+			slog.Error("dispatcher: failed to batch fetch blockers", "error", err)
+			return
+		}
+	}
+
 	for _, task := range readyTasks {
 		// Skip tasks that are already assigned.
 		if task.AssignedTo != "" {
@@ -27,12 +44,7 @@ func (d *Dispatcher) runAssignmentPass(ctx context.Context) {
 		}
 
 		// Check that all dependencies are satisfied.
-		blockers, err := d.tasks.GetBlockers(ctx, task.ID)
-		if err != nil {
-			slog.Error("dispatcher: failed to get blockers for task",
-				"task_id", task.ID, "error", err)
-			continue
-		}
+		blockers := blockerMap[task.ID]
 		if len(blockers) > 0 {
 			// Task has unresolved blockers; transition to blocked if not already.
 			if task.Status != models.StatusBlocked {
@@ -92,6 +104,22 @@ func (d *Dispatcher) findAndAssignTaskForSession(ctx context.Context, session *m
 		capSet[c] = true
 	}
 
+	// Batch fetch blockers for all unassigned tasks.
+	taskIDs := make([]string, 0, len(readyTasks))
+	for _, t := range readyTasks {
+		if t.AssignedTo == "" {
+			taskIDs = append(taskIDs, t.ID)
+		}
+	}
+
+	blockerMap := make(map[string][]string)
+	if len(taskIDs) > 0 {
+		blockerMap, err = d.tasks.GetBlockersForTasks(ctx, taskIDs)
+		if err != nil {
+			return nil, fmt.Errorf("batch fetch blockers: %w", err)
+		}
+	}
+
 	for _, task := range readyTasks {
 		// Skip already-assigned tasks.
 		if task.AssignedTo != "" {
@@ -99,18 +127,12 @@ func (d *Dispatcher) findAndAssignTaskForSession(ctx context.Context, session *m
 		}
 
 		// Check capability match.
-		if !capSet[task.TaskType] {
+		if !capSet[string(task.TaskType)] {
 			continue
 		}
 
 		// Check that all dependencies are satisfied.
-		blockers, bErr := d.tasks.GetBlockers(ctx, task.ID)
-		if bErr != nil {
-			slog.Error("dispatcher: failed to get blockers for task",
-				"task_id", task.ID, "error", bErr)
-			continue
-		}
-		if len(blockers) > 0 {
+		if len(blockerMap[task.ID]) > 0 {
 			continue
 		}
 
@@ -134,8 +156,8 @@ func (d *Dispatcher) findAndAssignTaskForSession(ctx context.Context, session *m
 // broken deterministically by preferring the most recently registered
 // session (latest created_at), so that new sessions are favored when load
 // is equal.
-func (d *Dispatcher) findBestSession(ctx context.Context, taskType string) (*models.Session, error) {
-	candidates, err := d.sessions.GetByCapabilitiesWithTaskCount(ctx, taskType)
+func (d *Dispatcher) findBestSession(ctx context.Context, taskType models.TaskType) (*models.Session, error) {
+	candidates, err := d.sessions.GetByCapabilitiesWithTaskCount(ctx, string(taskType))
 	if err != nil {
 		return nil, fmt.Errorf("get sessions by capability %q: %w", taskType, err)
 	}
@@ -172,14 +194,15 @@ func (d *Dispatcher) assignTaskToSession(ctx context.Context, task *models.Task,
 	// Assemble prompt instructions for the assigned session.
 	story, err := d.stories.GetByID(ctx, task.StoryID)
 	if err != nil {
-		slog.Error("dispatcher: failed to get story for prompt assembly",
-			"story_id", task.StoryID, "error", err)
-		// Continue assignment even if prompt assembly fails.
+		slog.Warn("dispatcher: assembling prompt with degraded content",
+			"task_id", task.ID, "error", err)
+		task.Instructions = defaultPrompt(task, nil)
 	} else {
 		instructions, err := d.assemblePrompt(ctx, task, story)
 		if err != nil {
-			slog.Error("dispatcher: failed to assemble prompt",
+			slog.Warn("dispatcher: assembling prompt with degraded content",
 				"task_id", task.ID, "error", err)
+			task.Instructions = defaultPrompt(task, story)
 		} else {
 			task.Instructions = instructions
 		}
@@ -191,14 +214,14 @@ func (d *Dispatcher) assignTaskToSession(ctx context.Context, task *models.Task,
 
 	details, _ := json.Marshal(map[string]string{
 		"session_id": session.ID,
-		"task_type":  task.TaskType,
+		"task_type":  string(task.TaskType),
 	})
-	d.logActivity(ctx, task.ID, models.WorkItemTypeTask, "assigned", string(details))
+	d.logActivity(ctx, task.ID, string(models.WorkItemTypeTask), "assigned", string(details))
 
 	d.hub.Broadcast("task_assigned", map[string]string{
 		"task_id":    task.ID,
 		"session_id": session.ID,
-		"status":     models.StatusInProgress,
+		"status":     string(models.StatusInProgress),
 	})
 
 	slog.Info("dispatcher: assigned task to session",

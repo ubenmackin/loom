@@ -14,27 +14,25 @@ function getInitialDark(): boolean {
   return document.documentElement.classList.contains('dark')
 }
 
-export const useThemeStore = create<ThemeStore>((set) => ({
+const applyTheme = (isDark: boolean) => {
+  if (typeof window === 'undefined') return
+  localStorage.setItem('loom_theme', isDark ? 'dark' : 'light')
+  if (isDark) {
+    document.documentElement.classList.add('dark')
+  } else {
+    document.documentElement.classList.remove('dark')
+  }
+}
+
+export const useThemeStore = create<ThemeStore>((set, get) => ({
   isDark: getInitialDark(),
-  toggle: () =>
-    set((state) => {
-      const next = !state.isDark
-      localStorage.setItem('loom_theme', next ? 'dark' : 'light')
-      if (next) {
-        document.documentElement.classList.add('dark')
-      } else {
-        document.documentElement.classList.remove('dark')
-      }
-      return { isDark: next }
-    }),
-  setDark: (dark: boolean) =>
-    set(() => {
-      localStorage.setItem('loom_theme', dark ? 'dark' : 'light')
-      if (dark) {
-        document.documentElement.classList.add('dark')
-      } else {
-        document.documentElement.classList.remove('dark')
-      }
-      return { isDark: dark }
-    }),
+  toggle: () => {
+    const next = !get().isDark
+    applyTheme(next)
+    set({ isDark: next })
+  },
+  setDark: (dark: boolean) => {
+    applyTheme(dark)
+    set({ isDark: dark })
+  },
 }))

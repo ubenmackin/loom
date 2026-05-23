@@ -27,6 +27,7 @@ export default function CommentThread({ workItemId, workItemType }: CommentThrea
   const [newBody, setNewBody] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editBody, setEditBody] = useState('')
+  const [optimisticIds, setOptimisticIds] = useState<Set<string>>(new Set())
 
   const { data: comments = [] } = useQuery<Comment[]>({
     queryKey: ['comments', workItemId, workItemType],
@@ -35,7 +36,7 @@ export default function CommentThread({ workItemId, workItemType }: CommentThrea
   })
 
   const { data: activities = [] } = useQuery<ActivityLogEntry[]>({
-    queryKey: ['activity', workItemId, workItemType],
+    queryKey: ['activity', workItemId],
     queryFn: () => fetchActivity(workItemId),
     enabled: !!workItemId,
   })
@@ -60,8 +61,9 @@ export default function CommentThread({ workItemId, workItemType }: CommentThrea
     onMutate: async (body) => {
       await queryClient.cancelQueries({ queryKey: ['comments', workItemId, workItemType] })
       const previous = queryClient.getQueryData<Comment[]>(['comments', workItemId, workItemType])
+      const tempId = `temp-${Date.now()}`
       const optimistic: Comment = {
-        id: `temp-${Date.now()}`,
+        id: tempId,
         work_item_id: workItemId,
         work_item_type: workItemType,
         author_id: 'current-user',
@@ -70,6 +72,8 @@ export default function CommentThread({ workItemId, workItemType }: CommentThrea
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }
+      // Track the optimistic ID in a Set
+      setOptimisticIds((prev) => new Set(prev).add(tempId))
       if (previous) {
         queryClient.setQueryData(['comments', workItemId, workItemType], [...previous, optimistic])
       }
@@ -166,7 +170,7 @@ export default function CommentThread({ workItemId, workItemType }: CommentThrea
           const comment = entry.data as Comment
           const isAgent = comment.author_type === 'session'
           const isEditing = editingId === comment.id
-          const isOptimistic = comment.id.startsWith('temp-')
+          const isOptimistic = optimisticIds.has(comment.id)
 
           return (
             <div

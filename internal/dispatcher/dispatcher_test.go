@@ -4,17 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 
-	"github.com/ubenmackin/loom/internal/db"
 	"github.com/ubenmackin/loom/internal/models"
 	"github.com/ubenmackin/loom/internal/store"
+	"github.com/ubenmackin/loom/internal/testhelpers"
 )
 
 // mockBroadcaster is a simple EventBroadcaster that records broadcasts.
@@ -42,101 +40,10 @@ func (m *mockBroadcaster) Events() []mockEvent {
 	return result
 }
 
-func setupTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-
-	dbName := fmt.Sprintf("test_%s_%d", t.Name(), time.Now().UnixNano())
-	dsn := "file:" + dbName + "?mode=memory&cache=private"
-
-	dbConn, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-
-	if _, err := dbConn.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatalf("enable foreign keys: %v", err)
-	}
-
-	if err := db.Migrate(dbConn); err != nil {
-		t.Fatalf("migrate test db: %v", err)
-	}
-
-	t.Cleanup(func() {
-		_ = dbConn.Close()
-	})
-
-	return dbConn
-}
-
-func createTestStory(t *testing.T, s *store.StoryStore, title, status string) *models.Story {
-	t.Helper()
-	story := &models.Story{Title: title, Status: status}
-	if story.Status == "" {
-		story.Status = models.StatusNew
-	}
-	if err := s.Create(context.Background(), story); err != nil {
-		t.Fatalf("create test story %q: %v", title, err)
-	}
-	return story
-}
-
-func createTestTask(t *testing.T, s *store.TaskStore, storyID, title, status, taskType string) *models.Task {
-	t.Helper()
-	task := &models.Task{StoryID: storyID, Title: title, Status: status, TaskType: taskType}
-	if task.Status == "" {
-		task.Status = models.StatusNew
-	}
-	if task.TaskType == "" {
-		task.TaskType = models.TaskTypeCode
-	}
-	if err := s.Create(context.Background(), task); err != nil {
-		t.Fatalf("create test task %q: %v", title, err)
-	}
-	return task
-}
-
-var sessionCounter atomic.Int64
-
-func createTestSession(t *testing.T, s *store.SessionStore, harnessType string, capabilities []string) *models.Session {
-	t.Helper()
-	n := sessionCounter.Add(1)
-	session := &models.Session{
-		ID:          fmt.Sprintf("sess-%d", n),
-		HarnessType: harnessType,
-		Status:      models.SessionStatusActive,
-	}
-	if len(capabilities) > 0 {
-		data, _ := json.Marshal(capabilities)
-		session.Capabilities = string(data)
-	}
-	if err := s.Register(context.Background(), session); err != nil {
-		t.Fatalf("create test session: %v", err)
-	}
-	return session
-}
-
-func createTestTemplate(t *testing.T, s *store.TemplateStore, taskType, template string) *models.PromptTemplate {
-	t.Helper()
-	tmpl := &models.PromptTemplate{TaskType: taskType, Template: template}
-	if err := s.Create(context.Background(), tmpl); err != nil {
-		t.Fatalf("create test template: %v", err)
-	}
-	return tmpl
-}
-
-func setSessionLastSeen(t *testing.T, dbConn *sql.DB, sessionID string, tstamp time.Time) {
-	t.Helper()
-	ctx := context.Background()
-	_, err := dbConn.ExecContext(ctx, "UPDATE sessions SET last_seen_at = ? WHERE id = ?", tstamp.UTC(), sessionID)
-	if err != nil {
-		t.Fatalf("set session last_seen_at: %v", err)
-	}
-}
-
 func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBroadcaster, *sql.DB, *store.StoryStore, *store.TaskStore, *store.SessionStore, *store.TemplateStore, *store.CommentStore, *store.ActivityStore) {
 	t.Helper()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	broadcaster := &mockBroadcaster{}
 
 	storyStore := store.NewStoryStore(dbConn)
@@ -146,16 +53,16 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBroadcaster, *sql.DB, *s
 	commentStore := store.NewCommentStore(dbConn)
 	activityStore := store.NewActivityStore(dbConn)
 
-	d := NewDispatcher(
-		storyStore,
-		taskStore,
-		sessionStore,
-		templateStore,
-		commentStore,
-		activityStore,
-		broadcaster,
-		30*time.Minute,
-	)
+	d := NewDispatcher(DispatcherDeps{
+		StoryStore:         storyStore,
+		TaskStore:          taskStore,
+		SessionStore:       sessionStore,
+		TemplateStore:      templateStore,
+		CommentStore:       commentStore,
+		ActivityStore:      activityStore,
+		Broadcaster:        broadcaster,
+		StalenessThreshold: 30 * time.Minute,
+	})
 
 	return d, broadcaster, dbConn, storyStore, taskStore, sessionStore, templateStore, commentStore, activityStore
 }
@@ -166,11 +73,24 @@ func TestAssignment_FindBestSession(t *testing.T) {
 	d, _, _, _, taskStore, sessionStore, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	sessionA := createTestSession(t, sessionStore, "opencode", []string{"code", "build"})
-	sessionB := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	sessionA := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code", "build"})
+		s.Capabilities = string(data)
+	})
+	sessionB := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
-	story := createTestStory(t, d.stories, "Best Session Story", models.StatusReady)
-	task := createTestTask(t, taskStore, story.ID, "Best Session Task", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, d.stories, func(s *models.Story) { s.Title = "Best Session Story"; s.Status = models.StatusReady })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Best Session Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	// Assign a task to sessionB to make it more loaded.
 	task.AssignedTo = sessionB.ID
@@ -180,7 +100,12 @@ func TestAssignment_FindBestSession(t *testing.T) {
 		t.Fatalf("update task for load: %v", err)
 	}
 
-	_ = createTestTask(t, taskStore, story.ID, "Best Session Task 2", models.StatusReady, models.TaskTypeCode)
+	_ = testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Best Session Task 2"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	best, err := d.findBestSession(ctx, "code")
 	if err != nil {
@@ -202,10 +127,19 @@ func TestAssignment_CapabilityMismatch(t *testing.T) {
 	d, _, _, _, taskStore, sessionStore, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
-	story := createTestStory(t, d.stories, "Mismatch Story", models.StatusReady)
-	_ = createTestTask(t, taskStore, story.ID, "Mismatch Task", models.StatusReady, models.TaskTypeBuild)
+	story := testhelpers.CreateTestStory(t, d.stories, func(s *models.Story) { s.Title = "Mismatch Story"; s.Status = models.StatusReady })
+	_ = testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Mismatch Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeBuild
+	})
 
 	best, err := d.findBestSession(ctx, "build")
 	if err != nil {
@@ -232,13 +166,18 @@ func TestGateInjection_BuildTask(t *testing.T) {
 	d, broadcaster, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Build Gate Story", models.StatusReady)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Build Gate Story"; s.Status = models.StatusReady })
 	story.RequiresBuild = true
 	if err := storyStore.Update(ctx, story); err != nil {
 		t.Fatalf("update story requires_build: %v", err)
 	}
 
-	task := createTestTask(t, taskStore, story.ID, "Code Task", models.StatusDone, models.TaskTypeCode)
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Code Task"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	d.checkGateConditions(ctx, story.ID)
 
@@ -294,14 +233,19 @@ func TestGateInjection_ReviewTask(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Review Gate Story", models.StatusReady)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Review Gate Story"; s.Status = models.StatusReady })
 	story.RequiresReview = true
 	story.RequiresBuild = true
 	if err := storyStore.Update(ctx, story); err != nil {
 		t.Fatalf("update story requires_review: %v", err)
 	}
 
-	_ = createTestTask(t, taskStore, story.ID, "Code Task", models.StatusDone, models.TaskTypeCode)
+	_ = testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Code Task"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	d.checkGateConditions(ctx, story.ID)
 
@@ -371,10 +315,25 @@ func TestDependencyResolution(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Dep Resolution Story", models.StatusReady)
-	taskA := createTestTask(t, taskStore, story.ID, "Task A", models.StatusDone, models.TaskTypeCode)
-	taskB := createTestTask(t, taskStore, story.ID, "Task B", models.StatusBlocked, models.TaskTypeCode)
-	taskC := createTestTask(t, taskStore, story.ID, "Task C", models.StatusBlocked, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Dep Resolution Story"; s.Status = models.StatusReady })
+	taskA := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task A"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
+	taskB := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task B"
+		ts.Status = models.StatusBlocked
+		ts.TaskType = models.TaskTypeCode
+	})
+	taskC := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task C"
+		ts.Status = models.StatusBlocked
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	if err := taskStore.AddDependency(ctx, taskB.ID, taskA.ID); err != nil {
 		t.Fatalf("AddDependency(B, A) error = %v", err)
@@ -410,11 +369,20 @@ func TestStalenessDetection(t *testing.T) {
 	d, _, dbConn, storyStore, taskStore, sessionStore, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
-	setSessionLastSeen(t, dbConn, session.ID, time.Now().UTC().Add(-2*time.Hour))
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
+	testhelpers.SetSessionLastSeen(t, dbConn, session.ID, time.Now().UTC().Add(-2*time.Hour))
 
-	story := createTestStory(t, storyStore, "Stale Story", models.StatusReady)
-	task := createTestTask(t, taskStore, story.ID, "Stale Task", models.StatusInProgress, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Stale Story"; s.Status = models.StatusReady })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Stale Task"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeCode
+	})
 	task.AssignedTo = session.ID
 	task.AssigneeType = models.AssigneeTypeSession
 	if err := taskStore.Update(ctx, task); err != nil {
@@ -449,13 +417,20 @@ func TestPromptAssembly(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, templateStore, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	createTestTemplate(t, templateStore, models.TaskTypeCode,
-		"Task: {{task.title}}\nStory: {{story.title}}\nContext: {{context.file_path}}")
+	testhelpers.CreateTestTemplate(t, templateStore, func(tmpl *models.PromptTemplate) {
+		tmpl.TaskType = models.TaskTypeCode
+		tmpl.Template = "Task: {{task.title}}\nStory: {{story.title}}\nContext: {{context.file_path}}"
+	})
 
-	story := createTestStory(t, storyStore, "Prompt Story", models.StatusReady)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Prompt Story"; s.Status = models.StatusReady })
 	story.Description = "This is the story description"
 
-	task := createTestTask(t, taskStore, story.ID, "Prompt Task", models.StatusReady, models.TaskTypeCode)
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Prompt Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 	task.Description = "Task description here"
 	task.Context = `{"file_path": "src/main.go", "line": 42}`
 
@@ -490,16 +465,25 @@ func TestFullLifecycle_BuildFailFixRebuildReview(t *testing.T) {
 	d, _, _, storyStore, taskStore, sessionStore, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Full Lifecycle Story", models.StatusReady)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Full Lifecycle Story"; s.Status = models.StatusReady })
 	story.RequiresBuild = true
 	story.RequiresReview = true
 	if err := storyStore.Update(ctx, story); err != nil {
 		t.Fatalf("update story gates: %v", err)
 	}
 
-	codeTask := createTestTask(t, taskStore, story.ID, "Implement Feature", models.StatusReady, models.TaskTypeCode)
+	codeTask := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Implement Feature"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code", "build", "review"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code", "build", "review"})
+		s.Capabilities = string(data)
+	})
 
 	assigned, err := d.findAndAssignTaskForSession(ctx, session)
 	if err != nil {
@@ -586,10 +570,15 @@ func TestPromptAssembly_NoTemplate(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "No Template Story", models.StatusReady)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "No Template Story"; s.Status = models.StatusReady })
 	story.Description = "Story desc"
 
-	task := createTestTask(t, taskStore, story.ID, "No Template Task", models.StatusReady, models.TaskTypeCode)
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "No Template Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 	task.Description = "Task desc"
 
 	result, err := d.assemblePrompt(ctx, task, story)
@@ -611,11 +600,18 @@ func TestPromptAssembly_JSONContext(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, templateStore, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	createTestTemplate(t, templateStore, models.TaskTypeCode,
-		"File: {{context.file}}\nLine: {{context.line}}\nError: {{context.error.message}}")
+	testhelpers.CreateTestTemplate(t, templateStore, func(tmpl *models.PromptTemplate) {
+		tmpl.TaskType = models.TaskTypeCode
+		tmpl.Template = "File: {{context.file}}\nLine: {{context.line}}\nError: {{context.error.message}}"
+	})
 
-	story := createTestStory(t, storyStore, "JSON Context Story", models.StatusReady)
-	task := createTestTask(t, taskStore, story.ID, "JSON Context Task", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "JSON Context Story"; s.Status = models.StatusReady })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "JSON Context Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 	task.Context = `{"file": "main.go", "line": "42", "error": {"message": "syntax error"}}`
 
 	result, err := d.assemblePrompt(ctx, task, story)
@@ -640,10 +636,19 @@ func TestRunAssignmentPass(t *testing.T) {
 	d, _, _, storyStore, taskStore, sessionStore, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
-	story := createTestStory(t, storyStore, "Assignment Pass Story", models.StatusReady)
-	task := createTestTask(t, taskStore, story.ID, "Assignment Pass Task", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Assignment Pass Story"; s.Status = models.StatusReady })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Assignment Pass Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	d.runAssignmentPass(ctx)
 
@@ -669,9 +674,19 @@ func TestHandleTaskStatusChanged(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Status Changed Story", models.StatusReady)
-	taskA := createTestTask(t, taskStore, story.ID, "Task A", models.StatusInProgress, models.TaskTypeCode)
-	taskB := createTestTask(t, taskStore, story.ID, "Task B", models.StatusBlocked, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Status Changed Story"; s.Status = models.StatusReady })
+	taskA := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task A"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeCode
+	})
+	taskB := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task B"
+		ts.Status = models.StatusBlocked
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	if err := taskStore.AddDependency(ctx, taskB.ID, taskA.ID); err != nil {
 		t.Fatalf("AddDependency(B, A) error = %v", err)
@@ -699,11 +714,25 @@ func TestFindAndAssignTaskForSession_BlockedTask(t *testing.T) {
 	d, _, _, storyStore, taskStore, sessionStore, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
-	story := createTestStory(t, storyStore, "Blocked Assignment Story", models.StatusReady)
-	taskA := createTestTask(t, taskStore, story.ID, "Blocker", models.StatusNew, models.TaskTypeCode)
-	taskB := createTestTask(t, taskStore, story.ID, "Dependent", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Blocked Assignment Story"; s.Status = models.StatusReady })
+	taskA := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Blocker"
+		ts.Status = models.StatusNew
+		ts.TaskType = models.TaskTypeCode
+	})
+	taskB := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Dependent"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	if err := taskStore.AddDependency(ctx, taskB.ID, taskA.ID); err != nil {
 		t.Fatalf("AddDependency(B, A) error = %v", err)
@@ -727,10 +756,19 @@ func TestParseCapabilities(t *testing.T) {
 	d, _, _, storyStore, taskStore, sessionStore, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code", "build", "review"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code", "build", "review"})
+		s.Capabilities = string(data)
+	})
 
-	story := createTestStory(t, storyStore, "Parse Caps Story", models.StatusReady)
-	task := createTestTask(t, taskStore, story.ID, "Review Task", models.StatusReady, models.TaskTypeReview)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Parse Caps Story"; s.Status = models.StatusReady })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Review Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeReview
+	})
 
 	assigned, err := d.findAndAssignTaskForSession(ctx, session)
 	if err != nil {
@@ -751,8 +789,13 @@ func TestCheckGateConditions_NoGatesRequired(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "No Gates Story", models.StatusReady)
-	createTestTask(t, taskStore, story.ID, "Code Task", models.StatusDone, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "No Gates Story"; s.Status = models.StatusReady })
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Code Task"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	d.checkGateConditions(ctx, story.ID)
 
@@ -772,13 +815,18 @@ func TestCheckGateConditions_BuildAlreadyExists(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Dup Build Story", models.StatusReady)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Dup Build Story"; s.Status = models.StatusReady })
 	story.RequiresBuild = true
 	if err := storyStore.Update(ctx, story); err != nil {
 		t.Fatalf("update story: %v", err)
 	}
 
-	createTestTask(t, taskStore, story.ID, "Code Task", models.StatusDone, models.TaskTypeCode)
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Code Task"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	d.checkGateConditions(ctx, story.ID)
 	d.checkGateConditions(ctx, story.ID)
@@ -806,14 +854,24 @@ func TestCheckGateConditions_CodeTasksNotAllDone(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Not All Done Story", models.StatusReady)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Not All Done Story"; s.Status = models.StatusReady })
 	story.RequiresBuild = true
 	if err := storyStore.Update(ctx, story); err != nil {
 		t.Fatalf("update story: %v", err)
 	}
 
-	createTestTask(t, taskStore, story.ID, "Code Task 1", models.StatusDone, models.TaskTypeCode)
-	createTestTask(t, taskStore, story.ID, "Code Task 2", models.StatusInProgress, models.TaskTypeCode)
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Code Task 1"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Code Task 2"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	d.checkGateConditions(ctx, story.ID)
 
@@ -835,14 +893,19 @@ func TestCheckGateConditions_ReviewWithoutBuild(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Review No Build Story", models.StatusReady)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Review No Build Story"; s.Status = models.StatusReady })
 	story.RequiresReview = true
 	story.RequiresBuild = false
 	if err := storyStore.Update(ctx, story); err != nil {
 		t.Fatalf("update story: %v", err)
 	}
 
-	createTestTask(t, taskStore, story.ID, "Code Task", models.StatusDone, models.TaskTypeCode)
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Code Task"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	d.checkGateConditions(ctx, story.ID)
 
@@ -870,7 +933,11 @@ func TestStaleness_NoStaleSessions(t *testing.T) {
 	d, _, _, _, _, sessionStore, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
 	d.stalenessThreshold = 1 * time.Hour
 	d.checkStaleness(ctx)
@@ -891,8 +958,13 @@ func TestResolveDependencies_NoDependents(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "No Deps Story", models.StatusReady)
-	taskA := createTestTask(t, taskStore, story.ID, "Task A", models.StatusDone, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "No Deps Story"; s.Status = models.StatusReady })
+	taskA := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task A"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	d.resolveDependencies(ctx, taskA.ID)
 
@@ -911,7 +983,11 @@ func TestAssignWork_NonActiveSession(t *testing.T) {
 	d, _, _, _, _, sessionStore, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 	if err := sessionStore.FlagStale(ctx, session.ID); err != nil {
 		t.Fatalf("FlagStale() error = %v", err)
 	}
@@ -928,7 +1004,11 @@ func TestAssignWork_NoReadyTasks(t *testing.T) {
 	d, _, _, _, _, sessionStore, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	createTestSession(t, sessionStore, "opencode", []string{"code"})
+	testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
 	task, err := d.AssignWork(ctx, "nonexistent-session")
 	if err == nil && task != nil {
@@ -942,16 +1022,23 @@ func TestBuildTask_InstructionsAssembled(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, templateStore, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	createTestTemplate(t, templateStore, models.TaskTypeBuild,
-		"Build the project: {{story.title}}")
+	testhelpers.CreateTestTemplate(t, templateStore, func(tmpl *models.PromptTemplate) {
+		tmpl.TaskType = models.TaskTypeBuild
+		tmpl.Template = "Build the project: {{story.title}}"
+	})
 
-	story := createTestStory(t, storyStore, "Build Instructions Story", models.StatusReady)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Build Instructions Story"; s.Status = models.StatusReady })
 	story.RequiresBuild = true
 	if err := storyStore.Update(ctx, story); err != nil {
 		t.Fatalf("update story: %v", err)
 	}
 
-	createTestTask(t, taskStore, story.ID, "Code Task", models.StatusDone, models.TaskTypeCode)
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Code Task"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	d.checkGateConditions(ctx, story.ID)
 
@@ -981,17 +1068,28 @@ func TestReviewTask_InstructionsAssembled(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, templateStore, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	createTestTemplate(t, templateStore, models.TaskTypeBuild, "Build: {{story.title}}")
-	createTestTemplate(t, templateStore, models.TaskTypeReview, "Review: {{story.title}}")
+	testhelpers.CreateTestTemplate(t, templateStore, func(tmpl *models.PromptTemplate) {
+		tmpl.TaskType = models.TaskTypeBuild
+		tmpl.Template = "Build: {{story.title}}"
+	})
+	testhelpers.CreateTestTemplate(t, templateStore, func(tmpl *models.PromptTemplate) {
+		tmpl.TaskType = models.TaskTypeReview
+		tmpl.Template = "Review: {{story.title}}"
+	})
 
-	story := createTestStory(t, storyStore, "Review Instructions Story", models.StatusReady)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Review Instructions Story"; s.Status = models.StatusReady })
 	story.RequiresBuild = true
 	story.RequiresReview = true
 	if err := storyStore.Update(ctx, story); err != nil {
 		t.Fatalf("update story: %v", err)
 	}
 
-	createTestTask(t, taskStore, story.ID, "Code Task", models.StatusDone, models.TaskTypeCode)
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Code Task"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	d.checkGateConditions(ctx, story.ID)
 
@@ -1040,12 +1138,30 @@ func TestMultipleSessions_LoadBalancing(t *testing.T) {
 	d, _, _, storyStore, taskStore, sessionStore, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	sessionA := createTestSession(t, sessionStore, "opencode", []string{"code"})
-	sessionB := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	sessionA := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
+	sessionB := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
-	story := createTestStory(t, storyStore, "Load Balance Story", models.StatusReady)
-	task1 := createTestTask(t, taskStore, story.ID, "Task 1", models.StatusReady, models.TaskTypeCode)
-	task2 := createTestTask(t, taskStore, story.ID, "Task 2", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Load Balance Story"; s.Status = models.StatusReady })
+	task1 := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task 1"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
+	task2 := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task 2"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	assigned1, err := d.findAndAssignTaskForSession(ctx, sessionA)
 	if err != nil {
@@ -1095,8 +1211,13 @@ func TestHandleDependencyAdded_NotBlocked(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Dep Added Story", models.StatusReady)
-	task := createTestTask(t, taskStore, story.ID, "Ready Task", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Dep Added Story"; s.Status = models.StatusReady })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Ready Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	d.handleDependencyAdded(ctx, Event{Type: "dependency_added", TaskID: task.ID})
 
@@ -1115,9 +1236,19 @@ func TestHandleDependencyAdded_UnblocksTask(t *testing.T) {
 	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Unblock Story", models.StatusReady)
-	taskA := createTestTask(t, taskStore, story.ID, "Task A", models.StatusDone, models.TaskTypeCode)
-	taskB := createTestTask(t, taskStore, story.ID, "Task B", models.StatusBlocked, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Unblock Story"; s.Status = models.StatusReady })
+	taskA := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task A"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
+	taskB := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task B"
+		ts.Status = models.StatusBlocked
+		ts.TaskType = models.TaskTypeCode
+	})
 
 	if err := taskStore.AddDependency(ctx, taskB.ID, taskA.ID); err != nil {
 		t.Fatalf("AddDependency(B, A) error = %v", err)

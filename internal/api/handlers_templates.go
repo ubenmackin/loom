@@ -1,14 +1,13 @@
 package api
 
 import (
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ubenmackin/loom/internal/models"
+	"github.com/ubenmackin/loom/internal/store"
 )
 
 // --- Request/Response types ---
@@ -45,7 +44,7 @@ func (h *handlers) listTemplates(w http.ResponseWriter, r *http.Request) {
 
 // getTemplate handles GET /api/templates/{taskType}
 func (h *handlers) getTemplate(w http.ResponseWriter, r *http.Request) {
-	taskType := parseID(r, "taskType")
+	taskType := chi.URLParam(r, "taskType")
 	if taskType == "" {
 		respondError(w, http.StatusBadRequest, "missing task type")
 		return
@@ -53,7 +52,7 @@ func (h *handlers) getTemplate(w http.ResponseWriter, r *http.Request) {
 
 	template, err := h.templates.GetByTaskType(r.Context(), taskType)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "template not found for task type: "+taskType)
 			return
 		}
@@ -66,14 +65,14 @@ func (h *handlers) getTemplate(w http.ResponseWriter, r *http.Request) {
 
 // upsertTemplate handles PUT /api/templates/{taskType}
 func (h *handlers) upsertTemplate(w http.ResponseWriter, r *http.Request) {
-	taskType := parseID(r, "taskType")
+	taskType := chi.URLParam(r, "taskType")
 	if taskType == "" {
 		respondError(w, http.StatusBadRequest, "missing task type")
 		return
 	}
 
 	var req upsertTemplateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -83,9 +82,23 @@ func (h *handlers) upsertTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if template exists to determine correct status code.
+	created := false
+	existing, err := h.templates.GetByTaskType(r.Context(), taskType)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusInternalServerError, "failed to check existing template: "+err.Error())
+			return
+		}
+		created = true
+	}
+
 	t := &models.PromptTemplate{
-		TaskType: taskType,
+		TaskType: models.TaskType(taskType),
 		Template: req.Template,
+	}
+	if existing != nil {
+		t.ID = existing.ID
 	}
 
 	if err := h.templates.Upsert(r.Context(), t); err != nil {
@@ -93,5 +106,10 @@ func (h *handlers) upsertTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondJSON(w, http.StatusOK, t)
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+
+	respondJSON(w, status, t)
 }

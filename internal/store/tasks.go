@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -14,9 +15,9 @@ import (
 // TaskFilter holds optional criteria for listing tasks.
 type TaskFilter struct {
 	StoryID    string
-	Status     string
+	Status     models.Status
 	AssignedTo string
-	TaskType   string
+	TaskType   models.TaskType
 }
 
 // TaskStore provides CRUD operations for tasks.
@@ -30,49 +31,44 @@ func NewTaskStore(db *sql.DB) *TaskStore {
 }
 
 // scanTask is a helper to scan a task row from a *sql.Row or *sql.Rows.
-func scanTask(scanner interface{ Scan(...interface{}) error }) (*models.Task, error) {
+func scanTask(scanner interface{ Scan(...any) error }) (*models.Task, error) {
 	t := &models.Task{}
-	var desc, assignedTo, assigneeType, contextJSON, instructions sql.NullString
+	var desc, assignedTo, contextJSON, instructions sql.NullString
+	var statusStr, taskTypeStr, assigneeTypeStr sql.NullString
 	var estimate sql.NullInt64
 	var createdAt, updatedAt sql.NullTime
 	var numericID sql.NullInt64
 
 	err := scanner.Scan(
-		&t.ID, &numericID, &t.StoryID, &t.Title, &desc, &t.Status, &t.Priority, &t.TaskType,
-		&estimate, &assignedTo, &assigneeType, &t.SortOrder,
+		&t.ID, &numericID, &t.StoryID, &t.Title, &desc, &statusStr, &t.Priority, &taskTypeStr,
+		&estimate, &assignedTo, &assigneeTypeStr, &t.SortOrder,
 		&contextJSON, &instructions, &t.IsStale, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	t.Description = desc.String
-	t.AssignedTo = assignedTo.String
-	t.AssigneeType = assigneeType.String
-	t.Context = contextJSON.String
-	t.Instructions = instructions.String
-	if numericID.Valid {
-		t.NumericID = int(numericID.Int64)
-	}
+	t.Description = stringOrZero(desc)
+	t.AssignedTo = stringOrZero(assignedTo)
+	t.AssigneeType = models.AssigneeType(stringOrZero(assigneeTypeStr))
+	t.Status = models.Status(stringOrZero(statusStr))
+	t.TaskType = models.TaskType(stringOrZero(taskTypeStr))
+	t.Context = stringOrZero(contextJSON)
+	t.Instructions = stringOrZero(instructions)
+	t.NumericID = intOrZero(numericID)
 	if estimate.Valid {
 		e := int(estimate.Int64)
 		t.Estimate = &e
 	}
-	if createdAt.Valid {
-		t.CreatedAt = createdAt.Time
-	}
-	if updatedAt.Valid {
-		t.UpdatedAt = updatedAt.Time
-	}
+	t.CreatedAt = timeOrZero(createdAt)
+	t.UpdatedAt = timeOrZero(updatedAt)
 
 	return t, nil
 }
 
 // Create inserts a new task. If the ID is empty, it is auto-generated.
+// It mutates the pointer to set ID, NumericID, CreatedAt, and UpdatedAt.
 func (s *TaskStore) Create(ctx context.Context, t *models.Task) error {
-	// Generate both string ID and numeric ID from a single atomic sequence insert.
-	// This eliminates the TOCTOU race that occurred when the string ID was generated
-	// via a separate MAX+1 query committed before the actual INSERT.
 	res, err := s.db.ExecContext(ctx, "INSERT INTO work_item_sequence (type) VALUES ('task')")
 	if err != nil {
 		return fmt.Errorf("generate task id: %w", err)
@@ -122,7 +118,7 @@ func (s *TaskStore) GetByID(ctx context.Context, id string) (*models.Task, error
 	t, err := scanTask(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("task %q: %w", id, sql.ErrNoRows)
+			return nil, fmt.Errorf("task %q: %w", id, ErrNotFound)
 		}
 		return nil, fmt.Errorf("query task %q: %w", id, err)
 	}
@@ -139,7 +135,7 @@ func (s *TaskStore) GetByNumericID(ctx context.Context, numID int) (*models.Task
 	t, err := scanTask(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("task with numeric id %d: %w", numID, sql.ErrNoRows)
+			return nil, fmt.Errorf("task with numeric id %d: %w", numID, ErrNotFound)
 		}
 		return nil, fmt.Errorf("query task by numeric id %d: %w", numID, err)
 	}
@@ -149,7 +145,7 @@ func (s *TaskStore) GetByNumericID(ctx context.Context, numID int) (*models.Task
 // List returns tasks matching the given filter.
 func (s *TaskStore) List(ctx context.Context, filter TaskFilter) ([]*models.Task, error) {
 	var conditions []string
-	var args []interface{}
+	var args []any
 
 	if filter.StoryID != "" {
 		conditions = append(conditions, "story_id = ?")
@@ -180,7 +176,11 @@ func (s *TaskStore) List(ctx context.Context, filter TaskFilter) ([]*models.Task
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	var tasks []*models.Task
 	for rows.Next() {
@@ -188,6 +188,7 @@ func (s *TaskStore) List(ctx context.Context, filter TaskFilter) ([]*models.Task
 		if err != nil {
 			return nil, fmt.Errorf("scan task: %w", err)
 		}
+
 		tasks = append(tasks, t)
 	}
 	if err := rows.Err(); err != nil {
@@ -224,38 +225,93 @@ func (s *TaskStore) Update(ctx context.Context, t *models.Task) error {
 		return fmt.Errorf("rows affected task %q: %w", t.ID, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("task %q: %w", t.ID, sql.ErrNoRows)
+		return fmt.Errorf("task %q: %w", t.ID, ErrNotFound)
+	}
+
+	return nil
+}
+
+// BatchUpdate applies updates to multiple tasks in a single transaction.
+func (s *TaskStore) BatchUpdate(ctx context.Context, tasks []*models.Task) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	for _, t := range tasks {
+		t.UpdatedAt = time.Now().UTC()
+
+		var estimate *int
+		if t.Estimate != nil {
+			estimate = t.Estimate
+		}
+
+		result, execErr := tx.ExecContext(ctx,
+			`UPDATE tasks SET story_id=?, title=?, description=?, status=?, priority=?, task_type=?,
+			 estimate=?, assigned_to=?, assignee_type=?, sort_order=?, context=?, instructions=?,
+			 is_stale=?, updated_at=?
+			 WHERE id=?`,
+			t.StoryID, t.Title, t.Description, t.Status, t.Priority, t.TaskType,
+			estimate, t.AssignedTo, t.AssigneeType, t.SortOrder, t.Context, t.Instructions,
+			t.IsStale, t.UpdatedAt, t.ID,
+		)
+		if execErr != nil {
+			err = fmt.Errorf("update task %q in batch: %w", t.ID, execErr)
+			return err
+		}
+
+		rows, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			err = fmt.Errorf("rows affected task %q in batch: %w", t.ID, rowsErr)
+			return err
+		}
+		if rows == 0 {
+			err = fmt.Errorf("task %q: %w", t.ID, ErrNotFound)
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 
 	return nil
 }
 
 // UpdateStatus changes a task's status, validating against the state machine.
-func (s *TaskStore) UpdateStatus(ctx context.Context, id string, status string) error {
-	current, err := s.GetByID(ctx, id)
+func (s *TaskStore) UpdateStatus(ctx context.Context, id string, next models.Status) error {
+	var currentStatus string
+	err := s.db.QueryRowContext(ctx, "SELECT status FROM tasks WHERE id = ?", id).Scan(&currentStatus)
 	if err != nil {
-		return fmt.Errorf("get task for status update: %w", err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("task %q: %w", id, ErrNotFound)
+		}
+		return fmt.Errorf("query current status: %w", err)
 	}
 
-	if !isValidTransition(current.Status, status) {
-		return fmt.Errorf("invalid transition %q -> %q for task %q", current.Status, status, id)
+	if !models.IsValidTransition(models.Status(currentStatus), next) {
+		return fmt.Errorf("task %q: %w (current=%q, next=%q)", id, ErrInvalidTransition, currentStatus, next)
 	}
 
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE tasks SET status=?, updated_at=? WHERE id=?`,
-		status, now, id,
-	)
+		`UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		next, now, id, currentStatus)
 	if err != nil {
-		return fmt.Errorf("update task status %q: %w", id, err)
+		return fmt.Errorf("update status: %w", err)
 	}
 
-	rows, err := result.RowsAffected()
+	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("rows affected task %q: %w", id, err)
+		return fmt.Errorf("rows affected: %w", err)
 	}
-	if rows == 0 {
-		return fmt.Errorf("task %q: %w", id, sql.ErrNoRows)
+	if rowsAffected == 0 {
+		return fmt.Errorf("status was modified concurrently")
 	}
 
 	return nil
@@ -265,7 +321,7 @@ func (s *TaskStore) UpdateStatus(ctx context.Context, id string, status string) 
 // It checks for cycles before inserting.
 func (s *TaskStore) AddDependency(ctx context.Context, taskID, dependsOnID string) error {
 	if taskID == dependsOnID {
-		return fmt.Errorf("task cannot depend on itself: %q", taskID)
+		return fmt.Errorf("%w: %q", ErrSelfDependency, taskID)
 	}
 
 	hasCycle, err := s.DetectCycle(ctx, taskID, dependsOnID)
@@ -273,7 +329,7 @@ func (s *TaskStore) AddDependency(ctx context.Context, taskID, dependsOnID strin
 		return fmt.Errorf("check cycle before add dependency: %w", err)
 	}
 	if hasCycle {
-		return fmt.Errorf("adding dependency %q -> %q would create a cycle", dependsOnID, taskID)
+		return fmt.Errorf("%w: adding dependency %q -> %q", ErrCycleDetected, taskID, dependsOnID)
 	}
 
 	_, err = s.db.ExecContext(ctx,
@@ -301,7 +357,7 @@ func (s *TaskStore) RemoveDependency(ctx context.Context, taskID, dependsOnID st
 		return fmt.Errorf("rows affected remove dependency: %w", err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("dependency %q -> %q not found", taskID, dependsOnID)
+		return fmt.Errorf("dependency %q -> %q: %w", taskID, dependsOnID, ErrNotFound)
 	}
 
 	return nil
@@ -314,7 +370,11 @@ func (s *TaskStore) GetDependencies(ctx context.Context, taskID string) ([]strin
 	if err != nil {
 		return nil, fmt.Errorf("get dependencies for task %q: %w", taskID, err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	var deps []string
 	for rows.Next() {
@@ -342,7 +402,11 @@ func (s *TaskStore) GetBlockers(ctx context.Context, taskID string) ([]*models.T
 	if err != nil {
 		return nil, fmt.Errorf("get blockers for task %q: %w", taskID, err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	var blockers []*models.Task
 	for rows.Next() {
@@ -364,57 +428,65 @@ func (s *TaskStore) GetByStory(ctx context.Context, storyID string) ([]*models.T
 	return s.List(ctx, TaskFilter{StoryID: storyID})
 }
 
-// DetectCycle checks whether adding a dependency from dependsOnID -> taskID
-// (i.e., taskID depends on dependsOnID) would create a cycle in the dependency
-// graph. It does a DFS starting from taskID, following the dependency chain,
-// to see if we can reach dependsOnID.
-func (s *TaskStore) DetectCycle(ctx context.Context, taskID, dependsOnID string) (bool, error) {
-	visited := make(map[string]bool)
-	return s.dfsDetectCycle(ctx, taskID, dependsOnID, visited)
+// loadDependencyGraph preloads the entire dependency graph from the database.
+// The returned map is adjacency list: depends_on_task_id -> []task_id (forward edges).
+func (s *TaskStore) loadDependencyGraph(ctx context.Context) (map[string][]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT task_id, depends_on_task_id FROM task_dependencies`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
+
+	adj := make(map[string][]string)
+	for rows.Next() {
+		var taskID, depID string
+		if err := rows.Scan(&taskID, &depID); err != nil {
+			return nil, err
+		}
+		// Forward: from depends_on_task_id -> task_id
+		adj[depID] = append(adj[depID], taskID)
+	}
+	return adj, rows.Err()
 }
 
-// dfsDetectCycle performs a depth-first search from currentID following
-// dependencies. If we reach targetID, a cycle exists.
-func (s *TaskStore) dfsDetectCycle(ctx context.Context, currentID, targetID string, visited map[string]bool) (bool, error) {
+// DetectCycle checks whether adding a dependency from dependsOnID -> taskID
+// (i.e., taskID depends on dependsOnID) would create a cycle in the dependency
+// graph. It preloads the entire graph and does a DFS in memory.
+func (s *TaskStore) DetectCycle(ctx context.Context, taskID, dependsOnID string) (bool, error) {
+	adj, err := s.loadDependencyGraph(ctx)
+	if err != nil {
+		return false, fmt.Errorf("load dependency graph: %w", err)
+	}
+
+	visited := make(map[string]bool)
+	return s.dfsInMemory(taskID, dependsOnID, adj, visited), nil
+}
+
+// dfsInMemory performs a depth-first search from currentID following
+// forward dependencies in the preloaded graph. If we reach targetID, a cycle exists.
+func (s *TaskStore) dfsInMemory(currentID, targetID string, adj map[string][]string, visited map[string]bool) bool {
 	if currentID == targetID {
-		return true, nil
+		return true
 	}
 	if visited[currentID] {
-		return false, nil
+		return false
 	}
 	visited[currentID] = true
 
-	// Get tasks that depend on currentID (i.e., currentID is in depends_on_task_id),
-	// meaning we traverse forward in the dependency graph.
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT task_id FROM task_dependencies WHERE depends_on_task_id = ?`, currentID)
-	if err != nil {
-		return false, fmt.Errorf("dfs query dependencies for %q: %w", currentID, err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	for rows.Next() {
-		var nextID string
-		if err := rows.Scan(&nextID); err != nil {
-			return false, fmt.Errorf("dfs scan dependency: %w", err)
-		}
-		found, err := s.dfsDetectCycle(ctx, nextID, targetID, visited)
-		if err != nil {
-			return false, err
-		}
-		if found {
-			return true, nil
+	for _, next := range adj[currentID] {
+		if s.dfsInMemory(next, targetID, adj, visited) {
+			return true
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("dfs iterate dependencies: %w", err)
-	}
-
-	return false, nil
+	return false
 }
 
 // GetDependents returns all tasks that depend on the given task (reverse lookup).
-// These are tasks whose depends_on_task_id matches the given taskID.
 func (s *TaskStore) GetDependents(ctx context.Context, taskID string) ([]*models.Task, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT t.id, t.numeric_id, t.story_id, t.title, t.description, t.status, t.priority, t.task_type, t.estimate,
@@ -425,7 +497,11 @@ func (s *TaskStore) GetDependents(ctx context.Context, taskID string) ([]*models
 	if err != nil {
 		return nil, fmt.Errorf("get dependents for task %q: %w", taskID, err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	var dependents []*models.Task
 	for rows.Next() {
@@ -440,4 +516,71 @@ func (s *TaskStore) GetDependents(ctx context.Context, taskID string) ([]*models
 	}
 
 	return dependents, nil
+}
+
+// Delete removes a task, but only if its status is "new".
+func (s *TaskStore) Delete(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM tasks WHERE id=? AND status=?`, id, models.StatusNew)
+	if err != nil {
+		return fmt.Errorf("delete task %q: %w", id, err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("delete task %q: %w", id, ErrNotFound)
+	}
+
+	return nil
+}
+
+// GetBlockersForTasks batch-fetches blockers for a set of tasks. Returns a
+// map from task ID to its blocker task IDs that are not yet done.
+func (s *TaskStore) GetBlockersForTasks(ctx context.Context, taskIDs []string) (map[string][]string, error) {
+	result := make(map[string][]string, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return result, nil
+	}
+
+	placeholders := make([]string, len(taskIDs))
+	args := make([]any, len(taskIDs))
+	for i, id := range taskIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(
+		`SELECT td.task_id, td.depends_on_task_id
+		 FROM task_dependencies td
+		 JOIN tasks t ON td.depends_on_task_id = t.id
+		 WHERE td.task_id IN (%s) AND t.status != ?`,
+		strings.Join(placeholders, ","),
+	)
+	args = append(args, models.StatusDone)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("batch get blockers: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
+
+	for rows.Next() {
+		var taskID, blockerID string
+		if err := rows.Scan(&taskID, &blockerID); err != nil {
+			return nil, fmt.Errorf("scan blocker row: %w", err)
+		}
+		result[taskID] = append(result[taskID], blockerID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate blockers: %w", err)
+	}
+
+	return result, nil
 }

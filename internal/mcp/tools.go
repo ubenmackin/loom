@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
 	"github.com/ubenmackin/loom/internal/dispatcher"
@@ -259,9 +260,9 @@ func (s *Server) handleRegisterSession(ctx context.Context, params map[string]an
 	}
 
 	// Auto-set the server's session ID if not already set.
-	if s.sessionID == "" {
+	s.setSessionID.Do(func() {
 		s.sessionID = session.ID
-	}
+	})
 
 	// Submit a session_registered event.
 	s.submitEvent(dispatcher.Event{
@@ -271,7 +272,7 @@ func (s *Server) handleRegisterSession(ctx context.Context, params map[string]an
 
 	return jsonTextResult(map[string]string{
 		"session_id": session.ID,
-		"status":     session.Status,
+		"status":     string(session.Status),
 	})
 }
 
@@ -340,7 +341,7 @@ func (s *Server) handleRequestWork(ctx context.Context, params map[string]any) (
 
 	// Try to get a prompt template for this task type.
 	if bestTask.TaskType != "" && s.templates != nil {
-		tmpl, err := s.templates.GetByTaskType(ctx, bestTask.TaskType)
+		tmpl, err := s.templates.GetByTaskType(ctx, string(bestTask.TaskType))
 		if err == nil && tmpl != nil {
 			result["prompt_template"] = tmpl.Template
 		}
@@ -386,16 +387,20 @@ func (s *Server) handleStartWork(ctx context.Context, params map[string]any) (*T
 
 	// Log activity.
 	if s.activities != nil {
-		_ = s.activities.Log(ctx, &models.ActivityLogEntry{
+		if err := s.activities.Log(ctx, &models.ActivityLogEntry{
 			WorkItemID:   taskID,
 			WorkItemType: models.WorkItemTypeTask,
 			Action:       "started",
 			Details:      fmt.Sprintf(`{"session_id":%q}`, sessionID),
-		})
+		}); err != nil {
+			slog.Error("mcp: failed to log activity", "error", err, "task_id", taskID)
+		}
 	}
 
 	// Update session last seen.
-	_ = s.sessions.UpdateLastSeen(ctx, sessionID)
+	if err := s.sessions.UpdateLastSeen(ctx, sessionID); err != nil {
+		slog.Error("mcp: failed to update session last seen", "error", err, "session_id", sessionID)
+	}
 
 	return textResult(fmt.Sprintf("Task %s is now in_progress. Session %s has started work.", taskID, sessionID)), nil
 }
@@ -431,13 +436,15 @@ func (s *Server) handleCompleteWork(ctx context.Context, params map[string]any) 
 
 	// Add result comment.
 	if s.comments != nil {
-		_ = s.comments.Create(ctx, &models.Comment{
+		if err := s.comments.Create(ctx, &models.Comment{
 			WorkItemID:   taskID,
 			WorkItemType: models.WorkItemTypeTask,
 			AuthorID:     sessionID,
-			AuthorType:   models.AssigneeTypeSession,
+			AuthorType:   string(models.AssigneeTypeSession),
 			Body:         fmt.Sprintf("Work completed. Result: %s", resultStr),
-		})
+		}); err != nil {
+			slog.Error("mcp: failed to create comment", "error", err, "task_id", taskID)
+		}
 	}
 
 	// Submit event.
@@ -480,13 +487,15 @@ func (s *Server) handleReportBlocked(ctx context.Context, params map[string]any)
 
 	// Add reason comment.
 	if s.comments != nil {
-		_ = s.comments.Create(ctx, &models.Comment{
+		if err := s.comments.Create(ctx, &models.Comment{
 			WorkItemID:   taskID,
 			WorkItemType: models.WorkItemTypeTask,
 			AuthorID:     sessionID,
-			AuthorType:   models.AssigneeTypeSession,
+			AuthorType:   string(models.AssigneeTypeSession),
 			Body:         fmt.Sprintf("Blocked: %s", reason),
-		})
+		}); err != nil {
+			slog.Error("mcp: failed to create comment", "error", err, "task_id", taskID)
+		}
 	}
 
 	// Submit event.
@@ -572,7 +581,7 @@ func (s *Server) handleAddComment(ctx context.Context, params map[string]any) (*
 
 	comment := &models.Comment{
 		WorkItemID:   workItemID,
-		WorkItemType: workItemType,
+		WorkItemType: models.WorkItemType(workItemType),
 		AuthorID:     authorID,
 		AuthorType:   authorType,
 		Body:         body,
@@ -596,7 +605,7 @@ func (s *Server) handleGetComments(ctx context.Context, params map[string]any) (
 		return nil, err
 	}
 
-	comments, err := s.comments.GetByWorkItem(ctx, workItemID, workItemType)
+	comments, err := s.comments.GetByWorkItem(ctx, workItemID, models.WorkItemType(workItemType))
 	if err != nil {
 		return nil, fmt.Errorf("get comments for %s %q: %w", workItemType, workItemID, err)
 	}
@@ -689,7 +698,7 @@ func (s *Server) handleCreateTask(ctx context.Context, params map[string]any) (*
 		StoryID:     storyID,
 		Title:       title,
 		Description: description,
-		TaskType:    taskType,
+		TaskType:    models.TaskType(taskType),
 		Priority:    priority,
 		Status:      models.StatusNew,
 	}

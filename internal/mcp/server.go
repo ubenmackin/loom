@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 
 	"github.com/ubenmackin/loom/internal/dispatcher"
 	"github.com/ubenmackin/loom/internal/store"
@@ -68,11 +69,12 @@ type Server struct {
 	activities *store.ActivityStore
 	dispatcher *dispatcher.Dispatcher
 
-	encoder   *json.Encoder
-	decoder   *json.Decoder
-	tools     map[string]ToolHandler
-	toolDefs  []ToolDef
-	sessionID string // auto-registered on first tool call if not provided
+	encoder      *json.Encoder
+	decoder      *json.Decoder
+	tools        map[string]ToolHandler
+	toolDefs     []ToolDef
+	sessionID    string // auto-registered on first tool call if not provided
+	setSessionID sync.Once
 }
 
 // NewServer creates a new MCP server with the given stores and dispatcher,
@@ -196,8 +198,8 @@ func (s *Server) handleToolsList(req Request) {
 
 // handleToolsCall routes a tools/call request to the registered tool handler.
 func (s *Server) handleToolsCall(ctx context.Context, req Request) {
-	paramsBytes, err := json.Marshal(req.Params)
-	if err != nil {
+	params, ok := req.Params.(map[string]any)
+	if !ok {
 		s.writeResponse(Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -206,17 +208,16 @@ func (s *Server) handleToolsCall(ctx context.Context, req Request) {
 		return
 	}
 
-	var callParams struct {
+	callParams := struct {
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
+	}{}
+
+	if name, ok := params["name"].(string); ok {
+		callParams.Name = name
 	}
-	if err := json.Unmarshal(paramsBytes, &callParams); err != nil {
-		s.writeResponse(Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error:   &Error{Code: -32602, Message: "Invalid params"},
-		})
-		return
+	if args, ok := params["arguments"].(map[string]any); ok {
+		callParams.Arguments = args
 	}
 
 	handler, ok := s.tools[callParams.Name]

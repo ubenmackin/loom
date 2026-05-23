@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ubenmackin/loom/internal/models"
 )
 
 // defaultTemplatesFS embeds the default prompt template files.
@@ -18,23 +19,23 @@ var defaultTemplatesFS embed.FS
 
 // defaultTemplate defines a prompt template to seed into the database.
 type defaultTemplate struct {
-	taskType string
+	taskType models.TaskType
 	filename string
 }
 
 // defaultTemplateList defines the built-in templates that are seeded on first run.
 var defaultTemplateList = []defaultTemplate{
-	{taskType: "code", filename: "default-templates/code.md"},
-	{taskType: "build", filename: "default-templates/build.md"},
-	{taskType: "review", filename: "default-templates/review.md"},
+	{taskType: models.TaskTypeCode, filename: "default-templates/code.md"},
+	{taskType: models.TaskTypeBuild, filename: "default-templates/build.md"},
+	{taskType: models.TaskTypeReview, filename: "default-templates/review.md"},
 }
 
 // SeedDefaults populates the prompt_templates table with built-in templates
 // if the table is empty. This is called after migrations on server startup.
-func SeedDefaults(db *sql.DB) error {
+func SeedDefaults(ctx context.Context, db *sql.DB) error {
 	// Check if any templates already exist.
 	var count int
-	err := db.QueryRowContext(context.Background(),
+	err := db.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM prompt_templates").Scan(&count)
 	if err != nil {
 		return fmt.Errorf("check prompt_templates count: %w", err)
@@ -58,7 +59,7 @@ func SeedDefaults(db *sql.DB) error {
 		id := uuid.New().String()
 		templateText := string(content)
 
-		_, err = db.ExecContext(context.Background(),
+		_, err = db.ExecContext(ctx,
 			`INSERT INTO prompt_templates (id, task_type, template, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, ?)`,
 			id, dt.taskType, templateText, now, now,

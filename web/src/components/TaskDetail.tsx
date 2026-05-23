@@ -1,8 +1,12 @@
-import { useState } from 'react'
+import { memo, useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, Check, Pencil, Play, AlertCircle } from 'lucide-react'
+import { X, Check, Play, AlertCircle } from 'lucide-react'
 import SharpTag from './SharpTag'
 import CommentThread from './CommentThread'
+import SlideInPanel, { PanelLoading, PanelNotFound } from './SlideInPanel'
+import EditableTitle from './EditableTitle'
+import FieldLabel from './FieldLabel'
+import StatusTransitions from './StatusTransitions'
 import {
   fetchTask,
   updateTask,
@@ -13,32 +17,31 @@ import {
   startWork,
   completeWork,
   blockWork,
+  TaskDetailResponse,
 } from '../api/client'
 import type { Task } from '../types'
 import { useSessionStore } from '../stores/session'
-import { statusVariant } from '../utils/statusVariant'
-import { taskTypeLabel } from '../utils/taskTypeLabel'
-import { taskTypeVariant } from '../utils/taskTypeVariant'
-import { STATUS_ORDER, VALID_TRANSITIONS } from '../utils/statusConstants'
+import { statusVariant, VALID_TRANSITIONS } from '../utils/status'
+import { taskTypeLabel, taskTypeVariant } from '../utils/taskType'
 
 interface TaskDetailProps {
   taskId: string | null
   onClose: () => void
 }
 
-export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
+function TaskDetail({ taskId, onClose }: TaskDetailProps) {
   const queryClient = useQueryClient()
   const sessionId = useSessionStore((s) => s.sessionId)
-  const [editingTitle, setEditingTitle] = useState(false)
-  const [titleValue, setTitleValue] = useState('')
   const [descValue, setDescValue] = useState('')
   const [depInput, setDepInput] = useState('')
 
-  const { data: task, isLoading } = useQuery<Task>({
+  const { data, isLoading } = useQuery<TaskDetailResponse>({
     queryKey: ['task', taskId],
     queryFn: () => fetchTask(taskId!),
     enabled: !!taskId,
   })
+
+  const task = data?.task
 
   const { data: blockers = [] } = useQuery({
     queryKey: ['blockers', taskId],
@@ -47,12 +50,15 @@ export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
   })
 
   const updateMutation = useMutation({
-    mutationFn: (data: Partial<Task>) => updateTask(taskId!, data),
-    onMutate: async (data) => {
+    mutationFn: (updateData: Partial<Task>) => updateTask(taskId!, updateData),
+    onMutate: async (updateData) => {
       await queryClient.cancelQueries({ queryKey: ['task', taskId] })
-      const previous = queryClient.getQueryData<Task>(['task', taskId])
+      const previous = queryClient.getQueryData<TaskDetailResponse>(['task', taskId])
       if (previous) {
-        queryClient.setQueryData(['task', taskId], { ...previous, ...data })
+        queryClient.setQueryData(['task', taskId], {
+          ...previous,
+          task: { ...previous.task, ...updateData },
+        })
       }
       return { previous }
     },
@@ -69,11 +75,14 @@ export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
 
   const statusMutation = useMutation({
     mutationFn: (status: string) => updateTaskStatus(taskId!, status),
-    onMutate: async (status) => {
+    onMutate: async (newStatus) => {
       await queryClient.cancelQueries({ queryKey: ['task', taskId] })
-      const previous = queryClient.getQueryData<Task>(['task', taskId])
+      const previous = queryClient.getQueryData<TaskDetailResponse>(['task', taskId])
       if (previous) {
-        queryClient.setQueryData(['task', taskId], { ...previous, status })
+        queryClient.setQueryData(['task', taskId], {
+          ...previous,
+          task: { ...previous.task, status: newStatus },
+        })
       }
       return { previous }
     },
@@ -126,37 +135,27 @@ export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     },
   })
 
+  // Sync descValue from task.description whenever task changes
+  useEffect(() => {
+    if (task) {
+      setDescValue(task.description ?? '')
+    }
+  }, [task])
+
   if (!taskId) return null
 
   if (isLoading) {
-    return (
-      <div className="fixed right-0 top-[52px] bottom-0 w-[480px] bg-white dark:bg-charcoal-dark border-l border-gray-200 dark:border-gray-border rounded-none shadow-none overflow-y-auto z-40">
-        <div className="flex items-center justify-center h-64">
-          <span className="font-mono text-sm text-neutral-500 dark:text-amber-muted">
-            Loading task...
-          </span>
-        </div>
-      </div>
-    )
+    return <PanelLoading message="Loading task..." />
   }
 
   if (!task) {
-    return (
-      <div className="fixed right-0 top-[52px] bottom-0 w-[480px] bg-white dark:bg-charcoal-dark border-l border-gray-200 dark:border-gray-border rounded-none shadow-none overflow-y-auto z-40">
-        <div className="flex items-center justify-center h-64">
-          <span className="font-mono text-sm text-red-500">Task not found</span>
-        </div>
-      </div>
-    )
+    return <PanelNotFound message="Task not found" />
   }
 
   const transitions = VALID_TRANSITIONS[task.status] ?? []
 
-  const handleTitleSave = () => {
-    if (titleValue.trim() && titleValue !== task.title) {
-      updateMutation.mutate({ title: titleValue.trim() })
-    }
-    setEditingTitle(false)
+  const handleTitleSave = (title: string) => {
+    updateMutation.mutate({ title })
   }
 
   const handleDescSave = () => {
@@ -173,7 +172,7 @@ export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
   }
 
   return (
-    <div className="fixed right-0 top-[52px] bottom-0 w-[480px] bg-white dark:bg-charcoal-dark border-l border-gray-200 dark:border-gray-border rounded-none shadow-none overflow-y-auto z-40">
+    <SlideInPanel>
       {/* Header */}
       <div className="sticky top-0 bg-white dark:bg-charcoal-dark border-b border-gray-200 dark:border-gray-border px-4 py-3 z-10">
         <div className="flex items-center justify-between">
@@ -196,51 +195,16 @@ export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
         </div>
 
         {/* Editable title */}
-        {editingTitle ? (
-          <div className="mt-2 flex gap-2">
-            <input
-              type="text"
-              value={titleValue}
-              onChange={(e) => setTitleValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleTitleSave()
-                if (e.key === 'Escape') {
-                  setEditingTitle(false)
-                  setTitleValue(task.title)
-                }
-              }}
-              className="flex-1 rounded-none border border-gray-200 dark:border-gray-border bg-transparent p-2 text-sm text-neutral-800 dark:text-light-neutral font-mono"
-              autoFocus
-            />
-            <button
-              onClick={handleTitleSave}
-              className="glow-button px-3 py-2"
-            >
-              <Check size={14} />
-            </button>
-          </div>
-        ) : (
-          <button
-            onClick={() => {
-              setEditingTitle(true)
-              setTitleValue(task.title)
-            }}
-            className="mt-1 text-left text-sm font-bold text-neutral-800 dark:text-light-neutral hover:text-loom-600 dark:hover:text-purple-active transition-colors w-full"
-          >
-            {task.title}
-          </button>
-        )}
+        <EditableTitle value={task.title} onSave={handleTitleSave} />
       </div>
 
       {/* Fields */}
       <div className="px-4 py-4 space-y-5">
         {/* Description */}
         <div>
-          <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
-            Description
-          </label>
+          <FieldLabel>Description</FieldLabel>
           <textarea
-            value={task.description ?? ''}
+            value={descValue}
             onChange={(e) => setDescValue(e.target.value)}
             onBlur={handleDescSave}
             rows={4}
@@ -251,9 +215,7 @@ export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
 
         {/* Task type */}
         <div>
-          <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
-            Task Type
-          </label>
+          <FieldLabel>Task Type</FieldLabel>
           <SharpTag
             label={taskTypeLabel(task.task_type)}
             variant={taskTypeVariant(task.task_type)}
@@ -262,9 +224,7 @@ export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
 
         {/* Priority */}
         <div>
-          <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
-            Priority
-          </label>
+          <FieldLabel>Priority</FieldLabel>
           <input
             type="number"
             value={task.priority}
@@ -277,9 +237,7 @@ export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
 
         {/* Estimate */}
         <div>
-          <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
-            Estimate
-          </label>
+          <FieldLabel>Estimate</FieldLabel>
           <input
             type="number"
             value={task.estimate ?? ''}
@@ -295,39 +253,18 @@ export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
 
         {/* Status */}
         <div>
-          <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-2">
-            Status
-          </label>
-          <div className="flex items-center gap-2 flex-wrap">
-            <SharpTag
-              label={task.status.toUpperCase()}
-              variant={statusVariant(task.status)}
-            />
-            <div className="flex gap-1 flex-wrap">
-              {transitions.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => statusMutation.mutate(s)}
-                  disabled={statusMutation.isPending}
-                  aria-label={`Transition to ${s.toUpperCase()} status`}
-                  className={`px-2 py-1 rounded-none border text-[10px] uppercase tracking-wider font-mono transition-colors ${
-                    s === 'done'
-                      ? 'glow-button px-2 py-1 text-[10px]'
-                      : 'border-gray-300 dark:border-gray-border text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800'
-                  }`}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
+          <FieldLabel margin="mb-2">Status</FieldLabel>
+          <StatusTransitions
+            currentStatus={task.status}
+            transitions={transitions}
+            onTransition={(s) => statusMutation.mutate(s)}
+            isPending={statusMutation.isPending}
+          />
         </div>
 
         {/* Context JSON */}
         <div>
-          <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
-            Context JSON
-          </label>
+          <FieldLabel>Context JSON</FieldLabel>
           <textarea
             value={task.context ?? ''}
             onChange={(e) => updateMutation.mutate({ context: e.target.value })}
@@ -340,9 +277,7 @@ export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
         {/* Instructions preview */}
         {task.instructions && (
           <div>
-            <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
-              Instructions
-            </label>
+            <FieldLabel>Instructions</FieldLabel>
             <pre className="font-mono text-sm bg-charcoal-darkest p-3 rounded-none border border-gray-border text-neutral-700 dark:text-neutral-300 whitespace-pre-wrap break-words">
               {task.instructions}
             </pre>
@@ -351,9 +286,9 @@ export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
 
         {/* Dependencies */}
         <div>
-          <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-2">
+          <FieldLabel margin="mb-2">
             Dependencies ({blockers.length})
-          </label>
+          </FieldLabel>
 
           {/* Dependency list */}
           {blockers.length > 0 ? (
@@ -409,9 +344,7 @@ export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
 
         {/* Assigned to */}
         <div>
-          <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
-            Assigned To
-          </label>
+          <FieldLabel>Assigned To</FieldLabel>
           {task.assigned_to ? (
             <div className="flex items-center gap-2">
               <span className="font-mono text-sm text-neutral-800 dark:text-light-neutral">
@@ -435,9 +368,7 @@ export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
 
         {/* Action buttons */}
         <div className="pt-3 border-t border-gray-200 dark:border-gray-border">
-          <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-2">
-            Actions
-          </label>
+          <FieldLabel margin="mb-2">Actions</FieldLabel>
           <div className="flex gap-2 flex-wrap">
             <button
               onClick={() => startWorkMutation.mutate()}
@@ -469,6 +400,8 @@ export default function TaskDetail({ taskId, onClose }: TaskDetailProps) {
         {/* Comment thread */}
         <CommentThread workItemId={taskId} workItemType="task" />
       </div>
-    </div>
+    </SlideInPanel>
   )
 }
+
+export default memo(TaskDetail)

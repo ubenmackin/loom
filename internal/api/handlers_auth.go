@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -12,10 +11,11 @@ import (
 // --- Request/Response types for Auth ---
 
 type signupRequest struct {
-	Username    string `json:"username"`
-	Email       string `json:"email"`
-	DisplayName string `json:"display_name"`
-	Password    string `json:"password"`
+	Username    string          `json:"username"`
+	Email       string          `json:"email"`
+	DisplayName string          `json:"display_name"`
+	Password    string          `json:"password"`
+	Role        models.UserRole `json:"role"`
 }
 
 type loginRequest struct {
@@ -68,7 +68,7 @@ func (h *handlers) onboardingCheck(w http.ResponseWriter, r *http.Request) {
 // signup handles POST /api/auth/signup
 func (h *handlers) signup(w http.ResponseWriter, r *http.Request) {
 	var req signupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -86,7 +86,23 @@ func (h *handlers) signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.users.CreateUser(r.Context(), req.Username, req.Email, req.DisplayName, req.Password)
+	// Auto-assign admin role to the very first user; everyone else is normal
+	// unless an explicit role is supplied (admin-created users).
+	role := req.Role
+	if role == "" {
+		count, err := h.users.CountUsers(r.Context())
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to check user count: "+err.Error())
+			return
+		}
+		if count == 0 {
+			role = models.RoleAdmin
+		} else {
+			role = models.RoleNormal
+		}
+	}
+
+	user, err := h.users.CreateUser(r.Context(), req.Username, req.Email, req.DisplayName, req.Password, role)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
@@ -108,7 +124,7 @@ func (h *handlers) signup(w http.ResponseWriter, r *http.Request) {
 // login handles POST /api/auth/login
 func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}

@@ -2,49 +2,18 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"fmt"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ubenmackin/loom/internal/models"
+	"github.com/ubenmackin/loom/internal/testhelpers"
 )
-
-var sessionCounter atomic.Int64
-
-func createTestSession(t *testing.T, store *SessionStore, harnessType string, capabilities []string) *models.Session {
-	t.Helper()
-	n := sessionCounter.Add(1)
-	session := &models.Session{
-		ID:          fmt.Sprintf("sess-%d", n),
-		HarnessType: harnessType,
-		Status:      models.SessionStatusActive,
-	}
-	if len(capabilities) > 0 {
-		data, _ := json.Marshal(capabilities)
-		session.Capabilities = string(data)
-	}
-	if err := store.Register(context.Background(), session); err != nil {
-		t.Fatalf("create test session: %v", err)
-	}
-	return session
-}
-
-func setSessionLastSeen(t *testing.T, dbConn *sql.DB, sessionID string, tstamp time.Time) {
-	t.Helper()
-	ctx := context.Background()
-	_, err := dbConn.ExecContext(ctx, "UPDATE sessions SET last_seen_at = ? WHERE id = ?", tstamp.UTC(), sessionID)
-	if err != nil {
-		t.Fatalf("set session last_seen_at: %v", err)
-	}
-}
 
 func TestRegister(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	sessionStore := NewSessionStore(dbConn)
 	ctx := context.Background()
 
@@ -79,11 +48,15 @@ func TestRegister(t *testing.T) {
 func TestSessionGetByID(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	sessionStore := NewSessionStore(dbConn)
 	ctx := context.Background()
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code", "review"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code", "review"})
+		s.Capabilities = string(data)
+	})
 
 	got, err := sessionStore.GetByID(ctx, session.ID)
 	if err != nil {
@@ -101,11 +74,13 @@ func TestSessionGetByID(t *testing.T) {
 func TestUpdateLastSeen(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	sessionStore := NewSessionStore(dbConn)
 	ctx := context.Background()
 
-	session := createTestSession(t, sessionStore, "opencode", nil)
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+	})
 	originalLastSeen := session.LastSeenAt
 
 	time.Sleep(10 * time.Millisecond)
@@ -127,11 +102,13 @@ func TestUpdateLastSeen(t *testing.T) {
 func TestDisconnect(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	sessionStore := NewSessionStore(dbConn)
 	ctx := context.Background()
 
-	session := createTestSession(t, sessionStore, "opencode", nil)
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+	})
 
 	if err := sessionStore.Disconnect(ctx, session.ID); err != nil {
 		t.Fatalf("Disconnect() error = %v", err)
@@ -150,13 +127,21 @@ func TestDisconnect(t *testing.T) {
 func TestGetStaleSessions(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	sessionStore := NewSessionStore(dbConn)
 	ctx := context.Background()
 
-	activeSession := createTestSession(t, sessionStore, "opencode", []string{"code"})
-	staleSession := createTestSession(t, sessionStore, "opencode", []string{"code"})
-	setSessionLastSeen(t, dbConn, staleSession.ID, time.Now().UTC().Add(-2*time.Hour))
+	activeSession := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
+	staleSession := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
+	testhelpers.SetSessionLastSeen(t, dbConn, staleSession.ID, time.Now().UTC().Add(-2*time.Hour))
 
 	stale, err := sessionStore.GetStaleSessions(ctx, 1*time.Hour)
 	if err != nil {
@@ -180,12 +165,20 @@ func TestGetStaleSessions(t *testing.T) {
 func TestGetByCapabilities(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	sessionStore := NewSessionStore(dbConn)
 	ctx := context.Background()
 
-	sessionA := createTestSession(t, sessionStore, "opencode", []string{"code", "build"})
-	sessionB := createTestSession(t, sessionStore, "opencode", []string{"review"})
+	sessionA := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code", "build"})
+		s.Capabilities = string(data)
+	})
+	sessionB := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"review"})
+		s.Capabilities = string(data)
+	})
 
 	t.Run("filter by code capability", func(t *testing.T) {
 		sessions, err := sessionStore.GetByCapabilities(ctx, "code")
@@ -227,11 +220,13 @@ func TestGetByCapabilities(t *testing.T) {
 func TestFlagStale(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	sessionStore := NewSessionStore(dbConn)
 	ctx := context.Background()
 
-	session := createTestSession(t, sessionStore, "opencode", nil)
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+	})
 
 	if err := sessionStore.FlagStale(ctx, session.ID); err != nil {
 		t.Fatalf("FlagStale() error = %v", err)

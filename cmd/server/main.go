@@ -3,13 +3,13 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -25,127 +25,161 @@ import (
 	"github.com/ubenmackin/loom/internal/ws"
 )
 
+// serverConfig holds the parsed command-line configuration.
+type serverConfig struct {
+	dbPath string
+	port   int
+	webDir string
+	runMCP bool
+}
+
+// Stores holds all database-backed store instances.
+type Stores struct {
+	Story    *store.StoryStore
+	Task     *store.TaskStore
+	Session  *store.SessionStore
+	Comment  *store.CommentStore
+	Template *store.TemplateStore
+	Activity *store.ActivityStore
+	User     *store.UserStore
+}
+
+// NewStores creates all store instances from the given database connection.
+func NewStores(db *sql.DB) *Stores {
+	return &Stores{
+		Story:    store.NewStoryStore(db),
+		Task:     store.NewTaskStore(db),
+		Session:  store.NewSessionStore(db),
+		Comment:  store.NewCommentStore(db),
+		Template: store.NewTemplateStore(db),
+		Activity: store.NewActivityStore(db),
+		User:     store.NewUserStore(db),
+	}
+}
+
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
+	cfg := parseFlags()
+
+	database, err := db.Open(cfg.dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer func() { _ = database.Close() }()
+
+	if err := db.Migrate(database); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+
+	ctx := context.Background()
+	if err := db.SeedDefaults(ctx, database); err != nil {
+		return fmt.Errorf("seed default templates: %w", err)
+	}
+
+	if err := db.BackfillNumericIDs(database); err != nil {
+		return fmt.Errorf("backfill numeric IDs: %w", err)
+	}
+
+	stores := NewStores(database)
+
+	if cfg.runMCP {
+		return runMCP(cfg, database, stores)
+	}
+	return runHTTP(cfg, database, stores)
+}
+
+// parseFlags reads and returns the command-line configuration.
+func parseFlags() serverConfig {
 	dbPath := flag.String("db-path", "loom.db", "path to SQLite database file")
 	port := flag.Int("port", 8080, "HTTP server port")
 	webDir := flag.String("web-dir", "web/dist", "path to frontend static files")
 	runMCP := flag.Bool("mcp", false, "run as MCP server on stdio instead of HTTP")
 	flag.Parse()
 
-	// Open database.
-	database, err := db.Open(*dbPath)
-	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+	return serverConfig{
+		dbPath: *dbPath,
+		port:   *port,
+		webDir: *webDir,
+		runMCP: *runMCP,
 	}
+}
 
-	// Run migrations.
-	if err := db.Migrate(database); err != nil {
-		_ = database.Close()
-		log.Fatalf("Failed to run migrations: %v", err)
-	}
+// runMCP starts the MCP server on stdio.
+func runMCP(cfg serverConfig, database *sql.DB, stores *Stores) error {
+	// Initialize dispatcher with a no-op broadcaster (MCP mode has no WebSocket clients).
+	noOpHub := &noOpBroadcaster{}
+	d := dispatcher.NewDispatcher(dispatcher.DispatcherDeps{
+		StoryStore:    stores.Story,
+		TaskStore:     stores.Task,
+		SessionStore:  stores.Session,
+		TemplateStore: stores.Template,
+		CommentStore:  stores.Comment,
+		ActivityStore: stores.Activity,
+		Broadcaster:   noOpHub,
+	})
+	d.Start()
+	defer d.Stop()
 
-	// Seed default prompt templates if none exist.
-	if err := db.SeedDefaults(database); err != nil {
-		_ = database.Close()
-		log.Fatalf("Failed to seed default templates: %v", err)
-	}
+	mcpServer := mcp.NewServer(
+		stores.Story, stores.Task, stores.Session, stores.Comment,
+		stores.Template, stores.Activity, d,
+	)
 
-	// Backfill numeric IDs for any legacy work items.
-	if err := db.BackfillNumericIDs(database); err != nil {
-		_ = database.Close()
-		log.Fatalf("Failed to backfill numeric IDs: %v", err)
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	if *runMCP {
-		// Initialize stores for MCP server.
-		storyStore := store.NewStoryStore(database)
-		taskStore := store.NewTaskStore(database)
-		sessionStore := store.NewSessionStore(database)
-		commentStore := store.NewCommentStore(database)
-		templateStore := store.NewTemplateStore(database)
-		activityStore := store.NewActivityStore(database)
-
-		// Initialize dispatcher with a no-op broadcaster (MCP mode has no WebSocket clients).
-		noOpHub := &noOpBroadcaster{}
-		d := dispatcher.NewDispatcher(
-			storyStore, taskStore, sessionStore, templateStore,
-			commentStore, activityStore, noOpHub, 0,
-		)
-		d.Start()
-
-		// Create and run the MCP server on stdio.
-		mcpServer := mcp.NewServer(
-			storyStore, taskStore, sessionStore, commentStore,
-			templateStore, activityStore, d,
-		)
-
-		ctx, cancel := context.WithCancel(context.Background())
-
-		// Set up signal handling for graceful shutdown.
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-		go func() {
-			<-sigCh
-			log.Println("MCP server shutting down...")
-			cancel()
-		}()
-
-		if err := mcpServer.Run(ctx); err != nil {
-			d.Stop()
-			cancel()
-			_ = database.Close()
-			log.Printf("MCP server error: %v", err)
-			os.Exit(1)
-		}
-
-		d.Stop()
+	// Set up signal handling for graceful shutdown.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Println("MCP server shutting down...")
 		cancel()
-		_ = database.Close()
-		return
+	}()
+
+	if err := mcpServer.Run(ctx); err != nil {
+		return fmt.Errorf("MCP server: %w", err)
 	}
 
-	defer func() { _ = database.Close() }()
+	log.Println("MCP server stopped")
+	return nil
+}
 
-	// Initialize stores.
-	storyStore := store.NewStoryStore(database)
-	taskStore := store.NewTaskStore(database)
-	sessionStore := store.NewSessionStore(database)
-	commentStore := store.NewCommentStore(database)
-	templateStore := store.NewTemplateStore(database)
-	activityStore := store.NewActivityStore(database)
-	userStore := store.NewUserStore(database)
-
+// runHTTP starts the HTTP API server with WebSocket support.
+func runHTTP(cfg serverConfig, database *sql.DB, stores *Stores) error {
 	// Initialize dispatcher with the WebSocket hub as the event broadcaster.
 	hub := ws.NewHub()
 	go hub.Start()
 	defer hub.Stop()
 
-	d := dispatcher.NewDispatcher(
-		storyStore, taskStore, sessionStore, templateStore,
-		commentStore, activityStore, hub, 0,
-	)
+	d := dispatcher.NewDispatcher(dispatcher.DispatcherDeps{
+		StoryStore:    stores.Story,
+		TaskStore:     stores.Task,
+		SessionStore:  stores.Session,
+		TemplateStore: stores.Template,
+		CommentStore:  stores.Comment,
+		ActivityStore: stores.Activity,
+		Broadcaster:   hub,
+	})
 	d.Start()
 	defer d.Stop()
 
-	// Periodically clean up expired user sessions.
-	// Run once at startup, then every hour.
-	if err := userStore.CleanupExpiredSessions(context.Background()); err != nil {
-		log.Printf("Failed to cleanup expired sessions at startup: %v", err)
-	}
-	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
-		defer ticker.Stop()
-		for range ticker.C {
-			if err := userStore.CleanupExpiredSessions(context.Background()); err != nil {
-				log.Printf("Failed to cleanup expired sessions: %v", err)
-			}
-		}
-	}()
+	// Create a lifecycle context for background tasks.
+	serverCtx, serverCancel := context.WithCancel(context.Background())
+	defer serverCancel()
+
+	// Start periodic session cleanup.
+	runSessionCleanup(serverCtx, stores.User)
 
 	// Create the API router.
 	apiRouter := api.NewRouter(
-		storyStore, taskStore, sessionStore, commentStore,
-		templateStore, activityStore, userStore, d, hub,
+		stores.Story, stores.Task, stores.Session, stores.Comment,
+		stores.Template, stores.Activity, stores.User, d, hub,
 	)
 
 	// Set up the top-level HTTP router.
@@ -161,10 +195,10 @@ func main() {
 	r.Mount("/api", apiRouter)
 
 	// Serve static frontend files with SPA fallback.
-	r.Handle("/*", spaHandler(*webDir))
+	r.Handle("/*", spaHandler(cfg.webDir))
 
 	// Start HTTP server.
-	addr := fmt.Sprintf(":%d", *port)
+	addr := fmt.Sprintf(":%d", cfg.port)
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      r,
@@ -180,25 +214,56 @@ func main() {
 	go func() {
 		log.Printf("Loom server starting on %s", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server error: %v", err)
+			log.Printf("HTTP server error: %v", err)
 		}
 	}()
 
-	<-done
-	log.Println("Shutting down server...")
+	go func() {
+		<-done
+		log.Println("Shutting down server...")
+		serverCancel()
+	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	<-serverCtx.Done()
 
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Printf("Server shutdown error: %v", err)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("server shutdown: %w", err)
 	}
 
 	log.Println("Server stopped")
+	return nil
+}
+
+// runSessionCleanup runs an initial session cleanup and then periodically
+// cleans up expired user sessions on the given interval.
+func runSessionCleanup(ctx context.Context, userStore *store.UserStore) {
+	// Run once at startup.
+	if err := userStore.CleanupExpiredSessions(ctx); err != nil {
+		log.Printf("Failed to cleanup expired sessions at startup: %v", err)
+	}
+
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := userStore.CleanupExpiredSessions(ctx); err != nil {
+					log.Printf("Failed to cleanup expired sessions: %v", err)
+				}
+			}
+		}
+	}()
 }
 
 // spaHandler serves static files from webDir and falls back to index.html
 // for any path that doesn't match a file (SPA client-side routing).
+// It uses os.Stat to check file existence (single open) before serving.
 func spaHandler(webDir string) http.Handler {
 	fs := http.FileServer(http.Dir(webDir))
 	absWebDir, err := filepath.Abs(webDir)
@@ -206,39 +271,34 @@ func spaHandler(webDir string) http.Handler {
 		log.Fatalf("failed to resolve web directory: %v", err)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Sanitize the URL path to prevent directory traversal.
-		cleaned := path.Clean(r.URL.Path)
-		if cleaned == "." {
-			cleaned = "/"
-		}
-		r.URL.Path = cleaned
+		// Strip leading slash so the path is relative to webDir.
+		relPath := strings.TrimPrefix(r.URL.Path, "/")
 
-		// Try to serve the file directly.
-		f, err := http.Dir(webDir).Open(r.URL.Path)
-		if err == nil {
-			if cerr := f.Close(); cerr != nil {
-				http.Error(w, "internal server error", http.StatusInternalServerError)
+		// Use os.Stat to check file existence — single filesystem lookup.
+		fullPath := filepath.Join(absWebDir, filepath.FromSlash(relPath))
+		info, err := os.Stat(fullPath)
+		if err == nil && !info.IsDir() {
+			// Verify the resolved path is still within webDir (symlink traversal protection).
+			realPath, err := filepath.EvalSymlinks(fullPath)
+			if err != nil || !strings.HasPrefix(realPath+string(os.PathSeparator), absWebDir+string(os.PathSeparator)) {
+				http.NotFound(w, r)
 				return
 			}
-			// Verify the resolved path is still within webDir.
-			if realPath, err := filepath.EvalSymlinks(filepath.Join(absWebDir, filepath.FromSlash(r.URL.Path))); err == nil {
-				if !strings.HasPrefix(realPath, absWebDir) {
-					http.NotFound(w, r)
-					return
-				}
-			}
+			// Reset URL path so http.FileServer can serve correctly.
+			r.URL.Path = "/" + relPath
 			fs.ServeHTTP(w, r)
 			return
 		}
-		// File not found — serve index.html for SPA routing.
-		http.ServeFile(w, r, webDir+"/index.html")
+
+		// File not found — serve index.html for SPA client-side routing.
+		http.ServeFile(w, r, filepath.Join(absWebDir, "index.html"))
 	})
 }
 
 // noOpBroadcaster is a no-op implementation of dispatcher.EventBroadcaster
-// used until the WebSocket hub (TASK-006) is available.
+// used in MCP mode where there are no WebSocket clients.
 type noOpBroadcaster struct{}
 
 func (n *noOpBroadcaster) Broadcast(eventType string, payload any) {
-	// No-op — WebSocket hub not yet implemented.
+	// No-op — MCP mode has no WebSocket clients.
 }

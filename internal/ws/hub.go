@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 
 	"github.com/ubenmackin/loom/internal/config"
+	"github.com/ubenmackin/loom/internal/dispatcher"
 )
 
 // Event types that can be broadcast to clients.
@@ -45,7 +47,11 @@ type Hub struct {
 	mu             sync.RWMutex
 	upgrader       websocket.Upgrader
 	allowedOrigins []string
+	closed         atomic.Bool
 }
+
+// Compile-time interface guards.
+var _ dispatcher.EventBroadcaster = (*Hub)(nil)
 
 // Client represents a single WebSocket connection.
 type Client struct {
@@ -162,11 +168,8 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // If the hub is stopping, the event is dropped to avoid panicking on a
 // closed channel.
 func (h *Hub) Broadcast(eventType string, payload any) {
-	// Guard: if the hub is stopping, drop the message immediately.
-	select {
-	case <-h.done:
+	if h.closed.Load() {
 		return
-	default:
 	}
 
 	event := BroadcastEvent{
@@ -194,6 +197,9 @@ func (h *Hub) Broadcast(eventType string, payload any) {
 	case h.broadcast <- event:
 	case <-h.done:
 		// Hub stopped while waiting to send — drop the event.
+	default:
+		// Broadcast channel full — drop event to avoid blocking.
+		slog.Warn("broadcast channel full, dropping event", "type", eventType)
 	}
 }
 
@@ -204,20 +210,40 @@ func (h *Hub) ClientCount() int {
 	return len(h.clients)
 }
 
-// Stop gracefully shuts down the hub by closing the broadcast channel
+// Stop gracefully shuts down the hub by closing the done channel
 // and sending a close frame (1001 Going Away) to all connected clients.
 func (h *Hub) Stop() {
+	h.mu.Lock()
+	if h.closed.Load() {
+		h.mu.Unlock()
+		return
+	}
+	h.closed.Store(true)
 	close(h.done)
-	close(h.broadcast)
 
-	h.mu.RLock()
+	// Snapshot the client map before releasing the write lock
+	// to avoid needing a read lock later (which would deadlock
+	// with a concurrent ServeHTTP -> Start() -> register -> mu.Lock).
+	clients := make([]*Client, 0, len(h.clients))
 	for client := range h.clients {
-		// Send a WebSocket close frame with code 1001 (Going Away).
+		clients = append(clients, client)
+	}
+	h.mu.Unlock()
+
+	// Close all client connections outside the lock.
+	for _, client := range clients {
 		closeMsg := websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutting down")
 		_ = client.conn.WriteControl(websocket.CloseMessage, closeMsg, time.Now().Add(writeWait))
 		_ = client.conn.Close()
 	}
-	h.mu.RUnlock()
+
+	// Drain the unregister channel in a goroutine so that any
+	// readLoop goroutines still trying to unregister don't block
+	// forever (goroutine leak).
+	go func() {
+		for range h.unregister {
+		}
+	}()
 }
 
 // readLoop handles incoming WebSocket messages and connection health.

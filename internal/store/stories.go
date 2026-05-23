@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 
 // StoryFilter holds optional criteria for listing stories.
 type StoryFilter struct {
-	Status     string
+	Status     models.Status
 	AssignedTo string
 }
 
@@ -28,34 +29,36 @@ func NewStoryStore(db *sql.DB) *StoryStore {
 	return &StoryStore{db: db}
 }
 
-// validStoryTransitions defines the allowed status transitions.
-var validStoryTransitions = map[string][]string{
-	models.StatusNew:        {models.StatusReady, models.StatusInProgress},
-	models.StatusReady:      {models.StatusInProgress, models.StatusBlocked},
-	models.StatusInProgress: {models.StatusBlocked, models.StatusDone},
-	models.StatusBlocked:    {models.StatusInProgress, models.StatusReady},
-	models.StatusDone:       {},
-}
+// scanStoryRow is a helper to scan a story row from a *sql.Row or *sql.Rows.
+func scanStoryRow(scanner interface{ Scan(...any) error }) (*models.Story, error) {
+	story := &models.Story{}
+	var desc, assignedTo, statusStr, assigneeTypeStr sql.NullString
+	var createdAt, updatedAt sql.NullTime
+	var numericID sql.NullInt64
 
-// isValidTransition checks whether moving from current to next is allowed.
-func isValidTransition(current, next string) bool {
-	allowed, ok := validStoryTransitions[current]
-	if !ok {
-		return false
+	err := scanner.Scan(
+		&story.ID, &numericID, &story.Title, &desc, &statusStr, &story.Priority,
+		&story.RequiresBuild, &story.RequiresReview, &assignedTo, &assigneeTypeStr,
+		&story.SortOrder, &createdAt, &updatedAt,
+	)
+	if err != nil {
+		return nil, err
 	}
-	for _, s := range allowed {
-		if s == next {
-			return true
-		}
-	}
-	return false
+
+	story.Description = stringOrZero(desc)
+	story.AssignedTo = stringOrZero(assignedTo)
+	story.AssigneeType = models.AssigneeType(stringOrZero(assigneeTypeStr))
+	story.Status = models.Status(stringOrZero(statusStr))
+	story.NumericID = intOrZero(numericID)
+	story.CreatedAt = timeOrZero(createdAt)
+	story.UpdatedAt = timeOrZero(updatedAt)
+
+	return story, nil
 }
 
 // Create inserts a new story. If the ID is empty, it is auto-generated.
+// It mutates the pointer to set ID, NumericID, CreatedAt, and UpdatedAt.
 func (s *StoryStore) Create(ctx context.Context, story *models.Story) error {
-	// Generate both string ID and numeric ID from a single atomic sequence insert.
-	// This eliminates the TOCTOU race that occurred when the string ID was generated
-	// via a separate MAX+1 query committed before the actual INSERT.
 	res, err := s.db.ExecContext(ctx, "INSERT INTO work_item_sequence (type) VALUES ('story')")
 	if err != nil {
 		return fmt.Errorf("generate story id: %w", err)
@@ -95,34 +98,12 @@ func (s *StoryStore) GetByID(ctx context.Context, id string) (*models.Story, err
 		`SELECT id, numeric_id, title, description, status, priority, requires_build, requires_review, assigned_to, assignee_type, sort_order, created_at, updated_at
 		 FROM stories WHERE id = ?`, id)
 
-	story := &models.Story{}
-	var desc, assignedTo, assigneeType sql.NullString
-	var createdAt, updatedAt sql.NullTime
-	var numericID sql.NullInt64
-
-	err := row.Scan(
-		&story.ID, &numericID, &story.Title, &desc, &story.Status, &story.Priority,
-		&story.RequiresBuild, &story.RequiresReview, &assignedTo, &assigneeType,
-		&story.SortOrder, &createdAt, &updatedAt,
-	)
+	story, err := scanStoryRow(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("story %q: %w", id, sql.ErrNoRows)
+			return nil, fmt.Errorf("story %q: %w", id, ErrNotFound)
 		}
 		return nil, fmt.Errorf("query story %q: %w", id, err)
-	}
-
-	story.Description = desc.String
-	story.AssignedTo = assignedTo.String
-	story.AssigneeType = assigneeType.String
-	if numericID.Valid {
-		story.NumericID = int(numericID.Int64)
-	}
-	if createdAt.Valid {
-		story.CreatedAt = createdAt.Time
-	}
-	if updatedAt.Valid {
-		story.UpdatedAt = updatedAt.Time
 	}
 
 	return story, nil
@@ -134,34 +115,12 @@ func (s *StoryStore) GetByNumericID(ctx context.Context, numID int) (*models.Sto
 		`SELECT id, numeric_id, title, description, status, priority, requires_build, requires_review, assigned_to, assignee_type, sort_order, created_at, updated_at
 		 FROM stories WHERE numeric_id = ?`, numID)
 
-	story := &models.Story{}
-	var desc, assignedTo, assigneeType sql.NullString
-	var createdAt, updatedAt sql.NullTime
-	var numericID sql.NullInt64
-
-	err := row.Scan(
-		&story.ID, &numericID, &story.Title, &desc, &story.Status, &story.Priority,
-		&story.RequiresBuild, &story.RequiresReview, &assignedTo, &assigneeType,
-		&story.SortOrder, &createdAt, &updatedAt,
-	)
+	story, err := scanStoryRow(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("story with numeric id %d: %w", numID, sql.ErrNoRows)
+			return nil, fmt.Errorf("story with numeric id %d: %w", numID, ErrNotFound)
 		}
 		return nil, fmt.Errorf("query story by numeric id %d: %w", numID, err)
-	}
-
-	story.Description = desc.String
-	story.AssignedTo = assignedTo.String
-	story.AssigneeType = assigneeType.String
-	if numericID.Valid {
-		story.NumericID = int(numericID.Int64)
-	}
-	if createdAt.Valid {
-		story.CreatedAt = createdAt.Time
-	}
-	if updatedAt.Valid {
-		story.UpdatedAt = updatedAt.Time
 	}
 
 	return story, nil
@@ -171,7 +130,7 @@ func (s *StoryStore) GetByNumericID(ctx context.Context, numID int) (*models.Sto
 // all stories are returned.
 func (s *StoryStore) List(ctx context.Context, filter StoryFilter) ([]*models.Story, error) {
 	var conditions []string
-	var args []interface{}
+	var args []any
 
 	if filter.Status != "" {
 		conditions = append(conditions, "status = ?")
@@ -193,34 +152,17 @@ func (s *StoryStore) List(ctx context.Context, filter StoryFilter) ([]*models.St
 	if err != nil {
 		return nil, fmt.Errorf("list stories: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	var stories []*models.Story
 	for rows.Next() {
-		story := &models.Story{}
-		var desc, assignedTo, assigneeType sql.NullString
-		var createdAt, updatedAt sql.NullTime
-		var numericID sql.NullInt64
-
-		if err := rows.Scan(
-			&story.ID, &numericID, &story.Title, &desc, &story.Status, &story.Priority,
-			&story.RequiresBuild, &story.RequiresReview, &assignedTo, &assigneeType,
-			&story.SortOrder, &createdAt, &updatedAt,
-		); err != nil {
+		story, err := scanStoryRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan story: %w", err)
-		}
-
-		story.Description = desc.String
-		story.AssignedTo = assignedTo.String
-		story.AssigneeType = assigneeType.String
-		if numericID.Valid {
-			story.NumericID = int(numericID.Int64)
-		}
-		if createdAt.Valid {
-			story.CreatedAt = createdAt.Time
-		}
-		if updatedAt.Valid {
-			story.UpdatedAt = updatedAt.Time
 		}
 
 		stories = append(stories, story)
@@ -253,38 +195,44 @@ func (s *StoryStore) Update(ctx context.Context, story *models.Story) error {
 		return fmt.Errorf("rows affected story %q: %w", story.ID, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("story %q: %w", story.ID, sql.ErrNoRows)
+		return fmt.Errorf("story %q: %w", story.ID, ErrNotFound)
 	}
 
 	return nil
 }
 
 // UpdateStatus changes a story's status, validating against the state machine.
-func (s *StoryStore) UpdateStatus(ctx context.Context, id string, status string) error {
-	current, err := s.GetByID(ctx, id)
+func (s *StoryStore) UpdateStatus(ctx context.Context, id string, next models.Status) error {
+	// First, get current status
+	var currentStatus string
+	err := s.db.QueryRowContext(ctx, "SELECT status FROM stories WHERE id = ?", id).Scan(&currentStatus)
 	if err != nil {
-		return fmt.Errorf("get story for status update: %w", err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("story %q: %w", id, ErrNotFound)
+		}
+		return fmt.Errorf("query current status: %w", err)
 	}
 
-	if !isValidTransition(current.Status, status) {
-		return fmt.Errorf("invalid transition %q -> %q for story %q", current.Status, status, id)
+	// Validate transition
+	if !models.IsValidTransition(models.Status(currentStatus), next) {
+		return fmt.Errorf("story %q: %w (current=%q, next=%q)", id, ErrInvalidTransition, currentStatus, next)
 	}
 
+	// Atomic update with status check
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE stories SET status=?, updated_at=? WHERE id=?`,
-		status, now, id,
-	)
+		`UPDATE stories SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		next, now, id, currentStatus)
 	if err != nil {
-		return fmt.Errorf("update story status %q: %w", id, err)
+		return fmt.Errorf("update status: %w", err)
 	}
 
-	rows, err := result.RowsAffected()
+	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("rows affected story %q: %w", id, err)
+		return fmt.Errorf("rows affected: %w", err)
 	}
-	if rows == 0 {
-		return fmt.Errorf("story %q: %w", id, sql.ErrNoRows)
+	if rowsAffected == 0 {
+		return fmt.Errorf("status was modified concurrently")
 	}
 
 	return nil
@@ -292,57 +240,148 @@ func (s *StoryStore) UpdateStatus(ctx context.Context, id string, status string)
 
 // Delete removes a story, but only if its status is "new".
 func (s *StoryStore) Delete(ctx context.Context, id string) error {
-	current, err := s.GetByID(ctx, id)
+	// First, check if the story exists.
+	var status string
+	err := s.db.QueryRowContext(ctx, `SELECT status FROM stories WHERE id=?`, id).Scan(&status)
 	if err != nil {
-		return fmt.Errorf("get story for delete: %w", err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("delete story %q: %w", id, ErrNotFound)
+		}
+		return fmt.Errorf("delete story %q: %w", id, err)
 	}
 
-	if current.Status != models.StatusNew {
-		return fmt.Errorf("cannot delete story %q with status %q (only %q allowed)", id, current.Status, models.StatusNew)
+	if status != string(models.StatusNew) {
+		return fmt.Errorf("delete story %q: status %s: %w", id, status, ErrInvalidTransition)
 	}
 
-	result, err := s.db.ExecContext(ctx, `DELETE FROM stories WHERE id=?`, id)
+	// Atomic DELETE — race-safe against concurrent deletes.
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM stories WHERE id=? AND status=?`, id, models.StatusNew)
 	if err != nil {
 		return fmt.Errorf("delete story %q: %w", id, err)
 	}
 
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("rows affected delete story %q: %w", id, err)
+		return fmt.Errorf("rows affected: %w", err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("story %q: %w", id, sql.ErrNoRows)
+		return fmt.Errorf("delete story %q: %w", id, ErrNotFound)
 	}
 
 	return nil
 }
 
-// GetWithTasks retrieves a story along with its tasks.
+// GetWithTasks retrieves a story along with its tasks using a single LEFT JOIN query.
 func (s *StoryStore) GetWithTasks(ctx context.Context, id string) (*models.Story, []*models.Task, error) {
-	story, err := s.GetByID(ctx, id)
-	if err != nil {
-		return nil, nil, fmt.Errorf("get story with tasks: %w", err)
-	}
+	query := `SELECT
+		s.id, s.numeric_id, s.title, s.description, s.status, s.priority,
+		s.requires_build, s.requires_review, s.assigned_to, s.assignee_type,
+		s.sort_order, s.created_at, s.updated_at,
+		t.id, t.numeric_id, t.story_id, t.title, t.description, t.status,
+		t.priority, t.task_type, t.estimate, t.assigned_to, t.assignee_type,
+		t.sort_order, t.context, t.instructions, t.is_stale, t.created_at, t.updated_at
+		FROM stories s
+		LEFT JOIN tasks t ON t.story_id = s.id
+		WHERE s.id = ?
+		ORDER BY t.sort_order, t.priority`
 
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, numeric_id, story_id, title, description, status, priority, task_type, estimate,
-		        assigned_to, assignee_type, sort_order, context, instructions, is_stale, created_at, updated_at
-		 FROM tasks WHERE story_id = ? ORDER BY sort_order, priority`, id)
+	rows, err := s.db.QueryContext(ctx, query, id)
 	if err != nil {
-		return nil, nil, fmt.Errorf("query tasks for story %q: %w", id, err)
+		return nil, nil, fmt.Errorf("query story with tasks %q: %w", id, err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	var tasks []*models.Task
-	for rows.Next() {
-		t, err := scanTask(rows)
-		if err != nil {
-			return nil, nil, fmt.Errorf("scan task for story %q: %w", id, err)
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
 		}
-		tasks = append(tasks, t)
+	}()
+
+	var story *models.Story
+	var tasks []*models.Task
+
+	for rows.Next() {
+		var (
+			// Story columns
+			sID, sTitle, sDesc, sStatusStr, sAssignedTo, sAssigneeTypeStr sql.NullString
+			sNumID                                                        sql.NullInt64
+			sPriority, sSortOrder                                         sql.NullInt64
+			sRequiresBuild, sRequiresReview                               sql.NullBool
+			sCreatedAt, sUpdatedAt                                        sql.NullTime
+
+			// Task columns
+			tID, tStoryID, tTitle, tDesc, tStatusStr, tAssignedTo, tAssigneeTypeStr sql.NullString
+			tTaskTypeStr, tContext, tInstructions                                   sql.NullString
+			tNumID, tPriority, tEstimate, tSortOrder                                sql.NullInt64
+			tCreatedAt, tUpdatedAt                                                  sql.NullTime
+			tIsStale                                                                sql.NullBool
+		)
+
+		err := rows.Scan(
+			&sID, &sNumID, &sTitle, &sDesc, &sStatusStr, &sPriority,
+			&sRequiresBuild, &sRequiresReview, &sAssignedTo, &sAssigneeTypeStr,
+			&sSortOrder, &sCreatedAt, &sUpdatedAt,
+			&tID, &tNumID, &tStoryID, &tTitle, &tDesc, &tStatusStr,
+			&tPriority, &tTaskTypeStr, &tEstimate, &tAssignedTo, &tAssigneeTypeStr,
+			&tSortOrder, &tContext, &tInstructions, &tIsStale, &tCreatedAt, &tUpdatedAt,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("scan story with tasks: %w", err)
+		}
+
+		if story == nil {
+			story = &models.Story{
+				ID:             sID.String,
+				NumericID:      intOrZero(sNumID),
+				Title:          sTitle.String,
+				Description:    sDesc.String,
+				Status:         models.Status(sStatusStr.String),
+				Priority:       int(sPriority.Int64),
+				RequiresBuild:  sRequiresBuild.Bool,
+				RequiresReview: sRequiresReview.Bool,
+				AssignedTo:     sAssignedTo.String,
+				AssigneeType:   models.AssigneeType(sAssigneeTypeStr.String),
+				SortOrder:      int(sSortOrder.Int64),
+				CreatedAt:      timeOrZero(sCreatedAt),
+				UpdatedAt:      timeOrZero(sUpdatedAt),
+			}
+		}
+
+		if tID.Valid {
+			task := &models.Task{
+				ID:           tID.String,
+				NumericID:    intOrZero(tNumID),
+				StoryID:      tStoryID.String,
+				Title:        tTitle.String,
+				Description:  tDesc.String,
+				Status:       models.Status(tStatusStr.String),
+				Priority:     int(tPriority.Int64),
+				TaskType:     models.TaskType(tTaskTypeStr.String),
+				AssignedTo:   tAssignedTo.String,
+				AssigneeType: models.AssigneeType(tAssigneeTypeStr.String),
+				SortOrder:    int(tSortOrder.Int64),
+				Context:      tContext.String,
+				Instructions: tInstructions.String,
+				IsStale:      tIsStale.Bool,
+				CreatedAt:    timeOrZero(tCreatedAt),
+				UpdatedAt:    timeOrZero(tUpdatedAt),
+			}
+			if tEstimate.Valid {
+				e := int(tEstimate.Int64)
+				task.Estimate = &e
+			}
+			tasks = append(tasks, task)
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("iterate tasks for story %q: %w", id, err)
+		return nil, nil, fmt.Errorf("iterate story with tasks: %w", err)
+	}
+
+	if story == nil {
+		return nil, nil, fmt.Errorf("story %q: %w", id, ErrNotFound)
+	}
+
+	if tasks == nil {
+		tasks = []*models.Task{}
 	}
 
 	return story, tasks, nil

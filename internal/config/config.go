@@ -1,4 +1,4 @@
-// Package config provides shared configuration helpers for the Loom server.
+// Package config holds application configurations and environmental helpers.
 package config
 
 import (
@@ -29,7 +29,6 @@ func GetAllowedOrigins() []string {
 }
 
 // IsOriginAllowed checks if the given origin is in the allowed list.
-// A wildcard entry ("*") permits any origin.
 func IsOriginAllowed(origin string, allowed []string) bool {
 	for _, ao := range allowed {
 		if ao == "*" || ao == origin {

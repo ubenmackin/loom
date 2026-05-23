@@ -1,14 +1,13 @@
 package api
 
 import (
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ubenmackin/loom/internal/models"
+	"github.com/ubenmackin/loom/internal/store"
 )
 
 // --- Request/Response types ---
@@ -24,7 +23,6 @@ type registerSessionRequest struct {
 
 func (h *handlers) registerSessionRoutes(r chi.Router) {
 	r.Post("/register", h.registerSession)
-	r.Get("/", h.listSessions)
 	r.Route("/{id}", func(r chi.Router) {
 		r.Get("/", h.getSession)
 		r.Delete("/", h.disconnectSession)
@@ -38,7 +36,7 @@ func (h *handlers) registerSessionRoutes(r chi.Router) {
 // registerSession handles POST /api/sessions/register
 func (h *handlers) registerSession(w http.ResponseWriter, r *http.Request) {
 	var req registerSessionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -65,7 +63,7 @@ func (h *handlers) registerSession(w http.ResponseWriter, r *http.Request) {
 
 // getSession handles GET /api/sessions/{id}
 func (h *handlers) getSession(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
+	id := chi.URLParam(r, "id")
 	if id == "" {
 		respondError(w, http.StatusBadRequest, "missing session id")
 		return
@@ -73,7 +71,7 @@ func (h *handlers) getSession(w http.ResponseWriter, r *http.Request) {
 
 	session, err := h.sessions.GetByID(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "session not found")
 			return
 		}
@@ -86,14 +84,14 @@ func (h *handlers) getSession(w http.ResponseWriter, r *http.Request) {
 
 // disconnectSession handles DELETE /api/sessions/{id}
 func (h *handlers) disconnectSession(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
+	id := chi.URLParam(r, "id")
 	if id == "" {
 		respondError(w, http.StatusBadRequest, "missing session id")
 		return
 	}
 
 	if err := h.sessions.Disconnect(r.Context(), id); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "session not found")
 			return
 		}
@@ -106,7 +104,7 @@ func (h *handlers) disconnectSession(w http.ResponseWriter, r *http.Request) {
 
 // getSessionTasks handles GET /api/sessions/{id}/tasks
 func (h *handlers) getSessionTasks(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
+	id := chi.URLParam(r, "id")
 	if id == "" {
 		respondError(w, http.StatusBadRequest, "missing session id")
 		return
@@ -126,7 +124,7 @@ func (h *handlers) getSessionTasks(w http.ResponseWriter, r *http.Request) {
 
 // getUnreadComments handles GET /api/sessions/{id}/unread-comments
 func (h *handlers) getUnreadComments(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
+	id := chi.URLParam(r, "id")
 	if id == "" {
 		respondError(w, http.StatusBadRequest, "missing session id")
 		return

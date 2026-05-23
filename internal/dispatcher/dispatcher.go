@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ubenmackin/loom/internal/models"
@@ -50,32 +52,39 @@ type Dispatcher struct {
 	eventCh            chan Event
 	stalenessThreshold time.Duration
 	done               chan struct{}
+
+	wg      sync.WaitGroup
+	stopped atomic.Bool
 }
 
-// NewDispatcher creates a new Dispatcher with the given stores and event hub.
+// DispatcherDeps groups all dependencies required by the Dispatcher.
+type DispatcherDeps struct {
+	StoryStore         *store.StoryStore
+	TaskStore          *store.TaskStore
+	SessionStore       *store.SessionStore
+	TemplateStore      *store.TemplateStore
+	CommentStore       *store.CommentStore
+	ActivityStore      *store.ActivityStore
+	Broadcaster        EventBroadcaster
+	StalenessThreshold time.Duration
+}
+
+// NewDispatcher creates a new Dispatcher with the given dependencies.
 // The stalenessThreshold controls how long a session can be silent before
 // being flagged as stale (default 30 minutes if zero).
-func NewDispatcher(
-	stories *store.StoryStore,
-	tasks *store.TaskStore,
-	sessions *store.SessionStore,
-	templates *store.TemplateStore,
-	comments *store.CommentStore,
-	activities *store.ActivityStore,
-	hub EventBroadcaster,
-	stalenessThreshold time.Duration,
-) *Dispatcher {
+func NewDispatcher(deps DispatcherDeps) *Dispatcher {
+	stalenessThreshold := deps.StalenessThreshold
 	if stalenessThreshold <= 0 {
 		stalenessThreshold = 30 * time.Minute
 	}
 	return &Dispatcher{
-		stories:            stories,
-		tasks:              tasks,
-		sessions:           sessions,
-		templates:          templates,
-		comments:           comments,
-		activities:         activities,
-		hub:                hub,
+		stories:            deps.StoryStore,
+		tasks:              deps.TaskStore,
+		sessions:           deps.SessionStore,
+		templates:          deps.TemplateStore,
+		comments:           deps.CommentStore,
+		activities:         deps.ActivityStore,
+		hub:                deps.Broadcaster,
 		eventCh:            make(chan Event, 256),
 		stalenessThreshold: stalenessThreshold,
 		done:               make(chan struct{}),
@@ -84,25 +93,36 @@ func NewDispatcher(
 
 // Start launches the dispatcher goroutine loop and the periodic ticker.
 func (d *Dispatcher) Start() {
-	go d.run()
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		d.run()
+	}()
 }
 
-// Stop signals the dispatcher to shut down gracefully.
+// Stop signals the dispatcher to shut down gracefully. It is idempotent:
+// subsequent calls are no-ops. Stop waits for the event loop to finish.
 func (d *Dispatcher) Stop() {
+	if d.stopped.Swap(true) {
+		return
+	}
 	close(d.done)
+	d.wg.Wait()
 }
 
-// Submit sends an event to the dispatcher channel. It is non-blocking: if
-// the channel is full, the event is dropped and a warning is logged.
+// Wait blocks until the dispatcher event loop exits.
+func (d *Dispatcher) Wait() {
+	d.wg.Wait()
+}
+
+// Submit sends an event to the dispatcher channel. It prefers delivering the
+// event, but if the channel is full it blocks until either the event can be
+// delivered or the dispatcher is shutting down.
 func (d *Dispatcher) Submit(event Event) {
 	select {
 	case d.eventCh <- event:
-	default:
-		slog.Warn("dispatcher event channel full, dropping event",
-			"event_type", event.Type,
-			"task_id", event.TaskID,
-			"session_id", event.SessionID,
-		)
+	case <-d.done:
+		// Dispatcher is shutting down; discard event.
 	}
 }
 
@@ -114,7 +134,7 @@ func (d *Dispatcher) AssignWork(ctx context.Context, sessionID string) (*models.
 	if err != nil {
 		return nil, fmt.Errorf("get session %q: %w", sessionID, err)
 	}
-	if session.Status != "active" {
+	if session.Status != models.SessionStatusActive {
 		return nil, fmt.Errorf("session %q is not active (status=%q)", sessionID, session.Status)
 	}
 
@@ -202,25 +222,7 @@ func (d *Dispatcher) handleTaskBlocked(ctx context.Context, event Event) {
 	}
 
 	// Re-check whether all deps are now satisfied (task may already be unblocked).
-	blockers, err := d.tasks.GetBlockers(ctx, event.TaskID)
-	if err != nil {
-		slog.Error("dispatcher: failed to get blockers for blocked event",
-			"task_id", event.TaskID, "error", err)
-		return
-	}
-	if len(blockers) == 0 {
-		// All dependencies resolved — transition to ready.
-		if err := d.tasks.UpdateStatus(ctx, event.TaskID, models.StatusReady); err != nil {
-			slog.Error("dispatcher: failed to unblock task",
-				"task_id", event.TaskID, "error", err)
-			return
-		}
-		d.logActivity(ctx, event.TaskID, models.WorkItemTypeTask, "unblocked", "")
-		d.hub.Broadcast("task_status_changed", map[string]string{
-			"task_id": event.TaskID,
-			"status":  models.StatusReady,
-		})
-	}
+	d.tryUnblockTask(ctx, event.TaskID)
 
 	// Attempt assignment in case a session is available for other work.
 	d.runAssignmentPass(ctx)
@@ -266,33 +268,37 @@ func (d *Dispatcher) handleDependencyAdded(ctx context.Context, event Event) {
 
 	// If the task is blocked, re-check whether all deps are now satisfied.
 	if task.Status == models.StatusBlocked {
-		blockers, err := d.tasks.GetBlockers(ctx, event.TaskID)
-		if err != nil {
-			slog.Error("dispatcher: failed to get blockers",
-				"task_id", event.TaskID, "error", err)
-			return
-		}
-		if len(blockers) == 0 {
-			// All dependencies resolved — transition to ready.
-			if err := d.tasks.UpdateStatus(ctx, event.TaskID, models.StatusReady); err != nil {
-				slog.Error("dispatcher: failed to unblock task",
-					"task_id", event.TaskID, "error", err)
-				return
-			}
-			d.logActivity(ctx, event.TaskID, models.WorkItemTypeTask, "unblocked", "")
-			d.hub.Broadcast("task_status_changed", map[string]string{
-				"task_id": event.TaskID,
-				"status":  models.StatusReady,
-			})
-		}
+		d.tryUnblockTask(ctx, event.TaskID)
 	}
+}
+
+// tryUnblockTask checks whether all blockers for a task have been resolved,
+// and if so, transitions the task to Ready.
+func (d *Dispatcher) tryUnblockTask(ctx context.Context, taskID string) {
+	blockers, err := d.tasks.GetBlockers(ctx, taskID)
+	if err != nil {
+		slog.Error("dispatcher: failed to get blockers", "task_id", taskID, "error", err)
+		return
+	}
+	if len(blockers) > 0 {
+		return
+	}
+	if err := d.tasks.UpdateStatus(ctx, taskID, models.StatusReady); err != nil {
+		slog.Error("dispatcher: failed to unblock task", "task_id", taskID, "error", err)
+		return
+	}
+	d.logActivity(ctx, taskID, string(models.WorkItemTypeTask), "unblocked", "")
+	d.hub.Broadcast("task_status_changed", map[string]string{
+		"task_id": taskID,
+		"status":  string(models.StatusReady),
+	})
 }
 
 // logActivity is a helper that logs an activity entry and logs any error.
 func (d *Dispatcher) logActivity(ctx context.Context, workItemID, workItemType, action, details string) {
 	entry := &models.ActivityLogEntry{
 		WorkItemID:   workItemID,
-		WorkItemType: workItemType,
+		WorkItemType: models.WorkItemType(workItemType),
 		Action:       action,
 		Details:      details,
 	}

@@ -1,5 +1,6 @@
 import type {
   Story,
+  StoryWithTasks,
   Task,
   Session,
   Comment,
@@ -10,22 +11,46 @@ import type {
   WorkComplete,
   WorkBlock,
   BoardState,
+  User,
+  AuthResponse,
 } from '../types'
+import { useAuthStore } from '../stores/auth'
 
 const BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = localStorage.getItem('loom_auth_token')
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
     ...options,
+    headers: { ...headers, ...options?.headers },
   })
+
+  if (res.status === 401) {
+    useAuthStore.getState().logout()
+    window.location.href = '/login'
+    throw new Error('Unauthorized')
+  }
+
+  if (res.status === 403) {
+    console.error('Forbidden')
+    window.location.href = '/'
+    throw new Error('Forbidden')
+  }
+
+  if (res.status === 204) return undefined as T;
+
   if (!res.ok) {
     const body = await res.text().catch(() => res.statusText)
     throw new Error(`API ${res.status}: ${body}`)
   }
+
   return res.json()
 }
 
@@ -47,7 +72,7 @@ export async function fetchStories(filter?: StoryFilter): Promise<Story[]> {
   return request(`/stories${qs ? `?${qs}` : ''}`)
 }
 
-export async function fetchStory(id: string): Promise<Story> {
+export async function fetchStory(id: string): Promise<StoryWithTasks> {
   return request(`/stories/${id}`)
 }
 
@@ -79,7 +104,13 @@ export async function fetchTasks(filter?: TaskFilter): Promise<Task[]> {
   return request(`/tasks${qs ? `?${qs}` : ''}`)
 }
 
-export async function fetchTask(id: string): Promise<Task> {
+/** Response shape of GET /api/tasks/{id} */
+export interface TaskDetailResponse {
+  task: Task
+  dependencies: string[]
+}
+
+export async function fetchTask(id: string): Promise<TaskDetailResponse> {
   return request(`/tasks/${id}`)
 }
 
@@ -245,4 +276,41 @@ export async function upsertTemplate(
   data: { template: string },
 ): Promise<PromptTemplate> {
   return request(`/templates/${taskType}`, { method: 'PUT', body: JSON.stringify(data) })
+}
+
+// ── Auth ────────────────────────────────────────────────────────────────
+
+export async function login(data: { username_or_email: string; password: string }): Promise<AuthResponse> {
+  return request('/auth/login', { method: 'POST', body: JSON.stringify(data) })
+}
+
+export async function signup(data: { username: string; email: string; password: string; display_name?: string }): Promise<AuthResponse> {
+  return request('/auth/signup', { method: 'POST', body: JSON.stringify(data) })
+}
+
+export async function postLogout(): Promise<void> {
+  await request('/auth/logout', { method: 'POST' })
+  useAuthStore.getState().logout()
+}
+
+export async function getMe(): Promise<{ user: User }> {
+  return request('/auth/me')
+}
+
+export async function getOnboardingCheck(): Promise<{ onboarding_required: boolean }> {
+  return request('/auth/onboarding-check')
+}
+
+// ── Users ────────────────────────────────────────────────────────────────
+
+export async function getUsers(): Promise<User[]> {
+  return request<User[]>('/users')
+}
+
+export async function postUser(data: { username: string; email: string; display_name: string; password: string; role: 'admin' | 'normal' }): Promise<User> {
+  return request<User>('/users', { method: 'POST', body: JSON.stringify(data) })
+}
+
+export async function deleteUser(id: string): Promise<void> {
+  await request(`/users/${id}`, { method: 'DELETE' })
 }

@@ -1,8 +1,6 @@
 package api
 
 import (
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -64,7 +62,7 @@ func (h *handlers) registerStoryRoutes(r chi.Router) {
 // listStories handles GET /api/stories
 func (h *handlers) listStories(w http.ResponseWriter, r *http.Request) {
 	filter := store.StoryFilter{
-		Status:     r.URL.Query().Get("status"),
+		Status:     models.Status(r.URL.Query().Get("status")),
 		AssignedTo: r.URL.Query().Get("assigned_to"),
 	}
 
@@ -83,24 +81,29 @@ func (h *handlers) listStories(w http.ResponseWriter, r *http.Request) {
 // createStory handles POST /api/stories
 func (h *handlers) createStory(w http.ResponseWriter, r *http.Request) {
 	var req createStoryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 
-	if req.Title == "" {
+	if strings.TrimSpace(req.Title) == "" {
 		respondError(w, http.StatusBadRequest, "title is required")
 		return
 	}
 
+	if req.AssigneeType != "" && !validAssigneeType(req.AssigneeType) {
+		respondError(w, http.StatusBadRequest, "invalid assignee_type")
+		return
+	}
+
 	story := &models.Story{
-		Title:          req.Title,
+		Title:          strings.TrimSpace(req.Title),
 		Description:    req.Description,
 		Priority:       req.Priority,
 		RequiresBuild:  req.RequiresBuild,
 		RequiresReview: req.RequiresReview,
 		AssignedTo:     req.AssignedTo,
-		AssigneeType:   req.AssigneeType,
+		AssigneeType:   models.AssigneeType(req.AssigneeType),
 		SortOrder:      req.SortOrder,
 	}
 
@@ -115,7 +118,7 @@ func (h *handlers) createStory(w http.ResponseWriter, r *http.Request) {
 	if currentUser != nil {
 		details = "Created by user " + currentUser.Username
 	}
-	_ = h.activity.Log(r.Context(), &models.ActivityLogEntry{
+	h.logActivity(r.Context(), &models.ActivityLogEntry{
 		WorkItemID:   story.ID,
 		WorkItemType: models.WorkItemTypeStory,
 		Action:       "story_created",
@@ -127,21 +130,19 @@ func (h *handlers) createStory(w http.ResponseWriter, r *http.Request) {
 
 // getStory handles GET /api/stories/{id}
 func (h *handlers) getStory(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
-	resolvedID, err := h.resolveWorkItemID(r.Context(), id, models.WorkItemTypeStory)
+	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeStory))
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "story not found")
 			return
 		}
 		respondError(w, http.StatusBadRequest, "invalid story id: "+err.Error())
 		return
 	}
-	id = resolvedID
 
 	story, tasks, err := h.stories.GetWithTasks(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "story not found")
 			return
 		}
@@ -161,21 +162,19 @@ func (h *handlers) getStory(w http.ResponseWriter, r *http.Request) {
 
 // updateStory handles PUT /api/stories/{id}
 func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
-	resolvedID, err := h.resolveWorkItemID(r.Context(), id, models.WorkItemTypeStory)
+	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeStory))
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "story not found")
 			return
 		}
 		respondError(w, http.StatusBadRequest, "invalid story id: "+err.Error())
 		return
 	}
-	id = resolvedID
 
 	story, err := h.stories.GetByID(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "story not found")
 			return
 		}
@@ -184,14 +183,18 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req updateStoryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 
 	// Apply partial updates.
 	if req.Title != nil {
-		story.Title = *req.Title
+		if strings.TrimSpace(*req.Title) == "" {
+			respondError(w, http.StatusBadRequest, "title cannot be empty")
+			return
+		}
+		story.Title = strings.TrimSpace(*req.Title)
 	}
 	if req.Description != nil {
 		story.Description = *req.Description
@@ -209,13 +212,21 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 		story.AssignedTo = *req.AssignedTo
 	}
 	if req.AssigneeType != nil {
-		story.AssigneeType = *req.AssigneeType
+		if !validAssigneeType(*req.AssigneeType) {
+			respondError(w, http.StatusBadRequest, "invalid assignee_type")
+			return
+		}
+		story.AssigneeType = models.AssigneeType(*req.AssigneeType)
 	}
 	if req.SortOrder != nil {
 		story.SortOrder = *req.SortOrder
 	}
 
 	if err := h.stories.Update(r.Context(), story); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusConflict, "story was modified or deleted concurrently")
+			return
+		}
 		respondError(w, http.StatusInternalServerError, "failed to update story: "+err.Error())
 		return
 	}
@@ -225,20 +236,18 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 
 // updateStoryStatus handles PATCH /api/stories/{id}/status
 func (h *handlers) updateStoryStatus(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
-	resolvedID, err := h.resolveWorkItemID(r.Context(), id, models.WorkItemTypeStory)
+	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeStory))
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "story not found")
 			return
 		}
 		respondError(w, http.StatusBadRequest, "invalid story id: "+err.Error())
 		return
 	}
-	id = resolvedID
 
 	var req updateStatusRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -248,17 +257,21 @@ func (h *handlers) updateStoryStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.stories.UpdateStatus(r.Context(), id, req.Status); err != nil {
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "invalid transition") {
-			respondError(w, http.StatusBadRequest, errMsg)
+	if !validStatus(req.Status) {
+		respondError(w, http.StatusBadRequest, "invalid status value")
+		return
+	}
+
+	if err := h.stories.UpdateStatus(r.Context(), id, models.Status(req.Status)); err != nil {
+		if errors.Is(err, store.ErrInvalidTransition) {
+			respondError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "story not found")
 			return
 		}
-		respondError(w, http.StatusInternalServerError, "failed to update story status: "+errMsg)
+		respondError(w, http.StatusInternalServerError, "failed to update story status: "+err.Error())
 		return
 	}
 
@@ -274,29 +287,26 @@ func (h *handlers) updateStoryStatus(w http.ResponseWriter, r *http.Request) {
 
 // deleteStory handles DELETE /api/stories/{id}
 func (h *handlers) deleteStory(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
-	resolvedID, err := h.resolveWorkItemID(r.Context(), id, models.WorkItemTypeStory)
+	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeStory))
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "story not found")
 			return
 		}
 		respondError(w, http.StatusBadRequest, "invalid story id: "+err.Error())
 		return
 	}
-	id = resolvedID
 
 	if err := h.stories.Delete(r.Context(), id); err != nil {
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "cannot delete") {
-			respondError(w, http.StatusBadRequest, errMsg)
-			return
-		}
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "story not found")
 			return
 		}
-		respondError(w, http.StatusInternalServerError, "failed to delete story: "+errMsg)
+		if errors.Is(err, store.ErrInvalidTransition) {
+			respondError(w, http.StatusBadRequest, "only stories in 'new' status can be deleted")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to delete story: "+err.Error())
 		return
 	}
 

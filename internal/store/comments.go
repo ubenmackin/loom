@@ -5,14 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/ubenmackin/loom/internal/models"
 )
 
 // nextCommentID generates the next comment ID in the format COMMENT-NNNNNN.
-// It uses the work_item_sequence table for atomic, race-free ID generation,
-// consistent with the pattern used by stories and tasks.
 func (s *CommentStore) nextCommentID(ctx context.Context) (string, error) {
 	res, err := s.db.ExecContext(ctx, "INSERT INTO work_item_sequence (type) VALUES ('comment')")
 	if err != nil {
@@ -35,7 +34,29 @@ func NewCommentStore(db *sql.DB) *CommentStore {
 	return &CommentStore{db: db}
 }
 
+// scanCommentRow is a helper to scan a comment row from a *sql.Row or *sql.Rows.
+func scanCommentRow(scanner interface{ Scan(...any) error }) (*models.Comment, error) {
+	c := &models.Comment{}
+	var body sql.NullString
+	var createdAt, updatedAt sql.NullTime
+
+	err := scanner.Scan(
+		&c.ID, &c.WorkItemID, &c.WorkItemType, &c.AuthorID, &c.AuthorType,
+		&body, &createdAt, &updatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	c.Body = stringOrZero(body)
+	c.CreatedAt = timeOrZero(createdAt)
+	c.UpdatedAt = timeOrZero(updatedAt)
+
+	return c, nil
+}
+
 // Create inserts a new comment. If the ID is empty, it is auto-generated.
+// It mutates the pointer to set ID, CreatedAt, and UpdatedAt.
 func (s *CommentStore) Create(ctx context.Context, c *models.Comment) error {
 	if c.ID == "" {
 		id, err := s.nextCommentID(ctx)
@@ -67,34 +88,19 @@ func (s *CommentStore) GetByID(ctx context.Context, id string) (*models.Comment,
 		`SELECT id, work_item_id, work_item_type, author_id, author_type, body, created_at, updated_at
 		 FROM comments WHERE id = ?`, id)
 
-	c := &models.Comment{}
-	var body sql.NullString
-	var createdAt, updatedAt sql.NullTime
-
-	err := row.Scan(
-		&c.ID, &c.WorkItemID, &c.WorkItemType, &c.AuthorID, &c.AuthorType,
-		&body, &createdAt, &updatedAt,
-	)
+	c, err := scanCommentRow(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("comment %q: %w", id, sql.ErrNoRows)
+			return nil, fmt.Errorf("comment %q: %w", id, ErrNotFound)
 		}
 		return nil, fmt.Errorf("query comment %q: %w", id, err)
-	}
-
-	c.Body = body.String
-	if createdAt.Valid {
-		c.CreatedAt = createdAt.Time
-	}
-	if updatedAt.Valid {
-		c.UpdatedAt = updatedAt.Time
 	}
 
 	return c, nil
 }
 
 // GetByWorkItem returns comments for a given work item, ordered by created_at.
-func (s *CommentStore) GetByWorkItem(ctx context.Context, workItemID string, workItemType string) ([]*models.Comment, error) {
+func (s *CommentStore) GetByWorkItem(ctx context.Context, workItemID string, workItemType models.WorkItemType) ([]*models.Comment, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, work_item_id, work_item_type, author_id, author_type, body, created_at, updated_at
 		 FROM comments
@@ -103,20 +109,23 @@ func (s *CommentStore) GetByWorkItem(ctx context.Context, workItemID string, wor
 	if err != nil {
 		return nil, fmt.Errorf("get comments for %s %q: %w", workItemType, workItemID, err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	return scanComments(rows)
 }
 
 // Update modifies a comment. Only the original author may update.
 func (s *CommentStore) Update(ctx context.Context, c *models.Comment) error {
-	// Verify the author matches the existing comment.
 	existing, err := s.GetByID(ctx, c.ID)
 	if err != nil {
 		return fmt.Errorf("get comment for update: %w", err)
 	}
 	if existing.AuthorID != c.AuthorID {
-		return fmt.Errorf("only the author can update comment %q (author=%q, requester=%q)", c.ID, existing.AuthorID, c.AuthorID)
+		return fmt.Errorf("%w: only the author can update comment %q (author=%q, requester=%q)", ErrUnauthorizedAuthor, c.ID, existing.AuthorID, c.AuthorID)
 	}
 
 	c.UpdatedAt = time.Now().UTC()
@@ -133,7 +142,7 @@ func (s *CommentStore) Update(ctx context.Context, c *models.Comment) error {
 		return fmt.Errorf("rows affected comment %q: %w", c.ID, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("comment %q: %w", c.ID, sql.ErrNoRows)
+		return fmt.Errorf("comment %q: %w", c.ID, ErrNotFound)
 	}
 
 	return nil
@@ -141,13 +150,12 @@ func (s *CommentStore) Update(ctx context.Context, c *models.Comment) error {
 
 // Delete removes a comment. Only the original author may delete.
 func (s *CommentStore) Delete(ctx context.Context, id, authorID string) error {
-	// Verify the author matches the existing comment.
 	existing, err := s.GetByID(ctx, id)
 	if err != nil {
 		return fmt.Errorf("get comment for delete: %w", err)
 	}
 	if existing.AuthorID != authorID {
-		return fmt.Errorf("only the author can delete comment %q (author=%q, requester=%q)", id, existing.AuthorID, authorID)
+		return fmt.Errorf("%w: only the author can delete comment %q (author=%q, requester=%q)", ErrUnauthorizedAuthor, id, existing.AuthorID, authorID)
 	}
 
 	result, err := s.db.ExecContext(ctx,
@@ -162,10 +170,9 @@ func (s *CommentStore) Delete(ctx context.Context, id, authorID string) error {
 		return fmt.Errorf("rows affected delete comment %q: %w", id, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("comment %q: %w", id, sql.ErrNoRows)
+		return fmt.Errorf("comment %q: %w", id, ErrNotFound)
 	}
 
-	// Also remove unread entries for this comment.
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM unread_comments WHERE comment_id = ?`, id)
 
 	return nil
@@ -183,8 +190,7 @@ func (s *CommentStore) MarkAsRead(ctx context.Context, sessionID, commentID stri
 	return nil
 }
 
-// GetUnreadForSession returns unread comments for tasks assigned to the
-// given session.
+// GetUnreadForSession returns unread comments for tasks assigned to the given session.
 func (s *CommentStore) GetUnreadForSession(ctx context.Context, sessionID string) ([]*models.Comment, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT c.id, c.work_item_id, c.work_item_type, c.author_id, c.author_type, c.body, c.created_at, c.updated_at
@@ -196,7 +202,11 @@ func (s *CommentStore) GetUnreadForSession(ctx context.Context, sessionID string
 	if err != nil {
 		return nil, fmt.Errorf("get unread comments for session %q: %w", sessionID, err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	return scanComments(rows)
 }
@@ -205,23 +215,9 @@ func (s *CommentStore) GetUnreadForSession(ctx context.Context, sessionID string
 func scanComments(rows *sql.Rows) ([]*models.Comment, error) {
 	var comments []*models.Comment
 	for rows.Next() {
-		c := &models.Comment{}
-		var body sql.NullString
-		var createdAt, updatedAt sql.NullTime
-
-		if err := rows.Scan(
-			&c.ID, &c.WorkItemID, &c.WorkItemType, &c.AuthorID, &c.AuthorType,
-			&body, &createdAt, &updatedAt,
-		); err != nil {
+		c, err := scanCommentRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan comment: %w", err)
-		}
-
-		c.Body = body.String
-		if createdAt.Valid {
-			c.CreatedAt = createdAt.Time
-		}
-		if updatedAt.Valid {
-			c.UpdatedAt = updatedAt.Time
 		}
 
 		comments = append(comments, c)

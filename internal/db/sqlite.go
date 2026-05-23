@@ -118,6 +118,48 @@ func Migrate(db *sql.DB) error {
 	return nil
 }
 
+// backfillTable assigns sequential numeric_ids to rows in the given table
+// that have NULL or 0 numeric_id, using the work_item_sequence table.
+func backfillTable(tx *sql.Tx, table, seqType string) error {
+	rows, err := tx.Query(fmt.Sprintf("SELECT id FROM %s WHERE numeric_id IS NULL OR numeric_id = 0 ORDER BY created_at, id", table))
+	if err != nil {
+		return fmt.Errorf("query unassigned %s: %w", table, err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("scan unassigned %s id: %w", table, err)
+		}
+		ids = append(ids, id)
+	}
+	_ = rows.Close()
+
+	for _, id := range ids {
+		res, err := tx.Exec("INSERT INTO work_item_sequence (type) VALUES (?)", seqType)
+		if err != nil {
+			return fmt.Errorf("insert work item sequence for %s: %w", table, err)
+		}
+		numID, err := res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("get last insert id for %s: %w", table, err)
+		}
+		_, err = tx.Exec(fmt.Sprintf("UPDATE %s SET numeric_id = ? WHERE id = ?", table), numID, id)
+		if err != nil {
+			return fmt.Errorf("update %s numeric id: %w", table, err)
+		}
+		log.Printf("Backfilled %s %s with numeric_id %d", table, id, numID)
+	}
+
+	return nil
+}
+
 // BackfillNumericIDs checks if there are any stories or tasks with NULL or 0 numeric_id,
 // and populates them sequentially from the work_item_sequence table.
 func BackfillNumericIDs(db *sql.DB) error {
@@ -127,72 +169,11 @@ func BackfillNumericIDs(db *sql.DB) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// 1. Find all stories with NULL or 0 numeric_id, ordered by creation date or string id
-	rows, err := tx.Query("SELECT id FROM stories WHERE numeric_id IS NULL OR numeric_id = 0 ORDER BY created_at, id")
-	if err != nil {
-		return fmt.Errorf("query unassigned stories: %w", err)
+	if err := backfillTable(tx, "stories", "story"); err != nil {
+		return err
 	}
-	defer func() { _ = rows.Close() }()
-
-	var storyIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return fmt.Errorf("scan unassigned story id: %w", err)
-		}
-		storyIDs = append(storyIDs, id)
-	}
-	_ = rows.Close()
-
-	// Update each story with a new sequence ID
-	for _, id := range storyIDs {
-		res, err := tx.Exec("INSERT INTO work_item_sequence (type) VALUES ('story')")
-		if err != nil {
-			return fmt.Errorf("insert work item sequence for story: %w", err)
-		}
-		numID, err := res.LastInsertId()
-		if err != nil {
-			return fmt.Errorf("get last insert id for story: %w", err)
-		}
-		_, err = tx.Exec("UPDATE stories SET numeric_id = ? WHERE id = ?", numID, id)
-		if err != nil {
-			return fmt.Errorf("update story numeric id: %w", err)
-		}
-		log.Printf("Backfilled story %s with numeric_id %d", id, numID)
-	}
-
-	// 2. Find all tasks with NULL or 0 numeric_id, ordered by creation date or string id
-	rows, err = tx.Query("SELECT id FROM tasks WHERE numeric_id IS NULL OR numeric_id = 0 ORDER BY created_at, id")
-	if err != nil {
-		return fmt.Errorf("query unassigned tasks: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var taskIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return fmt.Errorf("scan unassigned task id: %w", err)
-		}
-		taskIDs = append(taskIDs, id)
-	}
-	_ = rows.Close()
-
-	// Update each task with a new sequence ID
-	for _, id := range taskIDs {
-		res, err := tx.Exec("INSERT INTO work_item_sequence (type) VALUES ('task')")
-		if err != nil {
-			return fmt.Errorf("insert work item sequence for task: %w", err)
-		}
-		numID, err := res.LastInsertId()
-		if err != nil {
-			return fmt.Errorf("get last insert id for task: %w", err)
-		}
-		_, err = tx.Exec("UPDATE tasks SET numeric_id = ? WHERE id = ?", numID, id)
-		if err != nil {
-			return fmt.Errorf("update task numeric id: %w", err)
-		}
-		log.Printf("Backfilled task %s with numeric_id %d", id, numID)
+	if err := backfillTable(tx, "tasks", "task"); err != nil {
+		return err
 	}
 
 	return tx.Commit()

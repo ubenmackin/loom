@@ -26,7 +26,7 @@ var mustachePattern = regexp.MustCompile(`\{\{([\w.]+)\}\}`)
 //   - {{last_build_comment}}  → most recent build-related comment on the task
 //   - {{last_review_comment}} → most recent review-related comment on the task
 func (d *Dispatcher) assemblePrompt(ctx context.Context, task *models.Task, story *models.Story) (string, error) {
-	tmpl, err := d.templates.GetByTaskType(ctx, task.TaskType)
+	tmpl, err := d.templates.GetByTaskType(ctx, string(task.TaskType))
 	if err != nil {
 		slog.Info("dispatcher: no template found for task type, using default prompt",
 			"task_type", task.TaskType, "error", err)

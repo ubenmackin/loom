@@ -1,47 +1,27 @@
 import SharpTag from './SharpTag'
 import type { Task, StatusType } from '../types'
 import { Status } from '../types'
-import { statusVariant } from '../utils/statusVariant'
+import { statusVariant, statusDotClass } from '../utils/status'
 
 interface DependencyGraphProps {
   storyId: string
   tasks: Task[]
 }
 
-// TODO: v2 upgrade to visual graph using SVG/canvas with node-edge layout
-// Current v1: list/table format grouped by dependent task
-
-function depStatusDotVariant(status: StatusType): string {
-  switch (status) {
-    case 'done':
-      return 'status-dot-success'
-    case 'blocked':
-      return 'status-dot-error'
-    case 'in_progress':
-    case 'ready':
-      return 'status-dot-warning'
-    default:
-      return 'status-dot-info'
-  }
-}
+// v1: Displays a task status overview grouped by state (blocked, done, active)
+// v2: Planned upgrade to visual graph using SVG/canvas with node-edge layout
 
 export default function DependencyGraph({ tasks }: DependencyGraphProps) {
-  // Build dependency map: taskId -> list of tasks it depends on
-  // For v1, we show a flat list since deps would come from enriched task data
-  // In a real API, each task would have a `dependencies` or `blockers` field
-
   if (!tasks || tasks.length === 0) {
     return (
       <div className="px-4 py-3 border border-gray-200 dark:border-gray-border">
         <span className="font-mono text-xs text-neutral-400 dark:text-neutral-500">
-          No tasks to display dependencies
+          No tasks to display
         </span>
       </div>
     )
   }
 
-  // For v1, show all tasks with their status as a dependency overview
-  // Blocked tasks are highlighted in red
   const blockedTasks = tasks.filter((t) => t.status === Status.Blocked)
   const doneTasks = tasks.filter((t) => t.status === Status.Done)
   const activeTasks = tasks.filter(
@@ -51,7 +31,7 @@ export default function DependencyGraph({ tasks }: DependencyGraphProps) {
   return (
     <div className="px-4 py-3">
       <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-3">
-        Dependencies
+        Task Status Overview
       </label>
 
       {/* Summary stats */}
@@ -78,7 +58,7 @@ export default function DependencyGraph({ tasks }: DependencyGraphProps) {
         )}
       </div>
 
-      {/* Dependency table */}
+      {/* Task table */}
       <div className="border border-gray-200 dark:border-gray-border">
         {/* Header */}
         <div className="grid grid-cols-3 px-4 py-3 border-b border-gray-200 dark:border-gray-border bg-neutral-50 dark:bg-neutral-900/50">
@@ -100,13 +80,12 @@ export default function DependencyGraph({ tasks }: DependencyGraphProps) {
             className="grid grid-cols-3 px-4 py-1 border-b border-gray-200 dark:border-gray-border last:border-b-0"
           >
             <div className="flex items-center gap-2">
-              <span className={`status-dot ${depStatusDotVariant(task.status)}`} />
+              <span className={statusDotClass(task.status)} />
               <span className="font-mono text-xs text-neutral-800 dark:text-light-neutral">
                 {task.id}
               </span>
             </div>
             <div className="flex items-center gap-1">
-              {/* In v1, show placeholder — real deps come from API */}
               <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-600">
                 —
               </span>

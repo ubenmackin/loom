@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { useActivity } from '../hooks/useActivity'
 import { relativeTime } from '../utils/relativeTime'
 import type { ActivityLogEntry } from '../types'
+import StoryDetail from '../components/StoryDetail'
 
 function actionColor(action: string): string {
   switch (action) {
@@ -27,7 +29,7 @@ function ActionBadge({ action }: { action: string }) {
   )
 }
 
-function ActivityItem({ entry }: { entry: ActivityLogEntry }) {
+function ActivityItem({ entry, onStoryClick }: { entry: ActivityLogEntry; onStoryClick: (storyId: string) => void }) {
   return (
     <div className="flex items-start gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-border hover:bg-gray-50 dark:hover:bg-charcoal-darkest transition-colors">
       {/* Timestamp */}
@@ -43,9 +45,18 @@ function ActivityItem({ entry }: { entry: ActivityLogEntry }) {
         <span className="text-neutral-400 dark:text-neutral-500">
           {entry.work_item_type}
         </span>{' '}
-        <span className="text-purple-active">
-          {entry.work_item_id.slice(0, 8)}
-        </span>
+        {entry.work_item_type === 'story' ? (
+          <button
+            onClick={() => onStoryClick(entry.work_item_id)}
+            className="text-purple-active cursor-pointer hover:underline font-bold"
+          >
+            {entry.work_item_id.slice(0, 8)}
+          </button>
+        ) : (
+          <span className="text-purple-active">
+            {entry.work_item_id.slice(0, 8)}
+          </span>
+        )}
       </span>
 
       {/* Details */}
@@ -60,6 +71,7 @@ function ActivityItem({ entry }: { entry: ActivityLogEntry }) {
 
 export default function ActivityPage() {
   const { data: entries, isLoading, error, refetch } = useActivity()
+  const [selectedStoryId, setSelectedStoryId] = useState<string | null>(null)
 
   if (isLoading) {
     return (
@@ -102,7 +114,9 @@ export default function ActivityPage() {
       {/* Activity List */}
       <div className="flex-1 overflow-y-auto">
         {entries && entries.length > 0 ? (
-          entries.map((entry) => <ActivityItem key={entry.id} entry={entry} />)
+          entries.map((entry) => (
+            <ActivityItem key={entry.id} entry={entry} onStoryClick={setSelectedStoryId} />
+          ))
         ) : (
           <div className="flex items-center justify-center py-16">
             <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-600 uppercase tracking-widest">
@@ -111,6 +125,8 @@ export default function ActivityPage() {
           </div>
         )}
       </div>
+
+      {selectedStoryId && <StoryDetail storyId={selectedStoryId} onClose={() => setSelectedStoryId(null)} />}
     </div>
   )
 }

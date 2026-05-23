@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +20,22 @@ type TemplateStore struct {
 // NewTemplateStore creates a new TemplateStore.
 func NewTemplateStore(db *sql.DB) *TemplateStore {
 	return &TemplateStore{db: db}
+}
+
+// scanTemplateRow is a helper to scan a prompt template row from a *sql.Row or *sql.Rows.
+func scanTemplateRow(scanner interface{ Scan(...any) error }) (*models.PromptTemplate, error) {
+	t := &models.PromptTemplate{}
+	var createdAt, updatedAt sql.NullTime
+
+	err := scanner.Scan(&t.ID, &t.TaskType, &t.Template, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+
+	t.CreatedAt = timeOrZero(createdAt)
+	t.UpdatedAt = timeOrZero(updatedAt)
+
+	return t, nil
 }
 
 // Create inserts a new prompt template. If the ID is empty, a UUID is generated.
@@ -48,22 +65,12 @@ func (s *TemplateStore) GetByTaskType(ctx context.Context, taskType string) (*mo
 		`SELECT id, task_type, template, created_at, updated_at
 		 FROM prompt_templates WHERE task_type = ?`, taskType)
 
-	t := &models.PromptTemplate{}
-	var createdAt, updatedAt sql.NullTime
-
-	err := row.Scan(&t.ID, &t.TaskType, &t.Template, &createdAt, &updatedAt)
+	t, err := scanTemplateRow(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("template for task_type %q: %w", taskType, sql.ErrNoRows)
+			return nil, fmt.Errorf("template for task_type %q: %w", taskType, ErrNotFound)
 		}
 		return nil, fmt.Errorf("query template by task_type %q: %w", taskType, err)
-	}
-
-	if createdAt.Valid {
-		t.CreatedAt = createdAt.Time
-	}
-	if updatedAt.Valid {
-		t.UpdatedAt = updatedAt.Time
 	}
 
 	return t, nil
@@ -77,22 +84,17 @@ func (s *TemplateStore) List(ctx context.Context) ([]*models.PromptTemplate, err
 	if err != nil {
 		return nil, fmt.Errorf("list prompt templates: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	var templates []*models.PromptTemplate
 	for rows.Next() {
-		t := &models.PromptTemplate{}
-		var createdAt, updatedAt sql.NullTime
-
-		if err := rows.Scan(&t.ID, &t.TaskType, &t.Template, &createdAt, &updatedAt); err != nil {
+		t, err := scanTemplateRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan prompt template: %w", err)
-		}
-
-		if createdAt.Valid {
-			t.CreatedAt = createdAt.Time
-		}
-		if updatedAt.Valid {
-			t.UpdatedAt = updatedAt.Time
 		}
 
 		templates = append(templates, t)
@@ -108,7 +110,6 @@ func (s *TemplateStore) List(ctx context.Context) ([]*models.PromptTemplate, err
 func (s *TemplateStore) Upsert(ctx context.Context, t *models.PromptTemplate) error {
 	now := time.Now().UTC()
 
-	// Check if a template with this task_type already exists.
 	var existingID string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id FROM prompt_templates WHERE task_type = ?`, t.TaskType,
@@ -119,7 +120,6 @@ func (s *TemplateStore) Upsert(ctx context.Context, t *models.PromptTemplate) er
 	}
 
 	if existingID != "" {
-		// Update existing.
 		t.ID = existingID
 		t.UpdatedAt = now
 
@@ -136,10 +136,9 @@ func (s *TemplateStore) Upsert(ctx context.Context, t *models.PromptTemplate) er
 			return fmt.Errorf("rows affected upsert template: %w", err)
 		}
 		if rows == 0 {
-			return fmt.Errorf("template %q: %w", t.ID, sql.ErrNoRows)
+			return fmt.Errorf("template %q: %w", t.ID, ErrNotFound)
 		}
 	} else {
-		// Create new.
 		if t.ID == "" {
 			t.ID = uuid.New().String()
 		}
@@ -173,7 +172,7 @@ func (s *TemplateStore) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("rows affected delete template %q: %w", id, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("template %q: %w", id, sql.ErrNoRows)
+		return fmt.Errorf("template %q: %w", id, ErrNotFound)
 	}
 
 	return nil

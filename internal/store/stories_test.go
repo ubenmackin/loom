@@ -2,76 +2,18 @@ package store
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
+	"errors"
 	"strings"
 	"testing"
-	"time"
 
-	_ "modernc.org/sqlite"
-
-	"github.com/ubenmackin/loom/internal/db"
 	"github.com/ubenmackin/loom/internal/models"
+	"github.com/ubenmackin/loom/internal/testhelpers"
 )
-
-func setupTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-
-	// Use a unique timestamp to ensure no shared state between parallel tests.
-	dbName := fmt.Sprintf("test_%s_%d", t.Name(), time.Now().UnixNano())
-	dsn := "file:" + dbName + "?mode=memory&cache=shared"
-
-	dbConn, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-
-	if _, err := dbConn.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatalf("enable foreign keys: %v", err)
-	}
-
-	if err := db.Migrate(dbConn); err != nil {
-		t.Fatalf("migrate test db: %v", err)
-	}
-
-	t.Cleanup(func() {
-		_ = dbConn.Close()
-	})
-
-	return dbConn
-}
-
-func createTestStory(t *testing.T, store *StoryStore, title, status string) *models.Story {
-	t.Helper()
-	story := &models.Story{Title: title, Status: status}
-	if story.Status == "" {
-		story.Status = models.StatusNew
-	}
-	if err := store.Create(context.Background(), story); err != nil {
-		t.Fatalf("create test story %q: %v", title, err)
-	}
-	return story
-}
-
-func createTestTask(t *testing.T, store *TaskStore, storyID, title, status, taskType string) *models.Task {
-	t.Helper()
-	task := &models.Task{StoryID: storyID, Title: title, Status: status, TaskType: taskType}
-	if task.Status == "" {
-		task.Status = models.StatusNew
-	}
-	if task.TaskType == "" {
-		task.TaskType = models.TaskTypeCode
-	}
-	if err := store.Create(context.Background(), task); err != nil {
-		t.Fatalf("create test task %q: %v", title, err)
-	}
-	return task
-}
 
 func TestCreate(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	ctx := context.Background()
 
@@ -111,11 +53,14 @@ func TestCreate(t *testing.T) {
 func TestGetByID(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Get Test", models.StatusReady)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Get Test"
+		s.Status = models.StatusReady
+	})
 
 	got, err := storyStore.GetByID(ctx, story.ID)
 	if err != nil {
@@ -136,13 +81,13 @@ func TestGetByID(t *testing.T) {
 func TestList(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	ctx := context.Background()
 
-	createTestStory(t, storyStore, "Story A", models.StatusNew)
-	createTestStory(t, storyStore, "Story B", models.StatusReady)
-	createTestStory(t, storyStore, "Story C", models.StatusNew)
+	testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Story A"; s.Status = models.StatusNew })
+	testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Story B"; s.Status = models.StatusReady })
+	testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Story C"; s.Status = models.StatusNew })
 
 	t.Run("no filter", func(t *testing.T) {
 		all, err := storyStore.List(ctx, StoryFilter{})
@@ -178,11 +123,14 @@ func TestList(t *testing.T) {
 func TestUpdate(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Update Test", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Update Test"
+		s.Status = models.StatusNew
+	})
 
 	story.Title = "Updated Title"
 	story.Priority = 5
@@ -211,13 +159,13 @@ func TestUpdate(t *testing.T) {
 func TestUpdateStatus_ValidTransition(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	ctx := context.Background()
 
 	validTransitions := []struct {
-		from string
-		to   string
+		from models.Status
+		to   models.Status
 	}{
 		{models.StatusNew, models.StatusReady},
 		{models.StatusNew, models.StatusInProgress},
@@ -226,12 +174,14 @@ func TestUpdateStatus_ValidTransition(t *testing.T) {
 		{models.StatusInProgress, models.StatusBlocked},
 		{models.StatusInProgress, models.StatusDone},
 		{models.StatusBlocked, models.StatusInProgress},
-		{models.StatusBlocked, models.StatusReady},
 	}
 
 	for _, tt := range validTransitions {
-		t.Run(tt.from+"->"+tt.to, func(t *testing.T) {
-			story := createTestStory(t, storyStore, "Transition "+tt.from+"->"+tt.to, tt.from)
+		t.Run(string(tt.from)+"->"+string(tt.to), func(t *testing.T) {
+			story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+				s.Title = "Transition " + string(tt.from) + "->" + string(tt.to)
+				s.Status = tt.from
+			})
 
 			if err := storyStore.UpdateStatus(ctx, story.ID, tt.to); err != nil {
 				t.Fatalf("UpdateStatus() error = %v", err)
@@ -251,13 +201,13 @@ func TestUpdateStatus_ValidTransition(t *testing.T) {
 func TestUpdateStatus_InvalidTransition(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	ctx := context.Background()
 
 	invalidTransitions := []struct {
-		from string
-		to   string
+		from models.Status
+		to   models.Status
 	}{
 		{models.StatusNew, models.StatusDone},
 		{models.StatusDone, models.StatusReady},
@@ -266,15 +216,18 @@ func TestUpdateStatus_InvalidTransition(t *testing.T) {
 	}
 
 	for _, tt := range invalidTransitions {
-		t.Run(tt.from+"->"+tt.to, func(t *testing.T) {
-			story := createTestStory(t, storyStore, "Invalid "+tt.from+"->"+tt.to, tt.from)
+		t.Run(string(tt.from)+"->"+string(tt.to), func(t *testing.T) {
+			story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+				s.Title = "Invalid " + string(tt.from) + "->" + string(tt.to)
+				s.Status = tt.from
+			})
 
 			err := storyStore.UpdateStatus(ctx, story.ID, tt.to)
 			if err == nil {
 				t.Fatalf("UpdateStatus() expected error for %q -> %q, got nil", tt.from, tt.to)
 			}
-			if !strings.Contains(err.Error(), "invalid transition") {
-				t.Errorf("UpdateStatus() error = %v, want 'invalid transition'", err)
+			if !errors.Is(err, ErrInvalidTransition) {
+				t.Errorf("UpdateStatus() error = %v, want ErrInvalidTransition", err)
 			}
 		})
 	}
@@ -283,11 +236,14 @@ func TestUpdateStatus_InvalidTransition(t *testing.T) {
 func TestDelete(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Delete Test", models.StatusNew)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Delete Test"
+		s.Status = models.StatusNew
+	})
 
 	if err := storyStore.Delete(ctx, story.ID); err != nil {
 		t.Fatalf("Delete() error = %v", err)
@@ -297,40 +253,56 @@ func TestDelete(t *testing.T) {
 	if err == nil {
 		t.Fatal("Delete() story still exists after deletion")
 	}
-	if err != sql.ErrNoRows && !strings.Contains(err.Error(), "no rows") {
-		t.Fatalf("Delete() GetByID error = %v, want ErrNoRows", err)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Delete() GetByID error = %v, want ErrNotFound", err)
 	}
 }
 
 func TestDelete_NotNew(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Delete Not New", models.StatusReady)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Delete Not New"
+		s.Status = models.StatusReady
+	})
 
 	err := storyStore.Delete(ctx, story.ID)
 	if err == nil {
 		t.Fatal("Delete() expected error for non-new status, got nil")
 	}
-	if !strings.Contains(err.Error(), "cannot delete") {
-		t.Errorf("Delete() error = %v, want 'cannot delete'", err)
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("Delete() error = %v, want ErrInvalidTransition (story not new)", err)
 	}
 }
 
 func TestGetWithTasks(t *testing.T) {
 	t.Parallel()
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 	storyStore := NewStoryStore(dbConn)
 	taskStore := NewTaskStore(dbConn)
 	ctx := context.Background()
 
-	story := createTestStory(t, storyStore, "Story With Tasks", models.StatusReady)
-	createTestTask(t, taskStore, story.ID, "Task A", models.StatusReady, models.TaskTypeCode)
-	createTestTask(t, taskStore, story.ID, "Task B", models.StatusNew, models.TaskTypeBuild)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Story With Tasks"
+		s.Status = models.StatusReady
+	})
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task A"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task B"
+		ts.Status = models.StatusNew
+		ts.TaskType = models.TaskTypeBuild
+	})
 
 	gotStory, tasks, err := storyStore.GetWithTasks(ctx, story.ID)
 	if err != nil {

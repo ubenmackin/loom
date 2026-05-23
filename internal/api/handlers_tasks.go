@@ -1,10 +1,9 @@
 package api
 
 import (
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -42,6 +41,24 @@ type updateTaskRequest struct {
 	IsStale      *bool   `json:"is_stale,omitempty"`
 }
 
+type reorderTaskRequest struct {
+	StoryID   *string `json:"story_id,omitempty"`
+	Status    *string `json:"status,omitempty"`
+	SortOrder *int    `json:"sort_order,omitempty"`
+	Priority  *int    `json:"priority,omitempty"`
+}
+
+type batchReorderItem struct {
+	ID        string  `json:"id"`
+	SortOrder int     `json:"sort_order"`
+	Status    *string `json:"status,omitempty"`
+	StoryID   *string `json:"story_id,omitempty"`
+}
+
+type batchReorderRequest struct {
+	Tasks []batchReorderItem `json:"tasks"`
+}
+
 type addDependencyRequest struct {
 	DependsOnTaskID string `json:"depends_on_task_id"`
 }
@@ -55,10 +72,12 @@ type taskDetailResponse struct {
 
 func (h *handlers) registerTaskRoutes(r chi.Router) {
 	r.Get("/", h.listTasks)
+	r.Patch("/reorder", h.batchReorderTasks)
 	r.Route("/{id}", func(r chi.Router) {
 		r.Get("/", h.getTask)
 		r.Put("/", h.updateTask)
 		r.Patch("/status", h.updateTaskStatus)
+		r.Patch("/reorder", h.updateTaskReorder)
 		r.Get("/blockers", h.getTaskBlockers)
 		r.Post("/dependencies", h.addDependency)
 		r.Delete("/dependencies/{dependsOnId}", h.removeDependency)
@@ -72,9 +91,9 @@ func (h *handlers) registerTaskRoutes(r chi.Router) {
 func (h *handlers) listTasks(w http.ResponseWriter, r *http.Request) {
 	filter := store.TaskFilter{
 		StoryID:    r.URL.Query().Get("story_id"),
-		Status:     r.URL.Query().Get("status"),
+		Status:     models.Status(r.URL.Query().Get("status")),
 		AssignedTo: r.URL.Query().Get("assigned_to"),
-		TaskType:   r.URL.Query().Get("task_type"),
+		TaskType:   models.TaskType(r.URL.Query().Get("task_type")),
 	}
 
 	tasks, err := h.tasks.List(r.Context(), filter)
@@ -89,17 +108,21 @@ func (h *handlers) listTasks(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, tasks)
 }
 
-// createTaskUnderStory handles POST /api/stories/{storyId}/tasks
+// createTaskUnderStory handles POST /api/stories/{id}/tasks
 func (h *handlers) createTaskUnderStory(w http.ResponseWriter, r *http.Request) {
-	storyID := parseID(r, "storyId")
-	if storyID == "" {
-		respondError(w, http.StatusBadRequest, "missing story id")
+	storyID, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeStory))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "story not found")
+			return
+		}
+		respondError(w, http.StatusBadRequest, "invalid story id: "+err.Error())
 		return
 	}
 
-	// Verify story exists.
+	// Verify story exists (redundant after resolveIDParam for non-numeric IDs, but kept for clarity).
 	if _, err := h.stories.GetByID(r.Context(), storyID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "story not found")
 			return
 		}
@@ -108,29 +131,37 @@ func (h *handlers) createTaskUnderStory(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req createTaskRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 
-	if req.Title == "" {
+	if strings.TrimSpace(req.Title) == "" {
 		respondError(w, http.StatusBadRequest, "title is required")
 		return
 	}
 
 	if req.TaskType == "" {
-		req.TaskType = models.TaskTypeCode
+		req.TaskType = string(models.TaskTypeCode)
+	} else if !validTaskType(req.TaskType) {
+		respondError(w, http.StatusBadRequest, "invalid task_type")
+		return
+	}
+
+	if req.AssigneeType != "" && !validAssigneeType(req.AssigneeType) {
+		respondError(w, http.StatusBadRequest, "invalid assignee_type")
+		return
 	}
 
 	task := &models.Task{
 		StoryID:      storyID,
-		Title:        req.Title,
+		Title:        strings.TrimSpace(req.Title),
 		Description:  req.Description,
 		Priority:     req.Priority,
-		TaskType:     req.TaskType,
+		TaskType:     models.TaskType(req.TaskType),
 		Estimate:     req.Estimate,
 		AssignedTo:   req.AssignedTo,
-		AssigneeType: req.AssigneeType,
+		AssigneeType: models.AssigneeType(req.AssigneeType),
 		SortOrder:    req.SortOrder,
 		Context:      req.Context,
 		Instructions: req.Instructions,
@@ -146,21 +177,19 @@ func (h *handlers) createTaskUnderStory(w http.ResponseWriter, r *http.Request) 
 
 // getTask handles GET /api/tasks/{id}
 func (h *handlers) getTask(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
-	resolvedID, err := h.resolveWorkItemID(r.Context(), id, models.WorkItemTypeTask)
+	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "task not found")
 			return
 		}
 		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
 		return
 	}
-	id = resolvedID
 
 	task, err := h.tasks.GetByID(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "task not found")
 			return
 		}
@@ -185,21 +214,19 @@ func (h *handlers) getTask(w http.ResponseWriter, r *http.Request) {
 
 // updateTask handles PUT /api/tasks/{id}
 func (h *handlers) updateTask(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
-	resolvedID, err := h.resolveWorkItemID(r.Context(), id, models.WorkItemTypeTask)
+	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "task not found")
 			return
 		}
 		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
 		return
 	}
-	id = resolvedID
 
 	task, err := h.tasks.GetByID(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "task not found")
 			return
 		}
@@ -208,14 +235,18 @@ func (h *handlers) updateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req updateTaskRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 
 	// Apply partial updates.
 	if req.Title != nil {
-		task.Title = *req.Title
+		if strings.TrimSpace(*req.Title) == "" {
+			respondError(w, http.StatusBadRequest, "title cannot be empty")
+			return
+		}
+		task.Title = strings.TrimSpace(*req.Title)
 	}
 	if req.Description != nil {
 		task.Description = *req.Description
@@ -224,7 +255,11 @@ func (h *handlers) updateTask(w http.ResponseWriter, r *http.Request) {
 		task.Priority = *req.Priority
 	}
 	if req.TaskType != nil {
-		task.TaskType = *req.TaskType
+		if !validTaskType(*req.TaskType) {
+			respondError(w, http.StatusBadRequest, "invalid task_type")
+			return
+		}
+		task.TaskType = models.TaskType(*req.TaskType)
 	}
 	if req.Estimate != nil {
 		task.Estimate = req.Estimate
@@ -233,7 +268,11 @@ func (h *handlers) updateTask(w http.ResponseWriter, r *http.Request) {
 		task.AssignedTo = *req.AssignedTo
 	}
 	if req.AssigneeType != nil {
-		task.AssigneeType = *req.AssigneeType
+		if !validAssigneeType(*req.AssigneeType) {
+			respondError(w, http.StatusBadRequest, "invalid assignee_type")
+			return
+		}
+		task.AssigneeType = models.AssigneeType(*req.AssigneeType)
 	}
 	if req.SortOrder != nil {
 		task.SortOrder = *req.SortOrder
@@ -249,6 +288,10 @@ func (h *handlers) updateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.tasks.Update(r.Context(), task); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusConflict, "task was modified or deleted concurrently")
+			return
+		}
 		respondError(w, http.StatusInternalServerError, "failed to update task: "+err.Error())
 		return
 	}
@@ -258,20 +301,18 @@ func (h *handlers) updateTask(w http.ResponseWriter, r *http.Request) {
 
 // updateTaskStatus handles PATCH /api/tasks/{id}/status
 func (h *handlers) updateTaskStatus(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
-	resolvedID, err := h.resolveWorkItemID(r.Context(), id, models.WorkItemTypeTask)
+	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "task not found")
 			return
 		}
 		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
 		return
 	}
-	id = resolvedID
 
 	var req updateStatusRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -281,17 +322,21 @@ func (h *handlers) updateTaskStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.tasks.UpdateStatus(r.Context(), id, req.Status); err != nil {
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "invalid transition") {
-			respondError(w, http.StatusBadRequest, errMsg)
+	if !validStatus(req.Status) {
+		respondError(w, http.StatusBadRequest, "invalid status value")
+		return
+	}
+
+	if err := h.tasks.UpdateStatus(r.Context(), id, models.Status(req.Status)); err != nil {
+		if errors.Is(err, store.ErrInvalidTransition) {
+			respondError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "task not found")
 			return
 		}
-		respondError(w, http.StatusInternalServerError, "failed to update task status: "+errMsg)
+		respondError(w, http.StatusInternalServerError, "failed to update task status: "+err.Error())
 		return
 	}
 
@@ -305,19 +350,135 @@ func (h *handlers) updateTaskStatus(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, task)
 }
 
-// getTaskBlockers handles GET /api/tasks/{id}/blockers
-func (h *handlers) getTaskBlockers(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
-	resolvedID, err := h.resolveWorkItemID(r.Context(), id, models.WorkItemTypeTask)
+// updateTaskReorder handles PATCH /api/tasks/{id}/reorder
+func (h *handlers) updateTaskReorder(w http.ResponseWriter, r *http.Request) {
+	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "task not found")
 			return
 		}
 		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
 		return
 	}
-	id = resolvedID
+
+	var req reorderTaskRequest
+	if err := decodeJSON(r, w, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	// Get current task
+	task, err := h.tasks.GetByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "task not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to get task: "+err.Error())
+		return
+	}
+
+	// Apply partial updates
+	if req.StoryID != nil {
+		task.StoryID = *req.StoryID
+	}
+	if req.Status != nil {
+		if !validStatus(*req.Status) {
+			respondError(w, http.StatusBadRequest, "invalid status value")
+			return
+		}
+		task.Status = models.Status(*req.Status)
+	}
+	if req.SortOrder != nil {
+		task.SortOrder = *req.SortOrder
+	}
+	if req.Priority != nil {
+		task.Priority = *req.Priority
+	}
+
+	if err := h.tasks.Update(r.Context(), task); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusConflict, "task was modified or deleted concurrently")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to reorder task: "+err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, task)
+}
+
+// batchReorderTasks handles PATCH /api/tasks/reorder
+func (h *handlers) batchReorderTasks(w http.ResponseWriter, r *http.Request) {
+	var req batchReorderRequest
+	if err := decodeJSON(r, w, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	if len(req.Tasks) == 0 {
+		respondError(w, http.StatusBadRequest, "tasks array is required and must not be empty")
+		return
+	}
+
+	// Validate all task IDs exist first
+	taskIDs := make([]string, len(req.Tasks))
+	for i, item := range req.Tasks {
+		taskIDs[i] = item.ID
+	}
+
+	// Fetch all tasks in the batch
+	tasks := make([]*models.Task, len(req.Tasks))
+	for i, item := range req.Tasks {
+		task, err := h.tasks.GetByID(r.Context(), item.ID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				respondError(w, http.StatusNotFound, "task "+item.ID+" not found")
+				return
+			}
+			respondError(w, http.StatusInternalServerError, "failed to get task: "+err.Error())
+			return
+		}
+		tasks[i] = task
+	}
+
+	// Apply updates to each task
+	for i, item := range req.Tasks {
+		task := tasks[i]
+		task.SortOrder = item.SortOrder
+		if item.Status != nil {
+			if !validStatus(*item.Status) {
+				respondError(w, http.StatusBadRequest, "invalid status for task "+item.ID)
+				return
+			}
+			task.Status = models.Status(*item.Status)
+		}
+		if item.StoryID != nil {
+			task.StoryID = *item.StoryID
+		}
+	}
+
+	// Apply all updates in a transaction
+	if err := h.tasks.BatchUpdate(r.Context(), tasks); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to batch update tasks: "+err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{"updated": len(tasks)})
+}
+
+// getTaskBlockers handles GET /api/tasks/{id}/blockers
+func (h *handlers) getTaskBlockers(w http.ResponseWriter, r *http.Request) {
+	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "task not found")
+			return
+		}
+		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
+		return
+	}
 
 	blockers, err := h.tasks.GetBlockers(r.Context(), id)
 	if err != nil {
@@ -333,20 +494,18 @@ func (h *handlers) getTaskBlockers(w http.ResponseWriter, r *http.Request) {
 
 // addDependency handles POST /api/tasks/{id}/dependencies
 func (h *handlers) addDependency(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
-	resolvedID, err := h.resolveWorkItemID(r.Context(), id, models.WorkItemTypeTask)
+	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "task not found")
 			return
 		}
 		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
 		return
 	}
-	id = resolvedID
 
 	var req addDependencyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -357,12 +516,11 @@ func (h *handlers) addDependency(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.tasks.AddDependency(r.Context(), id, req.DependsOnTaskID); err != nil {
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "cannot depend on itself") || strings.Contains(errMsg, "cycle") {
-			respondError(w, http.StatusBadRequest, errMsg)
+		if errors.Is(err, store.ErrSelfDependency) || errors.Is(err, store.ErrCycleDetected) {
+			respondError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		respondError(w, http.StatusInternalServerError, "failed to add dependency: "+errMsg)
+		respondError(w, http.StatusInternalServerError, "failed to add dependency: "+err.Error())
 		return
 	}
 
@@ -381,19 +539,17 @@ func (h *handlers) addDependency(w http.ResponseWriter, r *http.Request) {
 
 // removeDependency handles DELETE /api/tasks/{id}/dependencies/{dependsOnId}
 func (h *handlers) removeDependency(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
-	resolvedID, err := h.resolveWorkItemID(r.Context(), id, models.WorkItemTypeTask)
+	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "task not found")
 			return
 		}
 		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
 		return
 	}
-	id = resolvedID
 
-	dependsOnID := parseID(r, "dependsOnId")
+	dependsOnID := chi.URLParam(r, "dependsOnId")
 	if dependsOnID == "" {
 		respondError(w, http.StatusBadRequest, "missing depends_on id")
 		return
@@ -401,7 +557,7 @@ func (h *handlers) removeDependency(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.tasks.RemoveDependency(r.Context(), id, dependsOnID); err != nil {
 		errMsg := err.Error()
-		if strings.Contains(errMsg, "not found") {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, errMsg)
 			return
 		}
@@ -424,19 +580,34 @@ func (h *handlers) removeDependency(w http.ResponseWriter, r *http.Request) {
 
 // getTaskActivity handles GET /api/tasks/{id}/activity
 func (h *handlers) getTaskActivity(w http.ResponseWriter, r *http.Request) {
-	id := parseID(r, "id")
-	resolvedID, err := h.resolveWorkItemID(r.Context(), id, models.WorkItemTypeTask)
+	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "task not found")
 			return
 		}
 		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
 		return
 	}
-	id = resolvedID
 
-	entries, err := h.activity.GetByWorkItem(r.Context(), id, models.WorkItemTypeTask, 50, 0)
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	offset := 0
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	entries, err := h.activity.GetByWorkItem(r.Context(), id, models.WorkItemTypeTask, limit, offset)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to get activity: "+err.Error())
 		return

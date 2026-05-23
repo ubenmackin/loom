@@ -33,7 +33,7 @@ func (d *Dispatcher) checkStaleness(ctx context.Context) {
 
 		d.hub.Broadcast("session_stale", map[string]string{
 			"session_id": session.ID,
-			"status":     models.SessionStatusStale,
+			"status":     string(models.SessionStatusStale),
 		})
 
 		// Get all tasks assigned to this stale session and mark them stale.
@@ -60,7 +60,7 @@ func (d *Dispatcher) checkStaleness(ctx context.Context) {
 				"session_id": session.ID,
 				"reason":     "session_stale",
 			})
-			d.logActivity(ctx, task.ID, models.WorkItemTypeTask, "marked_stale", string(taskDetails))
+			d.logActivity(ctx, task.ID, string(models.WorkItemTypeTask), "marked_stale", string(taskDetails))
 
 			d.hub.Broadcast("task_stale", map[string]string{
 				"task_id":    task.ID,

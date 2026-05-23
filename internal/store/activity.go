@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +20,26 @@ type ActivityStore struct {
 // NewActivityStore creates a new ActivityStore.
 func NewActivityStore(db *sql.DB) *ActivityStore {
 	return &ActivityStore{db: db}
+}
+
+// scanActivityRow is a helper to scan an activity log row from a *sql.Row or *sql.Rows.
+func scanActivityRow(scanner interface{ Scan(...any) error }) (*models.ActivityLogEntry, error) {
+	entry := &models.ActivityLogEntry{}
+	var details sql.NullString
+	var createdAt sql.NullTime
+
+	err := scanner.Scan(
+		&entry.ID, &entry.WorkItemID, &entry.WorkItemType,
+		&entry.Action, &details, &createdAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	entry.Details = stringOrZero(details)
+	entry.CreatedAt = timeOrZero(createdAt)
+
+	return entry, nil
 }
 
 // Log inserts a new activity log entry. If the ID is empty, a UUID is generated.
@@ -43,7 +64,7 @@ func (s *ActivityStore) Log(ctx context.Context, entry *models.ActivityLogEntry)
 
 // GetByWorkItem retrieves activity log entries for a work item with pagination.
 // Results are ordered by created_at descending (newest first).
-func (s *ActivityStore) GetByWorkItem(ctx context.Context, workItemID string, workItemType string, limit, offset int) ([]*models.ActivityLogEntry, error) {
+func (s *ActivityStore) GetByWorkItem(ctx context.Context, workItemID string, workItemType models.WorkItemType, limit, offset int) ([]*models.ActivityLogEntry, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -58,24 +79,17 @@ func (s *ActivityStore) GetByWorkItem(ctx context.Context, workItemID string, wo
 	if err != nil {
 		return nil, fmt.Errorf("get activity for %s %q: %w", workItemType, workItemID, err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	var entries []*models.ActivityLogEntry
 	for rows.Next() {
-		entry := &models.ActivityLogEntry{}
-		var details sql.NullString
-		var createdAt sql.NullTime
-
-		if err := rows.Scan(
-			&entry.ID, &entry.WorkItemID, &entry.WorkItemType,
-			&entry.Action, &details, &createdAt,
-		); err != nil {
+		entry, err := scanActivityRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan activity log: %w", err)
-		}
-
-		entry.Details = details.String
-		if createdAt.Valid {
-			entry.CreatedAt = createdAt.Time
 		}
 
 		entries = append(entries, entry)
@@ -93,24 +107,12 @@ func (s *ActivityStore) GetByID(ctx context.Context, id string) (*models.Activit
 		`SELECT id, work_item_id, work_item_type, action, details, created_at
 		 FROM activity_log WHERE id = ?`, id)
 
-	entry := &models.ActivityLogEntry{}
-	var details sql.NullString
-	var createdAt sql.NullTime
-
-	err := row.Scan(
-		&entry.ID, &entry.WorkItemID, &entry.WorkItemType,
-		&entry.Action, &details, &createdAt,
-	)
+	entry, err := scanActivityRow(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("activity %q: %w", id, sql.ErrNoRows)
+			return nil, fmt.Errorf("activity %q: %w", id, ErrNotFound)
 		}
 		return nil, fmt.Errorf("query activity %q: %w", id, err)
-	}
-
-	entry.Details = details.String
-	if createdAt.Valid {
-		entry.CreatedAt = createdAt.Time
 	}
 
 	return entry, nil
@@ -130,24 +132,17 @@ func (s *ActivityStore) GetRecent(ctx context.Context, limit int) ([]*models.Act
 	if err != nil {
 		return nil, fmt.Errorf("get recent activity: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	var entries []*models.ActivityLogEntry
 	for rows.Next() {
-		entry := &models.ActivityLogEntry{}
-		var details sql.NullString
-		var createdAt sql.NullTime
-
-		if err := rows.Scan(
-			&entry.ID, &entry.WorkItemID, &entry.WorkItemType,
-			&entry.Action, &details, &createdAt,
-		); err != nil {
+		entry, err := scanActivityRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan activity log: %w", err)
-		}
-
-		entry.Details = details.String
-		if createdAt.Valid {
-			entry.CreatedAt = createdAt.Time
 		}
 
 		entries = append(entries, entry)

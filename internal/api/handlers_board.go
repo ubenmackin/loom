@@ -2,17 +2,18 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/ubenmackin/loom/internal/models"
 	"github.com/ubenmackin/loom/internal/store"
-	"github.com/ubenmackin/loom/internal/ws"
 )
 
 // BoardState is the response structure for the full board state.
 type BoardState struct {
-	Stories       []*models.Story           `json:"stories"`
-	TasksByStatus map[string][]*models.Task `json:"tasks_by_status"`
-	Stats         BoardStats                `json:"stats"`
+	Stories               []*models.Story                      `json:"stories"`
+	TasksByStatus         map[string][]*models.Task            `json:"tasks_by_status"`
+	TasksByStoryAndStatus map[string]map[string][]*models.Task `json:"tasks_by_story_and_status,omitempty"`
+	Stats                 BoardStats                           `json:"stats"`
 }
 
 // BoardStats holds aggregate counts for the board.
@@ -23,6 +24,8 @@ type BoardStats struct {
 	InProgressTasks int `json:"in_progress_tasks"`
 	BlockedTasks    int `json:"blocked_tasks"`
 	DoneTasks       int `json:"done_tasks"`
+	CancelledTasks  int `json:"canceled_tasks"`
+	ArchivedTasks   int `json:"archived_tasks"`
 	StaleTasks      int `json:"stale_tasks"`
 }
 
@@ -30,7 +33,24 @@ type BoardStats struct {
 func (h *handlers) GetBoard(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Fetch all stories.
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	offset := 0
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	// Fetch stories with pagination.
 	stories, err := h.stories.List(ctx, store.StoryFilter{})
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to fetch stories: "+err.Error())
@@ -38,6 +58,19 @@ func (h *handlers) GetBoard(w http.ResponseWriter, r *http.Request) {
 	}
 	if stories == nil {
 		stories = []*models.Story{}
+	}
+
+	// Apply pagination to stories.
+	if offset > 0 || limit < len(stories) {
+		if offset >= len(stories) {
+			stories = []*models.Story{}
+		} else {
+			end := offset + limit
+			if end > len(stories) {
+				end = len(stories)
+			}
+			stories = stories[offset:end]
+		}
 	}
 
 	// Fetch all tasks.
@@ -50,6 +83,19 @@ func (h *handlers) GetBoard(w http.ResponseWriter, r *http.Request) {
 		tasks = []*models.Task{}
 	}
 
+	// Apply pagination to tasks.
+	if offset > 0 || limit < len(tasks) {
+		if offset >= len(tasks) {
+			tasks = []*models.Task{}
+		} else {
+			end := offset + limit
+			if end > len(tasks) {
+				end = len(tasks)
+			}
+			tasks = tasks[offset:end]
+		}
+	}
+
 	// Group tasks by status.
 	tasksByStatus := make(map[string][]*models.Task)
 	stats := BoardStats{
@@ -58,7 +104,7 @@ func (h *handlers) GetBoard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, task := range tasks {
-		tasksByStatus[task.Status] = append(tasksByStatus[task.Status], task)
+		tasksByStatus[string(task.Status)] = append(tasksByStatus[string(task.Status)], task)
 
 		switch task.Status {
 		case models.StatusReady:
@@ -69,6 +115,10 @@ func (h *handlers) GetBoard(w http.ResponseWriter, r *http.Request) {
 			stats.BlockedTasks++
 		case models.StatusDone:
 			stats.DoneTasks++
+		case models.StatusCancelled:
+			stats.CancelledTasks++
+		case models.StatusArchived:
+			stats.ArchivedTasks++
 		}
 
 		if task.IsStale {
@@ -77,28 +127,34 @@ func (h *handlers) GetBoard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Ensure all status keys exist in the map (even if empty).
-	for _, status := range []string{
+	for _, status := range []models.Status{
 		models.StatusNew,
 		models.StatusReady,
 		models.StatusInProgress,
 		models.StatusBlocked,
 		models.StatusDone,
+		models.StatusCancelled,
+		models.StatusArchived,
 	} {
-		if _, ok := tasksByStatus[status]; !ok {
-			tasksByStatus[status] = []*models.Task{}
+		if _, ok := tasksByStatus[string(status)]; !ok {
+			tasksByStatus[string(status)] = []*models.Task{}
 		}
 	}
 
-	respondJSON(w, http.StatusOK, BoardState{
-		Stories:       stories,
-		TasksByStatus: tasksByStatus,
-		Stats:         stats,
-	})
-}
-
-// HandleWebSocket returns an http.HandlerFunc that delegates to the WebSocket hub.
-func (h *handlers) HandleWebSocket(hub *ws.Hub) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		hub.ServeHTTP(w, r)
+	// Group tasks by story and status.
+	tasksByStoryAndStatus := make(map[string]map[string][]*models.Task)
+	for _, task := range tasks {
+		if tasksByStoryAndStatus[task.StoryID] == nil {
+			tasksByStoryAndStatus[task.StoryID] = make(map[string][]*models.Task)
+		}
+		tasksByStoryAndStatus[task.StoryID][string(task.Status)] = append(
+			tasksByStoryAndStatus[task.StoryID][string(task.Status)], task)
 	}
+
+	respondJSON(w, http.StatusOK, BoardState{
+		Stories:               stories,
+		TasksByStatus:         tasksByStatus,
+		TasksByStoryAndStatus: tasksByStoryAndStatus,
+		Stats:                 stats,
+	})
 }

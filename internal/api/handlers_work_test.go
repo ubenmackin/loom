@@ -5,24 +5,20 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/go-chi/chi/v5"
 
-	"github.com/ubenmackin/loom/internal/db"
 	"github.com/ubenmackin/loom/internal/dispatcher"
 	"github.com/ubenmackin/loom/internal/models"
 	"github.com/ubenmackin/loom/internal/store"
+	"github.com/ubenmackin/loom/internal/testhelpers"
 )
 
 // mockHub implements HubInterface for testing.
@@ -37,89 +33,7 @@ type testBroadcaster struct{}
 
 func (m *testBroadcaster) Broadcast(eventType string, payload any) {}
 
-func setupTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-
-	dbName := fmt.Sprintf("test_%s_%d", t.Name(), time.Now().UnixNano())
-	dsn := "file:" + dbName + "?mode=memory&cache=private"
-
-	dbConn, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-
-	if _, err := dbConn.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatalf("enable foreign keys: %v", err)
-	}
-
-	if err := db.Migrate(dbConn); err != nil {
-		t.Fatalf("migrate test db: %v", err)
-	}
-
-	t.Cleanup(func() {
-		_ = dbConn.Close()
-	})
-
-	return dbConn
-}
-
-func createTestStory(t *testing.T, s *store.StoryStore, title, status string) *models.Story {
-	t.Helper()
-	story := &models.Story{Title: title, Status: status}
-	if story.Status == "" {
-		story.Status = models.StatusNew
-	}
-	if err := s.Create(context.Background(), story); err != nil {
-		t.Fatalf("create test story %q: %v", title, err)
-	}
-	return story
-}
-
-func createTestTask(t *testing.T, s *store.TaskStore, storyID, title, status, taskType string) *models.Task {
-	t.Helper()
-	task := &models.Task{StoryID: storyID, Title: title, Status: status, TaskType: taskType}
-	if task.Status == "" {
-		task.Status = models.StatusNew
-	}
-	if task.TaskType == "" {
-		task.TaskType = models.TaskTypeCode
-	}
-	if err := s.Create(context.Background(), task); err != nil {
-		t.Fatalf("create test task %q: %v", title, err)
-	}
-	return task
-}
-
-var apiSessionCounter atomic.Int64
-
-func createTestSession(t *testing.T, s *store.SessionStore, harnessType string, capabilities []string) *models.Session {
-	t.Helper()
-	n := apiSessionCounter.Add(1)
-	session := &models.Session{
-		ID:          fmt.Sprintf("sess-%d", n),
-		HarnessType: harnessType,
-		Status:      models.SessionStatusActive,
-	}
-	if len(capabilities) > 0 {
-		data, _ := json.Marshal(capabilities)
-		session.Capabilities = string(data)
-	}
-	if err := s.Register(context.Background(), session); err != nil {
-		t.Fatalf("create test session: %v", err)
-	}
-	return session
-}
-
-func createTestTemplate(t *testing.T, s *store.TemplateStore, taskType, template string) *models.PromptTemplate {
-	t.Helper()
-	tmpl := &models.PromptTemplate{TaskType: taskType, Template: template}
-	if err := s.Create(context.Background(), tmpl); err != nil {
-		t.Fatalf("create test template: %v", err)
-	}
-	return tmpl
-}
-
-func createTestComment(t *testing.T, s *store.CommentStore, workItemID, workItemType, authorID, authorType, body string) *models.Comment {
+func createTestComment(t *testing.T, s *store.CommentStore, workItemID string, workItemType models.WorkItemType, authorID, authorType, body string) *models.Comment {
 	t.Helper()
 	c := &models.Comment{
 		WorkItemID:   workItemID,
@@ -132,15 +46,6 @@ func createTestComment(t *testing.T, s *store.CommentStore, workItemID, workItem
 		t.Fatalf("create test comment: %v", err)
 	}
 	return c
-}
-
-func setSessionLastSeen(t *testing.T, dbConn *sql.DB, sessionID string, tstamp time.Time) {
-	t.Helper()
-	ctx := context.Background()
-	_, err := dbConn.ExecContext(ctx, "UPDATE sessions SET last_seen_at = ? WHERE id = ?", tstamp.UTC(), sessionID)
-	if err != nil {
-		t.Fatalf("set session last_seen_at: %v", err)
-	}
 }
 
 func newTestRouter(t *testing.T) (chi.Router, *sql.DB, *store.StoryStore, *store.TaskStore, *store.SessionStore, *store.CommentStore, *store.TemplateStore, *store.ActivityStore, *dispatcher.Dispatcher) {
@@ -157,7 +62,7 @@ func newTestRouter(t *testing.T) (chi.Router, *sql.DB, *store.StoryStore, *store
 		}
 	})
 
-	dbConn := setupTestDB(t)
+	dbConn := testhelpers.SetupTestDB(t)
 
 	storyStore := store.NewStoryStore(dbConn)
 	taskStore := store.NewTaskStore(dbConn)
@@ -168,7 +73,7 @@ func newTestRouter(t *testing.T) (chi.Router, *sql.DB, *store.StoryStore, *store
 	userStore := store.NewUserStore(dbConn)
 
 	// Create a test user and session token so protected routes work in tests.
-	testUser, err := userStore.CreateUser(context.Background(), "testuser", "test@example.com", "Test User", "password123")
+	testUser, err := userStore.CreateUser(context.Background(), "testuser", "test@example.com", "Test User", "password123", models.RoleNormal)
 	if err != nil {
 		t.Fatalf("create test user: %v", err)
 	}
@@ -181,16 +86,16 @@ func newTestRouter(t *testing.T) (chi.Router, *sql.DB, *store.StoryStore, *store
 	t.Cleanup(func() { testAuthTokens.Delete(t.Name()) })
 
 	broadcaster := &testBroadcaster{}
-	d := dispatcher.NewDispatcher(
-		storyStore,
-		taskStore,
-		sessionStore,
-		templateStore,
-		commentStore,
-		activityStore,
-		broadcaster,
-		30*time.Minute,
-	)
+	d := dispatcher.NewDispatcher(dispatcher.DispatcherDeps{
+		StoryStore:         storyStore,
+		TaskStore:          taskStore,
+		SessionStore:       sessionStore,
+		TemplateStore:      templateStore,
+		CommentStore:       commentStore,
+		ActivityStore:      activityStore,
+		Broadcaster:        broadcaster,
+		StalenessThreshold: 30 * time.Minute,
+	})
 
 	apiRouter := NewRouter(
 		storyStore,
@@ -281,7 +186,7 @@ func lookupAuthToken(name string) string {
 	}
 }
 
-func decodeJSON(t *testing.T, rr *httptest.ResponseRecorder, v any) {
+func decodeRespJSON(t *testing.T, rr *httptest.ResponseRecorder, v any) {
 	t.Helper()
 	if err := json.NewDecoder(rr.Body).Decode(v); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -293,7 +198,11 @@ func TestWorkRequest_NoWorkAvailable(t *testing.T) {
 
 	mux, _, _, _, sessionStore, _, _, _, _ := newTestRouter(t)
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
 	rr := doRequest(t, mux, "POST", "/api/work/request", map[string]string{
 		"session_id": session.ID,
@@ -304,7 +213,7 @@ func TestWorkRequest_NoWorkAvailable(t *testing.T) {
 	}
 
 	var resp map[string]string
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	if resp["message"] != "no work available" {
 		t.Errorf("workRequest message = %q, want %q", resp["message"], "no work available")
@@ -316,10 +225,19 @@ func TestWorkRequest_WorkAvailable(t *testing.T) {
 
 	mux, _, storyStore, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
 
-	story := createTestStory(t, storyStore, "Work Available Story", models.StatusReady)
-	task := createTestTask(t, taskStore, story.ID, "Available Task", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Work Available Story"; s.Status = models.StatusReady })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Available Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
 	rr := doRequest(t, mux, "POST", "/api/work/request", map[string]string{
 		"session_id": session.ID,
@@ -330,7 +248,7 @@ func TestWorkRequest_WorkAvailable(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	taskData, ok := resp["task"].(map[string]any)
 	if !ok {
@@ -348,10 +266,19 @@ func TestWorkComplete(t *testing.T) {
 
 	mux, _, storyStore, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
 
-	story := createTestStory(t, storyStore, "Work Complete Story", models.StatusReady)
-	task := createTestTask(t, taskStore, story.ID, "Complete Task", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Work Complete Story"; s.Status = models.StatusReady })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Complete Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
 	rr := doRequest(t, mux, "POST", "/api/work/request", map[string]string{
 		"session_id": session.ID,
@@ -372,14 +299,14 @@ func TestWorkComplete(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	taskData, ok := resp["task"].(map[string]any)
 	if !ok {
 		t.Fatal("workComplete response missing 'task' field")
 	}
 	status, _ := taskData["status"].(string)
-	if status != models.StatusDone {
+	if models.Status(status) != models.StatusDone {
 		t.Errorf("workComplete status = %q, want %q", status, models.StatusDone)
 	}
 }
@@ -387,12 +314,21 @@ func TestWorkComplete(t *testing.T) {
 func TestWorkBlock(t *testing.T) {
 	t.Parallel()
 
-	mux, _, storyStore, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
+	mux, _, storyStore, taskStore, sessionStore, commentStore, _, _, _ := newTestRouter(t)
 
-	story := createTestStory(t, storyStore, "Work Block Story", models.StatusReady)
-	task := createTestTask(t, taskStore, story.ID, "Block Task", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Work Block Story"; s.Status = models.StatusReady })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Block Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
 	rr := doRequest(t, mux, "POST", "/api/work/request", map[string]string{
 		"session_id": session.ID,
@@ -413,15 +349,28 @@ func TestWorkBlock(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	taskData, ok := resp["task"].(map[string]any)
 	if !ok {
 		t.Fatal("workBlock response missing 'task' field")
 	}
 	status, _ := taskData["status"].(string)
-	if status != models.StatusBlocked {
+	if models.Status(status) != models.StatusBlocked {
 		t.Errorf("workBlock status = %q, want %q", status, models.StatusBlocked)
+	}
+
+	// Verify a comment was created with the correct body prefix.
+	comments, err := commentStore.GetByWorkItem(context.Background(), task.ID, models.WorkItemTypeTask)
+	if err != nil {
+		t.Fatalf("GetByWorkItem() error = %v", err)
+	}
+	if len(comments) == 0 {
+		t.Fatal("expected at least one comment on blocked task")
+	}
+	lastComment := comments[len(comments)-1]
+	if !strings.Contains(lastComment.Body, "Blocked:") {
+		t.Errorf("comment body = %q, want it to contain 'Blocked:'", lastComment.Body)
 	}
 }
 
@@ -430,10 +379,19 @@ func TestWorkStart(t *testing.T) {
 
 	mux, _, storyStore, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
 
-	story := createTestStory(t, storyStore, "Work Start Story", models.StatusReady)
-	task := createTestTask(t, taskStore, story.ID, "Start Task", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Work Start Story"; s.Status = models.StatusReady })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Start Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
 	// Manually assign the task to the session (without changing status).
 	task.AssignedTo = session.ID
@@ -452,14 +410,14 @@ func TestWorkStart(t *testing.T) {
 	}
 
 	var resp map[string]any
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	taskData, ok := resp["task"].(map[string]any)
 	if !ok {
 		t.Fatal("workStart response missing 'task' field")
 	}
 	status, _ := taskData["status"].(string)
-	if status != models.StatusInProgress {
+	if models.Status(status) != models.StatusInProgress {
 		t.Errorf("workStart status = %q, want %q", status, models.StatusInProgress)
 	}
 }
@@ -467,9 +425,13 @@ func TestWorkStart(t *testing.T) {
 func TestFullLifecycle(t *testing.T) {
 	t.Parallel()
 
-	mux, _, storyStore, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
+	mux, _, _, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
 	rr := doRequest(t, mux, "POST", "/api/stories", map[string]any{
 		"title":          "Full Lifecycle Story",
@@ -481,7 +443,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	var storyResp map[string]any
-	decodeJSON(t, rr, &storyResp)
+	decodeRespJSON(t, rr, &storyResp)
 	storyID, _ := storyResp["id"].(string)
 
 	rr = doRequest(t, mux, "POST", "/api/stories/"+storyID+"/tasks", map[string]any{
@@ -495,7 +457,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	var taskResp map[string]any
-	decodeJSON(t, rr, &taskResp)
+	decodeRespJSON(t, rr, &taskResp)
 	taskID, _ := taskResp["id"].(string)
 
 	// Transition task to ready status (API doesn't support status on creation).
@@ -512,7 +474,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	var workResp map[string]any
-	decodeJSON(t, rr, &workResp)
+	decodeRespJSON(t, rr, &workResp)
 	assignedTask, _ := workResp["task"].(map[string]any)
 	assignedTaskID, _ := assignedTask["id"].(string)
 
@@ -534,53 +496,58 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	var completeResp map[string]any
-	decodeJSON(t, rr, &completeResp)
+	decodeRespJSON(t, rr, &completeResp)
 	completeTask, ok := completeResp["task"].(map[string]any)
 	if !ok {
 		t.Fatal("workComplete response missing 'task' field")
 	}
 	completeStatus, _ := completeTask["status"].(string)
 
-	if completeStatus != models.StatusDone {
+	if models.Status(completeStatus) != models.StatusDone {
 		t.Errorf("workComplete status = %q, want %q", completeStatus, models.StatusDone)
 	}
 
-	time.Sleep(100 * time.Millisecond)
-
-	rr = doRequest(t, mux, "GET", "/api/stories/"+storyID, nil)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("getStory status = %d, want %d", rr.Code, http.StatusOK)
-	}
-
-	var storyWithTasks map[string]any
-	decodeJSON(t, rr, &storyWithTasks)
-
-	tasksData, _ := storyWithTasks["tasks"].([]any)
+	// Give the dispatcher time to create the build task.
+	deadline := time.Now().Add(2 * time.Second)
 	var hasBuildTask bool
-	for _, tData := range tasksData {
-		tMap, _ := tData.(map[string]any)
-		taskType, _ := tMap["task_type"].(string)
-		if taskType == models.TaskTypeBuild {
-			hasBuildTask = true
+	for time.Now().Before(deadline) {
+		rr = doRequest(t, mux, "GET", "/api/stories/"+storyID, nil)
+		if rr.Code != http.StatusOK {
+			continue
+		}
+		var storyWithTasks map[string]any
+		decodeRespJSON(t, rr, &storyWithTasks)
+		tasksData, _ := storyWithTasks["tasks"].([]any)
+		hasBuildTask = false
+		for _, tData := range tasksData {
+			tMap, _ := tData.(map[string]any)
+			taskType, _ := tMap["task_type"].(string)
+			if models.TaskType(taskType) == models.TaskTypeBuild {
+				hasBuildTask = true
+				break
+			}
+		}
+		if hasBuildTask {
 			break
 		}
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	if !hasBuildTask {
 		t.Log("Build task not yet created (dispatcher may need more time to process)")
 	}
-
-	_ = storyStore
-	_ = taskStore
 }
 
 func TestStalenessInAPI(t *testing.T) {
 	t.Parallel()
 
-	mux, dbConn, _, _, sessionStore, _, _, _, _ := newTestRouter(t)
+	mux, _, _, _, sessionStore, _, _, _, _ := newTestRouter(t)
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 	originalLastSeen := session.LastSeenAt
 
 	time.Sleep(10 * time.Millisecond)
@@ -600,8 +567,6 @@ func TestStalenessInAPI(t *testing.T) {
 	if !got.LastSeenAt.After(originalLastSeen) {
 		t.Errorf("last_seen_at = %v, should be after %v", got.LastSeenAt, originalLastSeen)
 	}
-
-	_ = dbConn
 }
 
 func TestWorkRequest_InvalidSession(t *testing.T) {
@@ -635,11 +600,24 @@ func TestWorkComplete_WrongSession(t *testing.T) {
 
 	mux, _, storyStore, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
 
-	story := createTestStory(t, storyStore, "Wrong Session Story", models.StatusReady)
-	task := createTestTask(t, taskStore, story.ID, "Wrong Session Task", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Wrong Session Story"; s.Status = models.StatusReady })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Wrong Session Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
-	sessionA := createTestSession(t, sessionStore, "opencode", []string{"code"})
-	sessionB := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	sessionA := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
+	sessionB := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
 	rr := doRequest(t, mux, "POST", "/api/work/request", map[string]string{
 		"session_id": sessionA.ID,
@@ -664,7 +642,11 @@ func TestWorkStart_MissingTaskID(t *testing.T) {
 
 	mux, _, _, _, sessionStore, _, _, _, _ := newTestRouter(t)
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
 	rr := doRequest(t, mux, "POST", "/api/work/start", map[string]string{
 		"session_id": session.ID,
@@ -678,12 +660,21 @@ func TestWorkStart_MissingTaskID(t *testing.T) {
 func TestWorkBlock_MissingReason(t *testing.T) {
 	t.Parallel()
 
-	mux, _, storyStore, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
+	mux, _, storyStore, taskStore, sessionStore, commentStore, _, _, _ := newTestRouter(t)
 
-	story := createTestStory(t, storyStore, "Block No Reason Story", models.StatusReady)
-	task := createTestTask(t, taskStore, story.ID, "Block No Reason Task", models.StatusReady, models.TaskTypeCode)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Block No Reason Story"; s.Status = models.StatusReady })
+	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Block No Reason Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+	})
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
 	rr := doRequest(t, mux, "POST", "/api/work/request", map[string]string{
 		"session_id": session.ID,
@@ -700,6 +691,15 @@ func TestWorkBlock_MissingReason(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("workBlock status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	// Verify no comment was created when reason is empty.
+	comments, err := commentStore.GetByWorkItem(context.Background(), task.ID, models.WorkItemTypeTask)
+	if err != nil {
+		t.Fatalf("GetByWorkItem() error = %v", err)
+	}
+	if len(comments) > 0 {
+		t.Errorf("expected no comments when reason is empty, got %d", len(comments))
 	}
 }
 
@@ -722,8 +722,12 @@ func TestWorkRequest_InactiveSession(t *testing.T) {
 
 	mux, dbConn, _, _, sessionStore, _, _, _, _ := newTestRouter(t)
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
-	setSessionLastSeen(t, dbConn, session.ID, time.Now().UTC().Add(-2*time.Hour))
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
+	testhelpers.SetSessionLastSeen(t, dbConn, session.ID, time.Now().UTC().Add(-2*time.Hour))
 
 	if err := sessionStore.FlagStale(context.Background(), session.ID); err != nil {
 		t.Fatalf("FlagStale() error = %v", err)
@@ -733,13 +737,27 @@ func TestWorkRequest_InactiveSession(t *testing.T) {
 		"session_id": session.ID,
 	})
 
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("workRequest status = %d, want %d", rr.Code, http.StatusBadRequest)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("workRequest status = %d, want %d", rr.Code, http.StatusForbidden)
 	}
 
 	body := rr.Body.String()
 	if !strings.Contains(body, "not active") {
 		t.Errorf("workRequest body = %q, want 'not active'", body)
+	}
+}
+
+func TestWorkComplete_MissingSessionID(t *testing.T) {
+	t.Parallel()
+
+	mux, _, _, _, _, _, _, _, _ := newTestRouter(t)
+
+	rr := doRequest(t, mux, "POST", "/api/work/complete", map[string]string{
+		"task_id": "TASK-000001",
+	})
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("workComplete status = %d, want %d", rr.Code, http.StatusBadRequest)
 	}
 }
 
@@ -762,10 +780,19 @@ func TestWorkRequest_CapabilityMismatch(t *testing.T) {
 
 	mux, _, storyStore, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
 
-	story := createTestStory(t, storyStore, "Capability Mismatch Story", models.StatusReady)
-	createTestTask(t, taskStore, story.ID, "Build Task", models.StatusReady, models.TaskTypeBuild)
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Capability Mismatch Story"; s.Status = models.StatusReady })
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Build Task"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeBuild
+	})
 
-	session := createTestSession(t, sessionStore, "opencode", []string{"code"})
+	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
+		s.HarnessType = "opencode"
+		data, _ := json.Marshal([]string{"code"})
+		s.Capabilities = string(data)
+	})
 
 	rr := doRequest(t, mux, "POST", "/api/work/request", map[string]string{
 		"session_id": session.ID,
@@ -776,7 +803,7 @@ func TestWorkRequest_CapabilityMismatch(t *testing.T) {
 	}
 
 	var resp map[string]string
-	decodeJSON(t, rr, &resp)
+	decodeRespJSON(t, rr, &resp)
 
 	if resp["message"] != "no work available" {
 		t.Errorf("workRequest message = %q, want %q", resp["message"], "no work available")

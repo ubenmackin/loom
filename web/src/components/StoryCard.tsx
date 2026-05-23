@@ -1,26 +1,55 @@
-import { useState } from 'react'
+import { memo } from 'react'
 import { CheckSquare } from 'lucide-react'
+import { useSortable } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import SharpTag from './SharpTag'
 import type { Story } from '../types'
-import { statusVariant } from '../utils/statusVariant'
+import { statusVariant } from '../utils/status'
 
 interface StoryCardProps {
   story: Story
+  onClick?: () => void
+  isDraggable?: boolean
 }
 
-export default function StoryCard({ story }: StoryCardProps) {
-  const [expanded, setExpanded] = useState(false)
+function StoryCard({ story, onClick, isDraggable = false }: StoryCardProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: story.id,
+    disabled: !isDraggable,
+    data: {
+      type: 'story',
+      story,
+    },
+  })
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  }
+
+  const sortableProps = isDraggable
+    ? { ref: setNodeRef, style, ...attributes, ...listeners }
+    : {}
 
   return (
-    <div className="border border-gray-200 dark:border-gray-border p-3 rounded-none shadow-none bg-white dark:bg-charcoal-dark">
+    <div
+      className="border border-gray-200 dark:border-gray-border p-3 rounded-none shadow-none bg-white dark:bg-charcoal-dark cursor-pointer"
+      onClick={onClick}
+      {...sortableProps}
+    >
       {/* Title row */}
       <div className="flex items-start justify-between gap-2">
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="text-left text-sm font-bold text-neutral-800 dark:text-light-neutral leading-tight hover:text-loom-600 dark:hover:text-purple-active transition-colors"
-        >
+        <span className="text-left text-sm font-bold text-neutral-800 dark:text-light-neutral leading-tight">
           {story.title}
-        </button>
+        </span>
       </div>
 
       {/* Tags row */}
@@ -53,15 +82,6 @@ export default function StoryCard({ story }: StoryCardProps) {
           <span className="font-mono text-[10px] text-amber-500">stale</span>
         </div>
       )}
-
-      {/* Expanded content placeholder */}
-      {expanded && (
-        <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-border">
-          <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500 uppercase tracking-widest">
-            Tasks loading...
-          </span>
-        </div>
-      )}
     </div>
   )
 }
@@ -70,3 +90,5 @@ function isStale(updatedAt: string): boolean {
   const hours = (Date.now() - new Date(updatedAt).getTime()) / (1000 * 60 * 60)
   return hours > 2
 }
+
+export default memo(StoryCard)

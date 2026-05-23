@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -25,8 +26,33 @@ func NewUserStore(db *sql.DB) *UserStore {
 	return &UserStore{db: db}
 }
 
-// CreateUser registers a new human user.
-func (s *UserStore) CreateUser(ctx context.Context, username, email, displayName, plaintextPassword string) (*models.User, error) {
+// scanUserRow is a helper to scan a user row from a *sql.Row or *sql.Rows.
+// This variant scans the 6-column projection (without password_hash).
+func scanUserRow(scanner interface{ Scan(...any) error }) (*models.User, error) {
+	user := &models.User{}
+	var email, displayName, role sql.NullString
+	var createdAt sql.NullTime
+
+	err := scanner.Scan(&user.ID, &user.Username, &email, &displayName, &role, &createdAt)
+	if err != nil {
+		return nil, err
+	}
+
+	user.Email = stringOrZero(email)
+	user.DisplayName = stringOrZero(displayName)
+	user.CreatedAt = timeOrZero(createdAt)
+
+	if role.Valid && role.String == string(models.RoleAdmin) {
+		user.Role = models.RoleAdmin
+	} else {
+		user.Role = models.RoleNormal
+	}
+
+	return user, nil
+}
+
+// CreateUser registers a new human user with the given role.
+func (s *UserStore) CreateUser(ctx context.Context, username, email, displayName, plaintextPassword string, role models.UserRole) (*models.User, error) {
 	username = strings.TrimSpace(username)
 	email = strings.TrimSpace(strings.ToLower(email))
 	displayName = strings.TrimSpace(displayName)
@@ -40,8 +66,10 @@ func (s *UserStore) CreateUser(ctx context.Context, username, email, displayName
 	if len(plaintextPassword) < 6 {
 		return nil, errors.New("password must be at least 6 characters")
 	}
+	if role == "" {
+		role = models.RoleNormal
+	}
 
-	// Salt and hash password using bcrypt
 	hashBytes, err := bcrypt.GenerateFromPassword([]byte(plaintextPassword), 12)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash password: %w", err)
@@ -54,6 +82,7 @@ func (s *UserStore) CreateUser(ctx context.Context, username, email, displayName
 		Email:        email,
 		PasswordHash: passwordHash,
 		DisplayName:  displayName,
+		Role:         role,
 		CreatedAt:    time.Now().UTC(),
 	}
 
@@ -61,18 +90,30 @@ func (s *UserStore) CreateUser(ctx context.Context, username, email, displayName
 		user.DisplayName = user.Username
 	}
 
+	var emailExists int
+	err = s.db.QueryRowContext(ctx, "SELECT 1 FROM users WHERE email = ?", email).Scan(&emailExists)
+	if err == nil {
+		return nil, errors.New("email address already registered")
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("check email uniqueness: %w", err)
+	}
+
+	var usernameExists int
+	err = s.db.QueryRowContext(ctx, "SELECT 1 FROM users WHERE username = ?", username).Scan(&usernameExists)
+	if err == nil {
+		return nil, errors.New("username already taken")
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("check username uniqueness: %w", err)
+	}
+
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO users (id, username, email, password_hash, display_name, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		user.ID, user.Username, user.Email, user.PasswordHash, user.DisplayName, user.CreatedAt,
+		`INSERT INTO users (id, username, email, password_hash, display_name, role, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		user.ID, user.Username, user.Email, user.PasswordHash, user.DisplayName, string(user.Role), user.CreatedAt,
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			if strings.Contains(err.Error(), "users.email") {
-				return nil, errors.New("email address already registered")
-			}
-			return nil, errors.New("username already taken")
-		}
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
 
@@ -83,17 +124,17 @@ func (s *UserStore) CreateUser(ctx context.Context, username, email, displayName
 func (s *UserStore) AuthenticateUser(ctx context.Context, usernameOrEmail, password string) (*models.User, error) {
 	usernameOrEmail = strings.TrimSpace(usernameOrEmail)
 
-	query := `SELECT id, username, email, password_hash, display_name, created_at
+	query := `SELECT id, username, email, password_hash, display_name, role, created_at
 	          FROM users
 	          WHERE username = ? OR email = ?`
 
 	row := s.db.QueryRowContext(ctx, query, usernameOrEmail, strings.ToLower(usernameOrEmail))
 
 	user := &models.User{}
-	var email, passwordHash, displayName sql.NullString
+	var email, passwordHash, displayName, role sql.NullString
 	var createdAt sql.NullTime
 
-	err := row.Scan(&user.ID, &user.Username, &email, &passwordHash, &displayName, &createdAt)
+	err := row.Scan(&user.ID, &user.Username, &email, &passwordHash, &displayName, &role, &createdAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errors.New("invalid credentials")
@@ -101,14 +142,17 @@ func (s *UserStore) AuthenticateUser(ctx context.Context, usernameOrEmail, passw
 		return nil, fmt.Errorf("query user failed: %w", err)
 	}
 
-	user.Email = email.String
-	user.PasswordHash = passwordHash.String
-	user.DisplayName = displayName.String
-	if createdAt.Valid {
-		user.CreatedAt = createdAt.Time
+	user.Email = stringOrZero(email)
+	user.PasswordHash = stringOrZero(passwordHash)
+	user.DisplayName = stringOrZero(displayName)
+	user.CreatedAt = timeOrZero(createdAt)
+
+	if role.Valid && role.String == string(models.RoleAdmin) {
+		user.Role = models.RoleAdmin
+	} else {
+		user.Role = models.RoleNormal
 	}
 
-	// Compare bcrypt hash
 	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password))
 	if err != nil {
 		return nil, errors.New("invalid credentials")
@@ -125,7 +169,6 @@ func (s *UserStore) CreateSession(ctx context.Context, userID string) (string, e
 	}
 	token := hex.EncodeToString(tokenBytes)
 
-	// Expires in 7 days
 	expiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
 
 	_, err := s.db.ExecContext(ctx,
@@ -141,7 +184,7 @@ func (s *UserStore) CreateSession(ctx context.Context, userID string) (string, e
 
 // GetUserBySessionToken validates the token and returns the user.
 func (s *UserStore) GetUserBySessionToken(ctx context.Context, token string) (*models.User, error) {
-	query := `SELECT u.id, u.username, u.email, u.display_name, u.created_at
+	query := `SELECT u.id, u.username, u.email, u.display_name, u.role, u.created_at
 	          FROM user_sessions s
 	          JOIN users u ON s.user_id = u.id
 	          WHERE s.token = ? AND s.expires_at > ?`
@@ -149,10 +192,10 @@ func (s *UserStore) GetUserBySessionToken(ctx context.Context, token string) (*m
 	row := s.db.QueryRowContext(ctx, query, token, time.Now().UTC())
 
 	user := &models.User{}
-	var email, displayName sql.NullString
+	var email, displayName, role sql.NullString
 	var createdAt sql.NullTime
 
-	err := row.Scan(&user.ID, &user.Username, &email, &displayName, &createdAt)
+	err := row.Scan(&user.ID, &user.Username, &email, &displayName, &role, &createdAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errors.New("session expired or invalid")
@@ -160,10 +203,14 @@ func (s *UserStore) GetUserBySessionToken(ctx context.Context, token string) (*m
 		return nil, fmt.Errorf("query session user: %w", err)
 	}
 
-	user.Email = email.String
-	user.DisplayName = displayName.String
-	if createdAt.Valid {
-		user.CreatedAt = createdAt.Time
+	user.Email = stringOrZero(email)
+	user.DisplayName = stringOrZero(displayName)
+	user.CreatedAt = timeOrZero(createdAt)
+
+	if role.Valid && role.String == string(models.RoleAdmin) {
+		user.Role = models.RoleAdmin
+	} else {
+		user.Role = models.RoleNormal
 	}
 
 	return user, nil
@@ -179,8 +226,6 @@ func (s *UserStore) DeleteSession(ctx context.Context, token string) error {
 }
 
 // CleanupExpiredSessions removes all expired session tokens from the database.
-// This should be called periodically to prevent unbounded growth of the
-// user_sessions table.
 func (s *UserStore) CleanupExpiredSessions(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM user_sessions WHERE expires_at < ?", time.Now().UTC())
 	if err != nil {
@@ -189,7 +234,7 @@ func (s *UserStore) CleanupExpiredSessions(ctx context.Context) error {
 	return nil
 }
 
-// CountUsers returns the total count of registered users (for onboarding check).
+// CountUsers returns the total count of registered users.
 func (s *UserStore) CountUsers(ctx context.Context) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&count)
@@ -199,30 +244,24 @@ func (s *UserStore) CountUsers(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-// ListAll returns all registered human users.
+// ListAll returns all registered human users ordered by username.
 func (s *UserStore) ListAll(ctx context.Context) ([]*models.User, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id, username, email, display_name, created_at FROM users ORDER BY username")
+	rows, err := s.db.QueryContext(ctx, "SELECT id, username, email, display_name, role, created_at FROM users ORDER BY username")
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
 
 	var users []*models.User
 	for rows.Next() {
-		u := &models.User{}
-		var email, displayName sql.NullString
-		var createdAt sql.NullTime
-
-		if err := rows.Scan(&u.ID, &u.Username, &email, &displayName, &createdAt); err != nil {
+		u, err := scanUserRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
-
-		u.Email = email.String
-		u.DisplayName = displayName.String
-		if createdAt.Valid {
-			u.CreatedAt = createdAt.Time
-		}
-
 		users = append(users, u)
 	}
 	if err := rows.Err(); err != nil {
@@ -230,4 +269,20 @@ func (s *UserStore) ListAll(ctx context.Context) ([]*models.User, error) {
 	}
 
 	return users, nil
+}
+
+// DeleteUser removes a user by ID.
+func (s *UserStore) DeleteUser(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, "DELETE FROM users WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete user: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete user rows affected: %w", err)
+	}
+	if n == 0 {
+		return errors.New("user not found")
+	}
+	return nil
 }

@@ -1,31 +1,23 @@
-import type { Task, StatusType } from '../types'
+import { memo } from 'react'
+import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { useDroppable } from '@dnd-kit/core'
+import type { Story, Task, StatusType } from '../types'
 import TaskCard from './TaskCard'
+import { statusDotClass } from '../utils/status'
 
 interface ColumnProps {
   status: StatusType
   label: string
-  items: Task[]
+  stories: Story[]
+  tasksByStory: Record<string, Task[]>
+  onTaskClick?: (taskId: string) => void
 }
 
-function statusDotClass(status: StatusType): string {
-  switch (status) {
-    case 'new':
-      return 'status-dot status-dot-info'
-    case 'ready':
-      return 'status-dot status-dot-info'
-    case 'in_progress':
-      return 'status-dot status-dot-warning status-dot-pulse'
-    case 'blocked':
-      return 'status-dot status-dot-error'
-    case 'done':
-      return 'status-dot status-dot-success'
-    default:
-      return 'status-dot'
+function Column({ status, label, stories, tasksByStory, onTaskClick }: ColumnProps) {
+  let totalCount = 0
+  for (const story of stories) {
+    totalCount += (tasksByStory[story.id] ?? []).length
   }
-}
-
-export default function Column({ status, label, items }: ColumnProps) {
-  const count = items.length
 
   return (
     <div className="flex flex-col h-full">
@@ -36,18 +28,53 @@ export default function Column({ status, label, items }: ColumnProps) {
           {label}
         </span>
         <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500 ml-auto">
-          [{count}]
+          [{totalCount}]
         </span>
       </div>
 
-      {/* Cards */}
-      <div className="flex-1 overflow-y-auto p-2 space-y-2">
-        {items
-          .sort((a, b) => a.priority - b.priority)
-          .map((task) => (
-            <TaskCard key={task.id} task={task} />
-          ))}
-        {count === 0 && (
+      {/* Swimlane Rows */}
+      <div className="flex-1 overflow-y-auto">
+        {stories.map((story) => {
+          const cellTasks = (tasksByStory[story.id] ?? []).sort(
+            (a, b) => a.priority - b.priority,
+          )
+          const droppableId = `cell-${story.id}-${status}`
+
+          return (
+            <div
+              key={droppableId}
+              className="border-b border-gray-100 dark:border-gray-border/50"
+            >
+              <CellDropZone id={droppableId} storyId={story.id} status={status}>
+                {cellTasks.length > 0 && (
+                  <SortableContext
+                    items={cellTasks.map((t) => t.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <div className="p-1.5 space-y-1.5">
+                      {cellTasks.map((task) => (
+                        <TaskCard
+                          key={task.id}
+                          task={task}
+                          onClick={onTaskClick}
+                          isDraggable={true}
+                        />
+                      ))}
+                    </div>
+                  </SortableContext>
+                )}
+                {cellTasks.length === 0 && (
+                  <div className="flex items-center justify-center py-3">
+                    <span className="font-mono text-[10px] text-neutral-300 dark:text-neutral-600 uppercase tracking-widest">
+                      —
+                    </span>
+                  </div>
+                )}
+              </CellDropZone>
+            </div>
+          )
+        })}
+        {stories.length === 0 && (
           <div className="flex items-center justify-center py-8">
             <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-600 uppercase tracking-widest">
               Empty
@@ -55,6 +82,36 @@ export default function Column({ status, label, items }: ColumnProps) {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+export default memo(Column)
+
+/** Internal droppable wrapper for a single (story × status) cell */
+function CellDropZone({
+  id,
+  storyId,
+  status,
+  children,
+}: {
+  id: string
+  storyId: string
+  status: StatusType
+  children: React.ReactNode
+}) {
+  const { setNodeRef } = useDroppable({
+    id,
+    data: {
+      type: 'cell',
+      storyId,
+      status,
+    },
+  })
+
+  return (
+    <div ref={setNodeRef} className="min-h-[40px]">
+      {children}
     </div>
   )
 }
