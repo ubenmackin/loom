@@ -112,7 +112,6 @@ type handlers struct {
 }
 
 // NewRouter creates and configures the chi router with all API routes.
-// The hub parameter may be nil (WebSocket support is TASK-006).
 func NewRouter(
 	storyStore StoryStore,
 	taskStore TaskStore,
@@ -143,6 +142,9 @@ func NewRouter(
 	r.Use(Logger)
 	r.Use(Recovery)
 	r.Use(SessionExtractor)
+
+	// WebSocket endpoint for real-time board events.
+	r.Get("/ws", h.hub.ServeHTTP)
 
 	// Auth routes (public & onboarding)
 	r.Route("/auth", h.registerAuthRoutes)
