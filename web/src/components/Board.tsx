@@ -15,14 +15,16 @@ import {
 } from '@dnd-kit/sortable'
 import { useBoard } from '../hooks/useBoard'
 import { useCreateStory } from '../hooks/useCreateStory'
-import Column from './Column'
 import StoryCard from './StoryCard'
+import TaskCard from './TaskCard'
+import { CellDropZone } from './Column'
 import StoryDetail from './StoryDetail'
 import TaskDetail from './TaskDetail'
 import CreateStoryForm from './CreateStoryForm'
 import type { CreateStoryData } from './CreateStoryForm'
 import { Status, type StatusType, type Story, type Task, type User, type Session } from '../types'
 import { updateStory, updateTask, updateTaskStatus, getUsers, fetchSessions } from '../api/client'
+import { statusDotClass } from '../utils/status'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 const COLUMNS: { status: StatusType; label: string }[] = [
@@ -115,18 +117,6 @@ export default function Board() {
     return map
   }, [users, sessions])
 
-  // Pre-compute tasksByStory for each column — avoids rebuilding per render
-  const columnTasksByStory = useMemo(() => {
-    return COLUMNS.map((col) => {
-      const tasksByStory: Record<string, Task[]> = {}
-      for (const story of stories) {
-        tasksByStory[story.id] =
-          tasksByStoryAndStatus[story.id]?.[col.status] ?? []
-      }
-      return tasksByStory
-    })
-  }, [stories, tasksByStoryAndStatus])
-
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event
@@ -207,6 +197,13 @@ export default function Board() {
     [stories, allTasks, tasksByStoryAndStatus, queryClient],
   )
 
+  const handleAddTask = useCallback(
+    (storyId: string) => {
+      setSelectedTaskId(`new-task-${storyId}`)
+    },
+    [],
+  )
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -248,63 +245,120 @@ export default function Board() {
           </button>
         </div>
 
-        {/* Swimlane Grid */}
-        <div className="flex gap-0 overflow-x-auto flex-1">
-          {/* Story Column (leftmost) */}
-          <div className="min-w-[240px] md:min-w-0 md:w-1/6 flex flex-col border-r border-gray-200 dark:border-gray-border">
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-200 dark:border-gray-border">
-              <span className="text-[10px] uppercase tracking-wider font-bold text-neutral-600 dark:text-neutral-300">
-                Story
-              </span>
-              <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500 ml-auto">
-                [{stories.length}]
-              </span>
-            </div>
-            <div className="flex-1 overflow-y-auto p-2 space-y-2">
-              <SortableContext
-                items={stories.map((s) => s.id)}
-                strategy={verticalListSortingStrategy}
+      {/* Swimlane Grid */}
+      <div className="flex flex-col flex-1 min-h-0">
+        {/* Frozen Header Row */}
+        <div className="flex shrink-0 border-b border-gray-200 dark:border-gray-border">
+          {/* Story header */}
+          <div className="min-w-[240px] md:min-w-0 md:w-1/6 flex items-center gap-2 px-4 py-3 border-r border-gray-200 dark:border-gray-border">
+            <span className="text-[10px] uppercase tracking-wider font-bold text-neutral-600 dark:text-neutral-300">
+              Story
+            </span>
+            <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500 ml-auto">
+              [{stories.length}]
+            </span>
+          </div>
+          {/* Status column headers */}
+          {COLUMNS.map((col, i) => {
+            let totalCount = 0
+            for (const story of stories) {
+              totalCount += (tasksByStoryAndStatus[story.id]?.[col.status] ?? []).length
+            }
+            return (
+              <div
+                key={col.status}
+                className={`min-w-[200px] md:min-w-0 md:flex-1 flex items-center gap-2 px-4 py-3 ${
+                  i < COLUMNS.length - 1 ? 'border-r border-gray-200 dark:border-gray-border' : ''
+                }`}
               >
-                {stories.map((story) => (
+                <span className={statusDotClass(col.status)} />
+                <span className="text-[10px] uppercase tracking-wider font-bold text-neutral-600 dark:text-neutral-300">
+                  {col.label}
+                </span>
+                <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500 ml-auto">
+                  [{totalCount}]
+                </span>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Scrollable Body */}
+        <div className="flex-1 overflow-y-auto">
+          <SortableContext items={stories.map((s) => s.id)} strategy={verticalListSortingStrategy}>
+            {stories.map((story) => (
+              <div key={story.id} className="flex items-stretch border-b border-gray-100 dark:border-gray-border/50">
+                {/* Story Card cell */}
+                <div className="min-w-[240px] md:min-w-0 md:w-1/6 p-2 border-r border-gray-200 dark:border-gray-border">
                   <StoryCard
-                    key={story.id}
                     story={story}
                     isDraggable={true}
                     onClick={() => setSelectedStoryId(story.id)}
                     assigneeName={story.assigned_to ? assigneeNameMap[story.assigned_to] || story.assigned_to : undefined}
                   />
-                ))}
-              </SortableContext>
-              {stories.length === 0 && (
-                <div className="flex items-center justify-center py-8">
-                  <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-600 uppercase tracking-widest">
-                    Empty
-                  </span>
                 </div>
-              )}
+                {/* Status column cells */}
+                {COLUMNS.map((col, colIdx) => {
+                  const cellTasks = (tasksByStoryAndStatus[story.id]?.[col.status] ?? []).sort(
+                    (a, b) => a.priority - b.priority,
+                  )
+                  const droppableId = `cell-${story.id}-${col.status}`
+                  return (
+                    <div
+                      key={col.status}
+                      className={`min-w-[200px] md:min-w-0 md:flex-1 p-1.5 ${
+                        colIdx < COLUMNS.length - 1 ? 'border-r border-gray-200 dark:border-gray-border' : ''
+                      }`}
+                    >
+                      <CellDropZone id={droppableId} storyId={story.id} status={col.status}>
+                        {cellTasks.length > 0 ? (
+                          <SortableContext items={cellTasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                            <div className="space-y-1.5">
+                              {cellTasks.map((task) => (
+                                <TaskCard
+                                  key={task.id}
+                                  task={task}
+                                  onClick={(taskId) => setSelectedTaskId(taskId)}
+                                  isDraggable={true}
+                                />
+                              ))}
+                            </div>
+                          </SortableContext>
+                        ) : (
+                          <div className="flex items-center justify-center py-3">
+                            <span className="font-mono text-[10px] text-neutral-300 dark:text-neutral-600 uppercase tracking-widest">
+                              —
+                            </span>
+                          </div>
+                        )}
+                        {col.status === Status.New && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleAddTask(story.id)
+                            }}
+                            className="w-full mt-1 flex items-center justify-center gap-1 py-1 border border-dashed border-neutral-300 dark:border-neutral-600 text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300 hover:border-neutral-400 dark:hover:border-neutral-500 transition-colors rounded-none"
+                          >
+                            <Plus size={12} />
+                            <span className="font-mono text-[10px] uppercase tracking-widest">Add Task</span>
+                          </button>
+                        )}
+                      </CellDropZone>
+                    </div>
+                  )
+                })}
+              </div>
+            ))}
+          </SortableContext>
+          {stories.length === 0 && (
+            <div className="flex items-center justify-center py-8">
+              <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-600 uppercase tracking-widest">
+                Empty
+              </span>
             </div>
-          </div>
-
-          {/* Status Columns */}
-          {COLUMNS.map((col, i) => (
-            <div
-              key={col.status}
-              className={`min-w-[200px] md:min-w-0 md:flex-1 flex flex-col ${
-                i < COLUMNS.length - 1
-                  ? 'border-r border-gray-200 dark:border-gray-border'
-                  : ''
-              }`}
-            >
-              <Column
-                status={col.status}
-                label={col.label}
-                stories={stories}
-                tasksByStory={columnTasksByStory[i]}
-                onTaskClick={(taskId) => setSelectedTaskId(taskId)}
-              />
-            </div>
-          ))}
+          )}
         </div>
+      </div>
 
         {/* Create Story Modal */}
         <CreateStoryForm
@@ -325,7 +379,7 @@ export default function Board() {
           taskId={selectedTaskId}
           onClose={() => setSelectedTaskId(null)}
         />
-      </div>
-    </DndContext>
+    </div>
+  </DndContext>
   )
 }
