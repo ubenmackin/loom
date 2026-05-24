@@ -1,4 +1,4 @@
-import { memo, useState, useEffect } from 'react'
+import { memo, useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, Check, Play, AlertCircle } from 'lucide-react'
 import SharpTag from './SharpTag'
@@ -17,9 +17,11 @@ import {
   startWork,
   completeWork,
   blockWork,
+  createTask,
   TaskDetailResponse,
 } from '../api/client'
-import type { Task } from '../types'
+import type { Task, TaskTypeType } from '../types'
+import { TaskType } from '../types'
 import { useSessionStore } from '../stores/session'
 import { statusVariant, VALID_TRANSITIONS } from '../utils/status'
 import { taskTypeLabel, taskTypeVariant } from '../utils/taskType'
@@ -34,11 +36,39 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
   const sessionId = useSessionStore((s) => s.sessionId)
   const [descValue, setDescValue] = useState('')
   const [depInput, setDepInput] = useState('')
+  const [createTitle, setCreateTitle] = useState('')
+  const [createType, setCreateType] = useState<TaskTypeType>(TaskType.Code)
+
+  const prevTaskId = useRef(taskId)
+
+  useEffect(() => {
+    if (taskId !== prevTaskId.current) {
+      prevTaskId.current = taskId
+      if (typeof taskId === 'string' && taskId.startsWith('new-task-')) {
+        setCreateTitle('')
+        setCreateType(TaskType.Code)
+      }
+    }
+  }, [taskId])
+
+  const isCreateMode = typeof taskId === 'string' && taskId.startsWith('new-task-') && taskId.length > 'new-task-'.length
+  const createStoryId = isCreateMode ? taskId.slice('new-task-'.length) : null
+
+  useEffect(() => {
+    if (!isCreateMode) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [isCreateMode, onClose])
 
   const { data, isLoading } = useQuery<TaskDetailResponse>({
     queryKey: ['task', taskId],
     queryFn: () => fetchTask(taskId!),
-    enabled: !!taskId,
+    enabled: !!taskId && !isCreateMode,
   })
 
   const task = data?.task
@@ -46,7 +76,7 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
   const { data: blockers = [] } = useQuery({
     queryKey: ['blockers', taskId],
     queryFn: () => fetchBlockers(taskId!),
-    enabled: !!taskId,
+    enabled: !!taskId && !isCreateMode,
   })
 
   const updateMutation = useMutation({
@@ -135,6 +165,23 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     },
   })
 
+  const createMutation = useMutation({
+    mutationFn: ({ title, task_type }: { title: string; task_type: TaskTypeType }) => {
+      if (!createStoryId) throw new Error('No story ID provided for task creation')
+      return createTask(createStoryId, { title, task_type })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['board'] })
+      if (createStoryId) {
+        queryClient.invalidateQueries({ queryKey: ['story', createStoryId] })
+      }
+      onClose()
+    },
+    onError: (error) => {
+      console.error('Failed to create task:', error)
+    },
+  })
+
   // Sync descValue from task.description whenever task changes
   useEffect(() => {
     if (task) {
@@ -143,6 +190,82 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
   }, [task])
 
   if (!taskId) return null
+
+  // CREATE MODE
+  if (isCreateMode) {
+    return (
+      <SlideInPanel>
+        {/* Header */}
+        <div className="sticky top-0 bg-white dark:bg-charcoal-dark border-b border-gray-200 dark:border-gray-border px-4 py-3 z-10">
+          <div className="flex items-center justify-between">
+            <span className="font-mono text-xs text-neutral-500 dark:text-amber-muted uppercase tracking-widest">
+              Create Task
+            </span>
+            <button
+              onClick={onClose}
+              className="p-1 rounded-none text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
+              aria-label="Close"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+
+        {/* Form */}
+        <div className="px-4 py-4 space-y-5">
+          {/* Title input */}
+          <div>
+            <FieldLabel>Title</FieldLabel>
+            <input
+              type="text"
+              value={createTitle}
+              onChange={(e) => setCreateTitle(e.target.value)}
+              autoFocus
+              placeholder="Task title..."
+              className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-transparent p-2 font-mono text-sm text-neutral-800 dark:text-light-neutral"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && createTitle.trim() && !createMutation.isPending) {
+                  createMutation.mutate({ title: createTitle.trim(), task_type: createType })
+                }
+                if (e.key === 'Escape') {
+                  onClose()
+                }
+              }}
+            />
+          </div>
+
+          {/* Task type selector */}
+          <div>
+            <FieldLabel>Task Type</FieldLabel>
+            <div className="flex gap-2">
+              {(['code', 'build', 'review'] as const).map((type) => (
+                <button
+                  key={type}
+                  onClick={() => setCreateType(type)}
+                  className={`px-3 py-1.5 border text-xs font-mono uppercase tracking-wider transition-colors ${
+                    createType === type
+                      ? 'border-neutral-800 dark:border-light-neutral text-neutral-800 dark:text-light-neutral bg-neutral-100 dark:bg-neutral-800'
+                      : 'border-gray-200 dark:border-gray-border text-neutral-400 dark:text-neutral-500 hover:border-neutral-400 dark:hover:border-neutral-500'
+                  }`}
+                >
+                  {taskTypeLabel(type)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Create button */}
+          <button
+            onClick={() => createMutation.mutate({ title: createTitle.trim(), task_type: createType })}
+            disabled={!createTitle.trim() || createMutation.isPending}
+            className="w-full py-2 rounded-none border border-neutral-800 dark:border-light-neutral text-neutral-800 dark:text-light-neutral text-xs font-bold uppercase tracking-wider hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {createMutation.isPending ? 'Creating...' : 'Create Task'}
+          </button>
+        </div>
+      </SlideInPanel>
+    )
+  }
 
   if (isLoading) {
     return <PanelLoading message="Loading task..." />
