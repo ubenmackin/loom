@@ -20,7 +20,6 @@ func TestCreate(t *testing.T) {
 	story := &models.Story{
 		Title:          "Test Story",
 		Description:    "A test story description",
-		Priority:       1,
 		RequiresBuild:  true,
 		RequiresReview: false,
 	}
@@ -133,7 +132,6 @@ func TestUpdate(t *testing.T) {
 	})
 
 	story.Title = "Updated Title"
-	story.Priority = 5
 	story.RequiresBuild = true
 
 	if err := storyStore.Update(ctx, story); err != nil {
@@ -147,9 +145,6 @@ func TestUpdate(t *testing.T) {
 
 	if got.Title != "Updated Title" {
 		t.Errorf("Update() Title = %q, want %q", got.Title, "Updated Title")
-	}
-	if got.Priority != 5 {
-		t.Errorf("Update() Priority = %d, want 5", got.Priority)
 	}
 	if !got.RequiresBuild {
 		t.Errorf("Update() RequiresBuild = false, want true")

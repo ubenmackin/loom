@@ -17,26 +17,21 @@ import (
 type createTaskRequest struct {
 	Title        string `json:"title"`
 	Description  string `json:"description,omitempty"`
-	Priority     int    `json:"priority,omitempty"`
 	TaskType     string `json:"task_type,omitempty"`
-	Estimate     *int   `json:"estimate,omitempty"`
 	AssignedTo   string `json:"assigned_to,omitempty"`
 	AssigneeType string `json:"assignee_type,omitempty"`
 	SortOrder    int    `json:"sort_order,omitempty"`
-	Context      string `json:"context,omitempty"`
 	Instructions string `json:"instructions,omitempty"`
 }
 
 type updateTaskRequest struct {
 	Title        *string `json:"title,omitempty"`
 	Description  *string `json:"description,omitempty"`
-	Priority     *int    `json:"priority,omitempty"`
+	Status       *string `json:"status,omitempty"`
 	TaskType     *string `json:"task_type,omitempty"`
-	Estimate     *int    `json:"estimate,omitempty"`
 	AssignedTo   *string `json:"assigned_to,omitempty"`
 	AssigneeType *string `json:"assignee_type,omitempty"`
 	SortOrder    *int    `json:"sort_order,omitempty"`
-	Context      *string `json:"context,omitempty"`
 	Instructions *string `json:"instructions,omitempty"`
 	IsStale      *bool   `json:"is_stale,omitempty"`
 }
@@ -45,7 +40,6 @@ type reorderTaskRequest struct {
 	StoryID   *string `json:"story_id,omitempty"`
 	Status    *string `json:"status,omitempty"`
 	SortOrder *int    `json:"sort_order,omitempty"`
-	Priority  *int    `json:"priority,omitempty"`
 }
 
 type batchReorderItem struct {
@@ -64,8 +58,9 @@ type addDependencyRequest struct {
 }
 
 type taskDetailResponse struct {
-	Task         *models.Task `json:"task"`
-	Dependencies []string     `json:"dependencies"`
+	Task         *models.Task   `json:"task"`
+	Dependencies []string       `json:"dependencies"`
+	Dependents   []*models.Task `json:"dependents"`
 }
 
 // --- Route registration ---
@@ -82,6 +77,7 @@ func (h *handlers) registerTaskRoutes(r chi.Router) {
 		r.Post("/dependencies", h.addDependency)
 		r.Delete("/dependencies/{dependsOnId}", h.removeDependency)
 		r.Get("/activity", h.getTaskActivity)
+		r.Delete("/", h.deleteTask)
 	})
 }
 
@@ -157,13 +153,10 @@ func (h *handlers) createTaskUnderStory(w http.ResponseWriter, r *http.Request) 
 		StoryID:      storyID,
 		Title:        strings.TrimSpace(req.Title),
 		Description:  req.Description,
-		Priority:     req.Priority,
 		TaskType:     models.TaskType(req.TaskType),
-		Estimate:     req.Estimate,
 		AssignedTo:   req.AssignedTo,
 		AssigneeType: models.AssigneeType(req.AssigneeType),
 		SortOrder:    req.SortOrder,
-		Context:      req.Context,
 		Instructions: req.Instructions,
 	}
 
@@ -206,9 +199,19 @@ func (h *handlers) getTask(w http.ResponseWriter, r *http.Request) {
 		deps = []string{}
 	}
 
+	dependents, err := h.tasks.GetDependents(r.Context(), id)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to get dependents: "+err.Error())
+		return
+	}
+	if dependents == nil {
+		dependents = []*models.Task{}
+	}
+
 	respondJSON(w, http.StatusOK, taskDetailResponse{
 		Task:         task,
 		Dependencies: deps,
+		Dependents:   dependents,
 	})
 }
 
@@ -251,9 +254,6 @@ func (h *handlers) updateTask(w http.ResponseWriter, r *http.Request) {
 	if req.Description != nil {
 		task.Description = *req.Description
 	}
-	if req.Priority != nil {
-		task.Priority = *req.Priority
-	}
 	if req.TaskType != nil {
 		if !validTaskType(*req.TaskType) {
 			respondError(w, http.StatusBadRequest, "invalid task_type")
@@ -261,8 +261,12 @@ func (h *handlers) updateTask(w http.ResponseWriter, r *http.Request) {
 		}
 		task.TaskType = models.TaskType(*req.TaskType)
 	}
-	if req.Estimate != nil {
-		task.Estimate = req.Estimate
+	if req.Status != nil {
+		if !validStatus(*req.Status) {
+			respondError(w, http.StatusBadRequest, "invalid status value")
+			return
+		}
+		task.Status = models.Status(*req.Status)
 	}
 	if req.AssignedTo != nil {
 		task.AssignedTo = *req.AssignedTo
@@ -276,9 +280,6 @@ func (h *handlers) updateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SortOrder != nil {
 		task.SortOrder = *req.SortOrder
-	}
-	if req.Context != nil {
-		task.Context = *req.Context
 	}
 	if req.Instructions != nil {
 		task.Instructions = *req.Instructions
@@ -392,9 +393,6 @@ func (h *handlers) updateTaskReorder(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SortOrder != nil {
 		task.SortOrder = *req.SortOrder
-	}
-	if req.Priority != nil {
-		task.Priority = *req.Priority
 	}
 
 	if err := h.tasks.Update(r.Context(), task); err != nil {
@@ -617,4 +615,43 @@ func (h *handlers) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		entries = []*models.ActivityLogEntry{}
 	}
 	respondJSON(w, http.StatusOK, entries)
+}
+
+// deleteTask handles DELETE /api/tasks/{id}
+func (h *handlers) deleteTask(w http.ResponseWriter, r *http.Request) {
+	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "task not found")
+			return
+		}
+		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
+		return
+	}
+
+	task, err := h.tasks.GetByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "task not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to get task: "+err.Error())
+		return
+	}
+
+	if task.Status != models.StatusNew {
+		respondError(w, http.StatusBadRequest, "only tasks in 'new' status can be deleted")
+		return
+	}
+
+	if err := h.tasks.Delete(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "task not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to delete task: "+err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

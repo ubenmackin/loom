@@ -206,7 +206,6 @@ func (s *Server) registerTools() {
 					"title":       map[string]any{"type": "string", "description": "The task title"},
 					"description": map[string]any{"type": "string", "description": "The task description"},
 					"task_type":   map[string]any{"type": "string", "description": "The task type (code, build, review)", "enum": []string{"code", "build", "review"}},
-					"priority":    map[string]any{"type": "integer", "description": "The task priority (higher = more important)"},
 				},
 				"required": []string{"story_id", "title"},
 			},
@@ -333,10 +332,8 @@ func (s *Server) handleRequestWork(ctx context.Context, params map[string]any) (
 		"title":        bestTask.Title,
 		"description":  bestTask.Description,
 		"task_type":    bestTask.TaskType,
-		"priority":     bestTask.Priority,
 		"status":       bestTask.Status,
 		"instructions": bestTask.Instructions,
-		"context":      bestTask.Context,
 	}
 
 	// Try to get a prompt template for this task type.
@@ -692,14 +689,12 @@ func (s *Server) handleCreateTask(ctx context.Context, params map[string]any) (*
 
 	description := getOptionalString(params, "description")
 	taskType := getOptionalString(params, "task_type")
-	priority := getOptionalInt(params, "priority")
 
 	task := &models.Task{
 		StoryID:     storyID,
 		Title:       title,
 		Description: description,
 		TaskType:    models.TaskType(taskType),
-		Priority:    priority,
 		Status:      models.StatusNew,
 	}
 

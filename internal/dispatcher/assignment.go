@@ -11,8 +11,8 @@ import (
 )
 
 // runAssignmentPass finds the best available session for each unassigned
-// Ready task. Tasks are processed in priority order (lower number = higher
-// priority) so that the most important tasks are assigned first.
+// Ready task. Tasks are processed in the order returned by List,
+// so that all eligible tasks are assigned in a single pass.
 func (d *Dispatcher) runAssignmentPass(ctx context.Context) {
 	readyTasks, err := d.tasks.List(ctx, store.TaskFilter{Status: models.StatusReady})
 	if err != nil {

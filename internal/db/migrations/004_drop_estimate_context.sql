@@ -1,0 +1,5 @@
+-- SQLite 3.35.0+ supports DROP COLUMN. For older versions, the safer approach
+-- is to leave the columns in the schema (they become unused dead columns).
+-- Since the Go code no longer reads or writes them, they are harmless.
+-- This file is a placeholder documenting the intent.
+-- Actual cleanup can be done manually or via a future schema rebuild.

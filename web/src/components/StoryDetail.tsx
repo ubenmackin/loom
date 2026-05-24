@@ -1,6 +1,6 @@
-import { memo, useState, useEffect } from 'react'
+import { memo, useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, AlertCircle, Trash2 } from 'lucide-react'
+import { X, AlertCircle, Trash2, ChevronDown } from 'lucide-react'
 import SharpTag from './SharpTag'
 import SlideInPanel, { PanelLoading, PanelNotFound } from './SlideInPanel'
 import EditableTitle from './EditableTitle'
@@ -27,12 +27,12 @@ interface StoryDetailProps {
 interface StoryDraft {
   title: string
   description: string
-  priority: number
   requires_build: boolean
   requires_review: boolean
   status: StatusType
   assigned_to: string
   assignee_type: string
+  sort_order: number
 }
 
 function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
@@ -44,6 +44,8 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
   const [showAddTask, setShowAddTask] = useState(false)
   const [newTaskTitle, setNewTaskTitle] = useState('')
   const [newTaskType, setNewTaskType] = useState<'code' | 'build' | 'review'>('code')
+  const [showSaveDropdown, setShowSaveDropdown] = useState(false)
+  const saveDropdownRef = useRef<HTMLDivElement>(null)
 
   const { data, isLoading } = useQuery<StoryWithTasks>({
     queryKey: ['story', storyId],
@@ -126,15 +128,27 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
       setDraft({
         title: story.title,
         description: story.description ?? '',
-        priority: story.priority,
         requires_build: story.requires_build,
         requires_review: story.requires_review,
         status: story.status,
         assigned_to: story.assigned_to ?? '',
         assignee_type: story.assignee_type ?? '',
+        sort_order: story.sort_order,
       })
     }
   }, [story])
+
+  // Click-outside handler for save dropdown
+  useEffect(() => {
+    if (!showSaveDropdown) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (saveDropdownRef.current && !saveDropdownRef.current.contains(e.target as Node)) {
+        setShowSaveDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showSaveDropdown])
 
   if (!storyId) return null
 
@@ -151,7 +165,6 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
       story &&
       (draft.title !== story.title ||
         draft.description !== (story.description ?? '') ||
-        draft.priority !== story.priority ||
         draft.requires_build !== story.requires_build ||
         draft.requires_review !== story.requires_review ||
         draft.status !== story.status ||
@@ -159,34 +172,52 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
         draft.assignee_type !== (story.assignee_type ?? ''))
   )
 
-  const handleSave = () => {
-    if (!draft || !story || !isDirty) return
+  const computeChanges = (): Partial<Story> | null => {
+    if (!draft || !story || !isDirty) return null
     const changes: Partial<Story> = {}
     if (draft.title !== story.title) changes.title = draft.title
     if (draft.description !== (story.description ?? '')) changes.description = draft.description
-    if (draft.priority !== story.priority) changes.priority = draft.priority
     if (draft.requires_build !== story.requires_build) changes.requires_build = draft.requires_build
     if (draft.requires_review !== story.requires_review) changes.requires_review = draft.requires_review
     if (draft.status !== story.status) changes.status = draft.status
-    if (draft.assigned_to !== (story.assigned_to ?? '')) changes.assigned_to = draft.assigned_to || undefined
-    if (draft.assignee_type !== (story.assignee_type ?? '')) changes.assignee_type = (draft.assignee_type || undefined) as AssigneeTypeType | undefined
+    if (draft.assigned_to !== (story.assigned_to ?? '')) changes.assigned_to = draft.assigned_to
+    if (draft.assignee_type !== (story.assignee_type ?? '')) changes.assignee_type = draft.assignee_type as AssigneeTypeType | undefined
+    return changes
+  }
+
+  const handleSave = () => {
+    const changes = computeChanges()
+    if (!changes) return
+    setShowSaveDropdown(false)
     updateMutation.mutate(changes)
   }
 
-  const handleCancel = () => {
-    if (story) {
-      setDraft({
-        title: story.title,
-        description: story.description ?? '',
-        priority: story.priority,
-        requires_build: story.requires_build,
-        requires_review: story.requires_review,
-        status: story.status,
-        assigned_to: story.assigned_to ?? '',
-        assignee_type: story.assignee_type ?? '',
-      })
-    }
+  const handleSaveAndClose = () => {
+    const changes = computeChanges()
+    if (!changes) return
+    updateMutation.mutate(changes, {
+      onSuccess: () => {
+        onClose()
+      },
+    })
+    setShowSaveDropdown(false)
   }
+
+const handleCancel = () => {
+  if (story) {
+    setDraft({
+      title: story.title,
+      description: story.description ?? '',
+      requires_build: story.requires_build,
+      requires_review: story.requires_review,
+      status: story.status,
+      assigned_to: story.assigned_to ?? '',
+      assignee_type: story.assignee_type ?? '',
+      sort_order: story.sort_order,
+    })
+    onClose()
+  }
+}
 
   const assigneeOptions = [
     ...users.map((u) => ({ id: u.id, name: u.display_name || u.username, type: 'human' as const })),
@@ -237,19 +268,6 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
             rows={4}
             className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-charcoal-darkest p-3 font-mono text-sm text-neutral-800 dark:text-light-neutral resize-y"
             placeholder="Markdown description..."
-          />
-        </div>
-
-        {/* Priority */}
-        <div>
-          <FieldLabel>Priority</FieldLabel>
-          <input
-            type="number"
-            value={draft?.priority ?? story.priority}
-            onChange={(e) =>
-              setDraft((prev) => (prev ? { ...prev, priority: parseInt(e.target.value, 10) || 0 } : null))
-            }
-            className="w-20 rounded-none border border-gray-200 dark:border-gray-border bg-transparent p-2 font-mono text-sm text-neutral-800 dark:text-light-neutral"
           />
         </div>
 
@@ -458,19 +476,39 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
 
         {/* Save/Cancel */}
         <div className="sticky bottom-0 bg-white dark:bg-charcoal-dark border-t border-gray-200 dark:border-gray-border px-4 py-3 z-10 flex items-center justify-end gap-2">
-          <button
-            onClick={handleCancel}
-            className="px-4 py-1.5 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-800 dark:hover:text-neutral-100 transition-colors"
-          >
-            Cancel
-          </button>
+        <button
+          onClick={handleCancel}
+          className="px-4 py-1.5 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-800 dark:hover:text-neutral-100 transition-colors"
+        >
+          Cancel
+        </button>
+        <div ref={saveDropdownRef} className="relative flex">
           <button
             onClick={handleSave}
             disabled={!isDirty}
-            className="px-4 py-1.5 text-sm font-medium bg-purple-active text-white rounded-none hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="rounded-l-md bg-purple-active px-4 py-1.5 text-sm font-medium text-white hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            Save Changes
+            Save
           </button>
+          <button
+            onClick={() => setShowSaveDropdown(!showSaveDropdown)}
+            disabled={!isDirty}
+            className="rounded-r-md border-l border-purple-600 bg-purple-active px-2 py-1.5 text-white hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <ChevronDown className="h-4 w-4" />
+          </button>
+          {showSaveDropdown && (
+            <div className="absolute bottom-full right-0 mb-1 w-40 rounded-md border border-gray-200 dark:border-gray-border bg-white dark:bg-charcoal-dark py-1 shadow-lg z-20">
+              <button
+                onClick={handleSaveAndClose}
+                disabled={!isDirty}
+                className="flex w-full items-center px-4 py-2 text-left text-sm text-gray-700 dark:text-light-neutral hover:bg-gray-100 dark:hover:bg-neutral-800 disabled:opacity-50"
+              >
+                Save & Close
+              </button>
+            </div>
+          )}
+        </div>
         </div>
 
         {/* Delete */}

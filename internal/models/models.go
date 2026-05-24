@@ -99,7 +99,6 @@ type Story struct {
 	Title          string       `json:"title"`
 	Description    string       `json:"description,omitempty"`
 	Status         Status       `json:"status"`
-	Priority       int          `json:"priority"`
 	RequiresBuild  bool         `json:"requires_build"`
 	RequiresReview bool         `json:"requires_review"`
 	AssignedTo     string       `json:"assigned_to,omitempty"`
@@ -117,13 +116,10 @@ type Task struct {
 	Title        string       `json:"title"`
 	Description  string       `json:"description,omitempty"`
 	Status       Status       `json:"status"`
-	Priority     int          `json:"priority"`
 	TaskType     TaskType     `json:"task_type"`
-	Estimate     *int         `json:"estimate,omitempty"`
 	AssignedTo   string       `json:"assigned_to,omitempty"`
 	AssigneeType AssigneeType `json:"assignee_type,omitempty"`
 	SortOrder    int          `json:"sort_order"`
-	Context      string       `json:"context,omitempty"` // JSON stored as text
 	Instructions string       `json:"instructions,omitempty"`
 	IsStale      bool         `json:"is_stale"`
 	CreatedAt    time.Time    `json:"created_at"`

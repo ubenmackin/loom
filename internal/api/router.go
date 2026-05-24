@@ -45,6 +45,7 @@ type TaskStore interface {
 	GetByStory(ctx context.Context, storyID string) ([]*models.Task, error)
 	DetectCycle(ctx context.Context, taskID, dependsOnID string) (bool, error)
 	GetDependents(ctx context.Context, taskID string) ([]*models.Task, error)
+	Delete(ctx context.Context, id string) error
 }
 
 // SessionStore defines the interface for interacting with the agent sessions storage.

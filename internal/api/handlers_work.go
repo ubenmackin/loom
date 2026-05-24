@@ -142,8 +142,11 @@ func (h *handlers) workRequest(w http.ResponseWriter, r *http.Request) {
 	template, terr := h.templates.GetByTaskType(r.Context(), string(task.TaskType))
 	if terr == nil && template != nil {
 		instructions = template.Template
+		if task.Description != "" {
+			instructions += "\n\n## Task Description\n\n" + task.Description
+		}
 		if task.Instructions != "" {
-			instructions += "\n\n" + task.Instructions
+			instructions += "\n\n## Additional Instructions\n\n" + task.Instructions
 		}
 	}
 

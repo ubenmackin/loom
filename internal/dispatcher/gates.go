@@ -85,7 +85,6 @@ func (d *Dispatcher) createBuildTask(ctx context.Context, story *models.Story, e
 		StoryID:   story.ID,
 		Title:     fmt.Sprintf("Build: %s", story.Title),
 		Status:    models.StatusReady,
-		Priority:  0,
 		TaskType:  models.TaskTypeBuild,
 		SortOrder: 9000, // Gate tasks sort after regular tasks.
 	}
@@ -139,7 +138,6 @@ func (d *Dispatcher) createReviewTask(ctx context.Context, story *models.Story, 
 		StoryID:   story.ID,
 		Title:     fmt.Sprintf("Review: %s", story.Title),
 		Status:    models.StatusReady,
-		Priority:  0,
 		TaskType:  models.TaskTypeReview,
 		SortOrder: 9100, // Review tasks sort after build tasks.
 	}

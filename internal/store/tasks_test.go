@@ -164,7 +164,6 @@ func TestTaskUpdate(t *testing.T) {
 	})
 
 	task.Title = "Updated Task Title"
-	task.Priority = 10
 	task.TaskType = models.TaskTypeBuild
 
 	if err := taskStore.Update(ctx, task); err != nil {
@@ -178,9 +177,6 @@ func TestTaskUpdate(t *testing.T) {
 
 	if got.Title != "Updated Task Title" {
 		t.Errorf("Update() Title = %q, want %q", got.Title, "Updated Task Title")
-	}
-	if got.Priority != 10 {
-		t.Errorf("Update() Priority = %d, want 10", got.Priority)
 	}
 	if got.TaskType != models.TaskTypeBuild {
 		t.Errorf("Update() TaskType = %q, want %q", got.TaskType, models.TaskTypeBuild)

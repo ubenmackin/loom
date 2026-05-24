@@ -300,7 +300,7 @@ export default function Board() {
                 {/* Status column cells */}
                 {COLUMNS.map((col, colIdx) => {
                   const cellTasks = (tasksByStoryAndStatus[story.id]?.[col.status] ?? []).sort(
-                    (a, b) => a.priority - b.priority,
+                    (a, b) => a.sort_order - b.sort_order,
                   )
                   const droppableId = `cell-${story.id}-${col.status}`
                   return (

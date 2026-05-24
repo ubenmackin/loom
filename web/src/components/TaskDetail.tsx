@@ -1,29 +1,29 @@
 import { memo, useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, Check, Play, AlertCircle } from 'lucide-react'
+import { X, ChevronDown, Trash2 } from 'lucide-react'
 import SharpTag from './SharpTag'
 import CommentThread from './CommentThread'
+import ConfirmModal from './ConfirmModal'
 import SlideInPanel, { PanelLoading, PanelNotFound } from './SlideInPanel'
 import EditableTitle from './EditableTitle'
 import FieldLabel from './FieldLabel'
-import StatusTransitions from './StatusTransitions'
 import {
   fetchTask,
+  fetchStory,
   updateTask,
   updateTaskStatus,
   fetchBlockers,
   addDependency,
   removeDependency,
-  startWork,
-  completeWork,
-  blockWork,
   createTask,
+  deleteTask,
+  getUsers,
+  fetchSessions,
   TaskDetailResponse,
 } from '../api/client'
-import type { Task, TaskTypeType } from '../types'
-import { TaskType } from '../types'
-import { useSessionStore } from '../stores/session'
-import { statusVariant, VALID_TRANSITIONS } from '../utils/status'
+import type { Task, TaskTypeType, User, Session, StoryWithTasks, StatusType, AssigneeTypeType } from '../types'
+import { TaskType, AssigneeType } from '../types'
+import { STATUS_ORDER } from '../utils/status'
 import { taskTypeLabel, taskTypeVariant } from '../utils/taskType'
 
 interface TaskDetailProps {
@@ -31,13 +31,24 @@ interface TaskDetailProps {
   onClose: () => void
 }
 
+interface TaskDraft {
+  title: string
+  description: string
+  status: StatusType
+  assigned_to: string
+  assignee_type: string
+}
+
 function TaskDetail({ taskId, onClose }: TaskDetailProps) {
   const queryClient = useQueryClient()
-  const sessionId = useSessionStore((s) => s.sessionId)
-  const [descValue, setDescValue] = useState('')
-  const [depInput, setDepInput] = useState('')
+  const [draft, setDraft] = useState<TaskDraft | null>(null)
   const [createTitle, setCreateTitle] = useState('')
   const [createType, setCreateType] = useState<TaskTypeType>(TaskType.Code)
+  const [searchTerm, setSearchTerm] = useState('')
+  const [showDropdown, setShowDropdown] = useState(false)
+  const [showSaveDropdown, setShowSaveDropdown] = useState(false)
+  const [showDepDropdown, setShowDepDropdown] = useState(false)
+  const saveDropdownRef = useRef<HTMLDivElement>(null)
 
   const prevTaskId = useRef(taskId)
 
@@ -54,8 +65,9 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
   const isCreateMode = typeof taskId === 'string' && taskId.startsWith('new-task-') && taskId.length > 'new-task-'.length
   const createStoryId = isCreateMode ? taskId.slice('new-task-'.length) : null
 
+  // ESC key handler
   useEffect(() => {
-    if (!isCreateMode) return
+    if (!taskId) return
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         onClose()
@@ -63,7 +75,7 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [isCreateMode, onClose])
+  }, [taskId, onClose])
 
   const { data, isLoading } = useQuery<TaskDetailResponse>({
     queryKey: ['task', taskId],
@@ -78,6 +90,24 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     queryFn: () => fetchBlockers(taskId!),
     enabled: !!taskId && !isCreateMode,
   })
+
+  const { data: users = [] } = useQuery<User[]>({
+    queryKey: ['users'],
+    queryFn: getUsers,
+  })
+
+  const { data: sessions = [] } = useQuery<Session[]>({
+    queryKey: ['sessions'],
+    queryFn: fetchSessions,
+  })
+
+  const { data: storyData } = useQuery<StoryWithTasks>({
+    queryKey: ['story', task?.story_id],
+    queryFn: () => fetchStory(task?.story_id!),
+    enabled: !!task?.story_id,
+  })
+
+  const storyTasks = storyData?.tasks ?? []
 
   const updateMutation = useMutation({
     mutationFn: (updateData: Partial<Task>) => updateTask(taskId!, updateData),
@@ -100,6 +130,9 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['task', taskId] })
       queryClient.invalidateQueries({ queryKey: ['board'] })
+      if (task?.story_id) {
+        queryClient.invalidateQueries({ queryKey: ['story', task.story_id] })
+      }
     },
   })
 
@@ -141,30 +174,6 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     },
   })
 
-  const startWorkMutation = useMutation({
-    mutationFn: () => startWork(sessionId, taskId!),
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['task', taskId] })
-      queryClient.invalidateQueries({ queryKey: ['board'] })
-    },
-  })
-
-  const completeWorkMutation = useMutation({
-    mutationFn: () => completeWork(sessionId, taskId!, { task_id: taskId!, result: 'completed' }),
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['task', taskId] })
-      queryClient.invalidateQueries({ queryKey: ['board'] })
-    },
-  })
-
-  const blockWorkMutation = useMutation({
-    mutationFn: () => blockWork(sessionId, taskId!, { task_id: taskId!, reason: 'blocked' }),
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['task', taskId] })
-      queryClient.invalidateQueries({ queryKey: ['board'] })
-    },
-  })
-
   const createMutation = useMutation({
     mutationFn: ({ title, task_type }: { title: string; task_type: TaskTypeType }) => {
       if (!createStoryId) throw new Error('No story ID provided for task creation')
@@ -182,16 +191,34 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     },
   })
 
-  // Sync descValue from task.description whenever task changes
+  // Sync draft from task whenever task changes
   useEffect(() => {
     if (task) {
-      setDescValue(task.description ?? '')
+      setDraft({
+        title: task.title,
+        description: task.description ?? '',
+        status: task.status,
+        assigned_to: task.assigned_to ?? '',
+        assignee_type: task.assignee_type ?? '',
+      })
     }
   }, [task])
 
+  // Click-outside handler for save dropdown
+  useEffect(() => {
+    if (!showSaveDropdown) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (saveDropdownRef.current && !saveDropdownRef.current.contains(e.target as Node)) {
+        setShowSaveDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showSaveDropdown])
+
   if (!taskId) return null
 
-  // CREATE MODE
+  // ── CREATE MODE ───────────────────────────────────────────────────────────
   if (isCreateMode) {
     return (
       <SlideInPanel>
@@ -275,24 +302,144 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     return <PanelNotFound message="Task not found" />
   }
 
-  const transitions = VALID_TRANSITIONS[task.status] ?? []
+  // ── Derived state ──────────────────────────────────────────────────────────
 
-  const handleTitleSave = (title: string) => {
-    updateMutation.mutate({ title })
+  const isDirty = Boolean(
+    draft &&
+      task &&
+      (draft.title !== task.title ||
+        draft.description !== (task.description ?? '') ||
+        draft.status !== task.status ||
+        draft.assigned_to !== (task.assigned_to ?? '') ||
+        draft.assignee_type !== (task.assignee_type ?? ''))
+  )
+
+  const computeChanges = (): Partial<Task> | null => {
+    if (!draft || !task || !isDirty) return null
+    const changes: Partial<Task> = {}
+    if (draft.title !== task.title) changes.title = draft.title
+    if (draft.description !== (task.description ?? '')) changes.description = draft.description
+    if (draft.status !== task.status) changes.status = draft.status
+    if (draft.assigned_to !== (task.assigned_to ?? '')) changes.assigned_to = draft.assigned_to
+    if (draft.assignee_type !== (task.assignee_type ?? ''))
+      changes.assignee_type = draft.assignee_type as AssigneeTypeType | undefined
+    return changes
   }
 
-  const handleDescSave = () => {
-    if (descValue !== task.description) {
-      updateMutation.mutate({ description: descValue })
+  const handleSave = () => {
+    const changes = computeChanges()
+    if (!changes) return
+    setShowSaveDropdown(false)
+
+    // Extract status change for the dedicated status endpoint
+    const statusChange = changes.status
+    delete changes.status
+
+    if (Object.keys(changes).length > 0) {
+      updateMutation.mutate(changes)
+    }
+    if (statusChange) {
+      statusMutation.mutate(statusChange)
     }
   }
 
-  const handleAddDep = () => {
-    if (depInput.trim()) {
-      addDepMutation.mutate(depInput.trim())
-      setDepInput('')
+  const handleSaveAndClose = () => {
+    const changes = computeChanges()
+    if (!changes) return
+    setShowSaveDropdown(false)
+
+    // Extract status change for the dedicated status endpoint
+    const statusChange = changes.status
+    delete changes.status
+
+    const onCloseFn = () => onClose()
+
+    if (Object.keys(changes).length > 0 && statusChange) {
+      // Both non-status changes and status change: update first, then status
+      updateMutation.mutate(changes, {
+        onSuccess: () => {
+          statusMutation.mutate(statusChange, {
+            onSuccess: onCloseFn,
+          })
+        },
+        onError: onCloseFn,
+      })
+    } else if (Object.keys(changes).length > 0) {
+      updateMutation.mutate(changes, {
+        onSuccess: onCloseFn,
+      })
+    } else if (statusChange) {
+      statusMutation.mutate(statusChange, {
+        onSuccess: onCloseFn,
+      })
+    } else {
+      onClose()
     }
   }
+
+  const handleCancel = () => {
+    if (task) {
+      setDraft({
+        title: task.title,
+        description: task.description ?? '',
+        status: task.status,
+        assigned_to: task.assigned_to ?? '',
+        assignee_type: task.assignee_type ?? '',
+      })
+    }
+    onClose()
+  }
+
+  // ── Assignee helpers ───────────────────────────────────────────────────────
+
+  const assigneeOptions = [
+    ...users.map((u) => ({ id: u.id, name: u.display_name || u.username, type: AssigneeType.Human })),
+    ...sessions.map((s) => ({ id: s.id, name: s.id, type: AssigneeType.Session })),
+  ]
+
+  const getAssigneeName = (id: string): string => {
+    const option = assigneeOptions.find((o) => o.id === id)
+    return option?.name ?? id
+  }
+
+  const filteredOptions = searchTerm
+    ? assigneeOptions.filter((o) => o.name.toLowerCase().includes(searchTerm.toLowerCase()))
+    : assigneeOptions
+
+  // ── Dependency helpers ─────────────────────────────────────────────────────
+
+  const availableDepTasks = storyTasks.filter(
+    (t) => t.id !== task.id && !blockers.some((b) => b.id === t.id)
+  )
+
+  const dependents = data?.dependents ?? []
+
+  // ── Status label mapping ───────────────────────────────────────────────────
+
+  const statusLabels: Record<string, string> = {
+    new: 'New',
+    ready: 'Ready',
+    in_progress: 'In Progress',
+    blocked: 'Blocked',
+    done: 'Done',
+    canceled: 'Canceled',
+    archived: 'Archived',
+  }
+
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteTask(taskId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['board'] })
+      if (task?.story_id) {
+        queryClient.invalidateQueries({ queryKey: ['story', task.story_id] })
+      }
+      onClose()
+    },
+  })
+
+  // ── RENDER ─────────────────────────────────────────────────────────────────
 
   return (
     <SlideInPanel>
@@ -318,25 +465,27 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
         </div>
 
         {/* Editable title */}
-        <EditableTitle value={task.title} onSave={handleTitleSave} />
+        <EditableTitle
+          value={draft?.title ?? task.title}
+          onSave={(title) => setDraft((prev) => (prev ? { ...prev, title } : null))}
+        />
       </div>
 
       {/* Fields */}
       <div className="px-4 py-4 space-y-5">
-        {/* Description */}
+        {/* 1. Description */}
         <div>
           <FieldLabel>Description</FieldLabel>
           <textarea
-            value={descValue}
-            onChange={(e) => setDescValue(e.target.value)}
-            onBlur={handleDescSave}
+            value={draft?.description ?? task.description ?? ''}
+            onChange={(e) => setDraft((prev) => (prev ? { ...prev, description: e.target.value } : null))}
             rows={4}
             className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-charcoal-darkest p-3 font-mono text-sm text-neutral-800 dark:text-light-neutral resize-y"
             placeholder="Markdown description..."
           />
         </div>
 
-        {/* Task type */}
+        {/* 2. Task Type (read-only) */}
         <div>
           <FieldLabel>Task Type</FieldLabel>
           <SharpTag
@@ -345,182 +494,237 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
           />
         </div>
 
-        {/* Priority */}
-        <div>
-          <FieldLabel>Priority</FieldLabel>
-          <input
-            type="number"
-            value={task.priority}
-            onChange={(e) =>
-              updateMutation.mutate({ priority: parseInt(e.target.value, 10) || 0 })
-            }
-            className="w-20 rounded-none border border-gray-200 dark:border-gray-border bg-transparent p-2 font-mono text-sm text-neutral-800 dark:text-light-neutral"
-          />
-        </div>
-
-        {/* Estimate */}
-        <div>
-          <FieldLabel>Estimate</FieldLabel>
-          <input
-            type="number"
-            value={task.estimate ?? ''}
-            onChange={(e) =>
-              updateMutation.mutate({
-                estimate: e.target.value ? parseInt(e.target.value, 10) : undefined,
-              })
-            }
-            placeholder="—"
-            className="w-20 rounded-none border border-gray-200 dark:border-gray-border bg-transparent p-2 font-mono text-sm text-neutral-800 dark:text-light-neutral"
-          />
-        </div>
-
-        {/* Status */}
+        {/* 3. Status */}
         <div>
           <FieldLabel margin="mb-2">Status</FieldLabel>
-          <StatusTransitions
-            currentStatus={task.status}
-            transitions={transitions}
-            onTransition={(s) => statusMutation.mutate(s)}
-            isPending={statusMutation.isPending}
-          />
+          <select
+            value={draft?.status ?? task.status}
+            onChange={(e) => setDraft((prev) => (prev ? { ...prev, status: e.target.value as StatusType } : null))}
+            className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-transparent p-2 font-mono text-sm text-neutral-800 dark:text-light-neutral"
+          >
+            {STATUS_ORDER.map((s) => (
+              <option key={s} value={s}>
+                {statusLabels[s] ?? s}
+              </option>
+            ))}
+          </select>
         </div>
 
-        {/* Context JSON */}
-        <div>
-          <FieldLabel>Context JSON</FieldLabel>
-          <textarea
-            value={task.context ?? ''}
-            onChange={(e) => updateMutation.mutate({ context: e.target.value })}
-            rows={3}
-            className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-charcoal-darkest p-3 font-mono text-xs text-neutral-800 dark:text-light-neutral resize-y"
-            placeholder='{"key": "value"}'
-          />
-        </div>
-
-        {/* Instructions preview */}
+        {/* 5. Instructions (collapsible / advanced) */}
         {task.instructions && (
-          <div>
-            <FieldLabel>Instructions</FieldLabel>
-            <pre className="font-mono text-sm bg-charcoal-darkest p-3 rounded-none border border-gray-border text-neutral-700 dark:text-neutral-300 whitespace-pre-wrap break-words">
+          <details className="group">
+            <summary className="cursor-pointer text-[10px] uppercase tracking-widest text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors">
+              Instructions (advanced)
+            </summary>
+            <pre className="mt-2 font-mono text-sm bg-charcoal-darkest p-3 rounded-none border border-gray-border text-neutral-700 dark:text-neutral-300 whitespace-pre-wrap break-words">
               {task.instructions}
             </pre>
-          </div>
+          </details>
         )}
 
-        {/* Dependencies */}
+        {/* 6. Dependencies */}
         <div>
-          <FieldLabel margin="mb-2">
-            Dependencies ({blockers.length})
-          </FieldLabel>
-
-          {/* Dependency list */}
-          {blockers.length > 0 ? (
-            <div className="space-y-1 mb-2">
-              {blockers.map((dep) => (
-                <div
-                  key={dep.id}
-                  className="flex items-center justify-between px-3 py-1 border border-gray-200 dark:border-gray-border"
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="status-dot status-dot-warning" />
-                    <span className="mono-bracket">[{dep.id}]</span>
-                  </div>
-                  <button
-                    onClick={() => removeDepMutation.mutate(dep.id)}
-                    className="p-0.5 text-neutral-400 hover:text-red-500 transition-colors"
-                    aria-label="Remove dependency"
+          {/* Depends On (predecessors) */}
+          <div className="mb-4">
+            <FieldLabel margin="mb-2">Depends On</FieldLabel>
+            {blockers.length > 0 ? (
+              <div className="space-y-1 mb-2">
+                {blockers.map((dep) => (
+                  <div
+                    key={dep.id}
+                    className="flex items-center justify-between px-3 py-1 border border-gray-200 dark:border-gray-border"
                   >
-                    <X size={12} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 px-3 py-2 border border-gray-200 dark:border-gray-border mb-2">
-              <span className="font-mono text-xs text-neutral-400 dark:text-neutral-500">
-                No dependencies
-              </span>
-            </div>
-          )}
+                    <div className="flex items-center gap-2">
+                      <span className="status-dot status-dot-warning" />
+                      <span className="font-mono text-xs text-neutral-800 dark:text-light-neutral">
+                        [{dep.id}] {dep.title}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => removeDepMutation.mutate(dep.id)}
+                      className="p-0.5 text-neutral-400 hover:text-red-500 transition-colors"
+                      aria-label="Remove dependency"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 px-3 py-2 border border-gray-200 dark:border-gray-border mb-2">
+                <span className="font-mono text-xs text-neutral-400 dark:text-neutral-500">
+                  No dependencies
+                </span>
+              </div>
+            )}
 
-          {/* Add dependency */}
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={depInput}
-              onChange={(e) => setDepInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleAddDep()
-              }}
-              placeholder="Task ID (e.g. TASK-001)"
-              className="flex-1 rounded-none border border-gray-200 dark:border-gray-border bg-transparent p-2 font-mono text-xs text-neutral-800 dark:text-light-neutral"
-            />
-            <button
-              onClick={handleAddDep}
-              disabled={!depInput.trim() || addDepMutation.isPending}
-              className="px-3 py-2 rounded-none border border-gray-300 dark:border-gray-border text-xs text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors disabled:opacity-50"
-            >
-              Add
-            </button>
+            {/* Add dependency dropdown */}
+            <div className="relative">
+              <button
+                onClick={() => setShowDepDropdown((prev) => !prev)}
+                disabled={availableDepTasks.length === 0}
+                className="text-xs font-mono uppercase tracking-wider text-purple-active hover:text-purple-400 transition-colors disabled:opacity-40"
+              >
+                + Add
+              </button>
+              {showDepDropdown && availableDepTasks.length > 0 && (
+                <div className="absolute z-20 left-0 mt-1 w-full border border-gray-200 dark:border-gray-border bg-white dark:bg-charcoal-dark max-h-48 overflow-y-auto shadow-lg">
+                  {availableDepTasks.map((t) => (
+                    <button
+                      key={t.id}
+                      onMouseDown={() => {
+                        addDepMutation.mutate(t.id)
+                        setShowDepDropdown(false)
+                      }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center gap-2"
+                    >
+                      <span className="font-mono text-xs text-neutral-800 dark:text-light-neutral">
+                        [{t.id}] {t.title}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Depended On By (successors) */}
+          <div>
+            <FieldLabel margin="mb-2">Depended On By</FieldLabel>
+            {dependents.length > 0 ? (
+              <div className="space-y-1">
+                {dependents.map((dep) => (
+                  <div
+                    key={dep.id}
+                    className="flex items-center gap-2 px-3 py-1 border border-gray-200 dark:border-gray-border"
+                  >
+                    <span className="status-dot status-dot-info" />
+                    <span className="font-mono text-xs text-neutral-800 dark:text-light-neutral">
+                      [{dep.id}] {dep.title}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 px-3 py-2 border border-gray-200 dark:border-gray-border">
+                <span className="font-mono text-xs text-neutral-400 dark:text-neutral-500">
+                  No dependents
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Assigned to */}
+        {/* 7. Assigned To */}
         <div>
           <FieldLabel>Assigned To</FieldLabel>
-          {task.assigned_to ? (
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-sm text-neutral-800 dark:text-light-neutral">
-                {task.assigned_to}
-              </span>
-              <button
-                onClick={() =>
-                  updateMutation.mutate({ assigned_to: undefined, assignee_type: undefined })
-                }
-                className="text-[10px] uppercase tracking-wider text-red-500 hover:text-red-400 transition-colors"
-              >
-                Unassign
-              </button>
-            </div>
-          ) : (
-            <span className="font-mono text-xs text-neutral-400 dark:text-neutral-500">
-              Unassigned
-            </span>
-          )}
-        </div>
-
-        {/* Action buttons */}
-        <div className="pt-3 border-t border-gray-200 dark:border-gray-border">
-          <FieldLabel margin="mb-2">Actions</FieldLabel>
-          <div className="flex gap-2 flex-wrap">
-            <button
-              onClick={() => startWorkMutation.mutate()}
-              disabled={startWorkMutation.isPending}
-              className="glow-button flex items-center gap-1 disabled:opacity-50"
-            >
-              <Play size={12} />
-              Start Work
-            </button>
-            <button
-              onClick={() => completeWorkMutation.mutate()}
-              disabled={completeWorkMutation.isPending}
-              className="px-4 py-2 rounded-none border border-green-500 text-green-500 text-xs font-bold uppercase tracking-wider hover:bg-green-500/10 transition-colors flex items-center gap-1 disabled:opacity-50"
-            >
-              <Check size={12} />
-              Complete
-            </button>
-            <button
-              onClick={() => blockWorkMutation.mutate()}
-              disabled={blockWorkMutation.isPending}
-              className="px-4 py-2 rounded-none border border-red-500 text-red-500 text-xs font-bold uppercase tracking-wider hover:bg-red-500/10 transition-colors flex items-center gap-1 disabled:opacity-50"
-            >
-              <AlertCircle size={12} />
-              Block
-            </button>
+          <div className="relative">
+            {draft?.assigned_to ? (
+              <div className="flex items-center gap-2 mb-1">
+                <span className="font-mono text-sm text-neutral-800 dark:text-light-neutral">
+                  {getAssigneeName(draft.assigned_to)}
+                </span>
+                <SharpTag
+                  label={draft.assignee_type === AssigneeType.Session ? 'AGENT' : 'USER'}
+                  variant={draft.assignee_type === AssigneeType.Session ? 'amber' : 'primary'}
+                />
+                <button
+                  onClick={() =>
+                    setDraft((prev) => (prev ? { ...prev, assigned_to: '', assignee_type: '' } : null))
+                  }
+                  className="text-[10px] uppercase tracking-wider text-red-500 hover:text-red-400 transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ) : (
+              <>
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => {
+                    setSearchTerm(e.target.value)
+                    setShowDropdown(true)
+                  }}
+                  onFocus={() => setShowDropdown(true)}
+                  onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
+                  placeholder="Search users or agents..."
+                  className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-transparent p-2 font-mono text-sm text-neutral-800 dark:text-light-neutral"
+                />
+                {showDropdown && (
+                  <div className="absolute z-20 w-full mt-1 border border-gray-200 dark:border-gray-border bg-white dark:bg-charcoal-dark max-h-48 overflow-y-auto">
+                    {filteredOptions.length > 0 ? (
+                      filteredOptions.map((opt) => (
+                        <button
+                          key={opt.id}
+                          onMouseDown={() => {
+                            setDraft((prev) =>
+                              prev ? { ...prev, assigned_to: opt.id, assignee_type: opt.type } : null
+                            )
+                            setSearchTerm('')
+                            setShowDropdown(false)
+                          }}
+                          className="w-full text-left px-3 py-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center gap-2"
+                        >
+                          <span className="font-mono text-sm text-neutral-800 dark:text-light-neutral">
+                            {opt.name}
+                          </span>
+                          <SharpTag
+                            label={opt.type === AssigneeType.Session ? 'AGENT' : 'USER'}
+                            variant={opt.type === AssigneeType.Session ? 'amber' : 'primary'}
+                          />
+                        </button>
+                      ))
+                    ) : (
+                      <div className="px-3 py-2 font-mono text-xs text-neutral-400 dark:text-neutral-500">
+                        No matches
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </div>
 
-        {/* Comment thread */}
+        {/* 8. Save / Cancel (sticky bottom bar) */}
+        <div className="sticky bottom-0 bg-white dark:bg-charcoal-dark border-t border-gray-200 dark:border-gray-border px-4 py-3 z-10 -mx-4 flex items-center justify-end gap-2">
+          <button
+            onClick={handleCancel}
+            className="px-4 py-1.5 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-800 dark:hover:text-neutral-100 transition-colors"
+          >
+            Cancel
+          </button>
+          <div ref={saveDropdownRef} className="relative flex">
+            <button
+              onClick={handleSave}
+              disabled={!isDirty}
+              className="rounded-l-md bg-purple-active px-4 py-1.5 text-sm font-medium text-white hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Save
+            </button>
+            <button
+              onClick={() => setShowSaveDropdown(!showSaveDropdown)}
+              disabled={!isDirty}
+              className="rounded-r-md border-l border-purple-600 bg-purple-active px-2 py-1.5 text-white hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronDown className="h-4 w-4" />
+            </button>
+            {showSaveDropdown && (
+              <div className="absolute bottom-full right-0 mb-1 w-40 rounded-md border border-gray-200 dark:border-gray-border bg-white dark:bg-charcoal-dark py-1 shadow-lg z-20">
+                <button
+                  onClick={handleSaveAndClose}
+                  disabled={!isDirty}
+                  className="flex w-full items-center px-4 py-2 text-left text-sm text-gray-700 dark:text-light-neutral hover:bg-gray-100 dark:hover:bg-neutral-800 disabled:opacity-50"
+                >
+                  Save & Close
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 9. Activity & Comments */}
         <CommentThread workItemId={taskId} workItemType="task" />
       </div>
     </SlideInPanel>

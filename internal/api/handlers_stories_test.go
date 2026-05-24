@@ -93,7 +93,6 @@ func TestCreateStory(t *testing.T) {
 	rr := doRequest(t, mux, "POST", "/api/stories", map[string]any{
 		"title":          "Test Story",
 		"description":    "A test story",
-		"priority":       1,
 		"requires_build": true,
 	})
 
@@ -255,8 +254,7 @@ func TestUpdateStory(t *testing.T) {
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Original Title"; s.Status = models.StatusNew })
 
 	rr := doRequest(t, mux, "PUT", "/api/stories/"+story.ID, map[string]any{
-		"title":    "Updated Title",
-		"priority": 5,
+		"title": "Updated Title",
 	})
 
 	if rr.Code != http.StatusOK {
@@ -269,11 +267,6 @@ func TestUpdateStory(t *testing.T) {
 	title, _ := resp["title"].(string)
 	if title != "Updated Title" {
 		t.Errorf("updateStory title = %q, want %q", title, "Updated Title")
-	}
-
-	priority, _ := resp["priority"].(float64)
-	if int(priority) != 5 {
-		t.Errorf("updateStory priority = %v, want 5", priority)
 	}
 }
 
@@ -297,10 +290,6 @@ func TestUpdateStory_PartialUpdate(t *testing.T) {
 	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Partial Update"; s.Status = models.StatusNew })
-	story.Priority = 3
-	if err := storyStore.Update(context.Background(), story); err != nil {
-		t.Fatalf("set initial priority: %v", err)
-	}
 
 	rr := doRequest(t, mux, "PUT", "/api/stories/"+story.ID, map[string]any{
 		"description": "New description",
@@ -316,11 +305,6 @@ func TestUpdateStory_PartialUpdate(t *testing.T) {
 	desc, _ := resp["description"].(string)
 	if desc != "New description" {
 		t.Errorf("updateStory description = %q, want %q", desc, "New description")
-	}
-
-	priority, _ := resp["priority"].(float64)
-	if int(priority) != 3 {
-		t.Errorf("updateStory priority = %v, want 3 (should not change)", priority)
 	}
 }
 
@@ -384,7 +368,6 @@ func TestCreateStory_WithAllFields(t *testing.T) {
 	rr := doRequest(t, mux, "POST", "/api/stories", map[string]any{
 		"title":           "Full Story",
 		"description":     "Full description",
-		"priority":        2,
 		"requires_build":  true,
 		"requires_review": true,
 		"assigned_to":     "user-1",

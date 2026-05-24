@@ -33,16 +33,15 @@ func NewTaskStore(db *sql.DB) *TaskStore {
 // scanTask is a helper to scan a task row from a *sql.Row or *sql.Rows.
 func scanTask(scanner interface{ Scan(...any) error }) (*models.Task, error) {
 	t := &models.Task{}
-	var desc, assignedTo, contextJSON, instructions sql.NullString
+	var desc, assignedTo, instructions sql.NullString
 	var statusStr, taskTypeStr, assigneeTypeStr sql.NullString
-	var estimate sql.NullInt64
 	var createdAt, updatedAt sql.NullTime
 	var numericID sql.NullInt64
 
 	err := scanner.Scan(
-		&t.ID, &numericID, &t.StoryID, &t.Title, &desc, &statusStr, &t.Priority, &taskTypeStr,
-		&estimate, &assignedTo, &assigneeTypeStr, &t.SortOrder,
-		&contextJSON, &instructions, &t.IsStale, &createdAt, &updatedAt,
+		&t.ID, &numericID, &t.StoryID, &t.Title, &desc, &statusStr, &taskTypeStr,
+		&assignedTo, &assigneeTypeStr, &t.SortOrder,
+		&instructions, &t.IsStale, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -53,13 +52,8 @@ func scanTask(scanner interface{ Scan(...any) error }) (*models.Task, error) {
 	t.AssigneeType = models.AssigneeType(stringOrZero(assigneeTypeStr))
 	t.Status = models.Status(stringOrZero(statusStr))
 	t.TaskType = models.TaskType(stringOrZero(taskTypeStr))
-	t.Context = stringOrZero(contextJSON)
 	t.Instructions = stringOrZero(instructions)
 	t.NumericID = intOrZero(numericID)
-	if estimate.Valid {
-		e := int(estimate.Int64)
-		t.Estimate = &e
-	}
 	t.CreatedAt = timeOrZero(createdAt)
 	t.UpdatedAt = timeOrZero(updatedAt)
 
@@ -89,18 +83,13 @@ func (s *TaskStore) Create(ctx context.Context, t *models.Task) error {
 		t.Status = models.StatusNew
 	}
 
-	var estimate *int
-	if t.Estimate != nil {
-		estimate = t.Estimate
-	}
-
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO tasks (id, numeric_id, story_id, title, description, status, priority, task_type, estimate,
-		 assigned_to, assignee_type, sort_order, context, instructions, is_stale, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.NumericID, t.StoryID, t.Title, t.Description, t.Status, t.Priority, t.TaskType,
-		estimate, t.AssignedTo, t.AssigneeType, t.SortOrder,
-		t.Context, t.Instructions, t.IsStale, t.CreatedAt, t.UpdatedAt,
+		`INSERT INTO tasks (id, numeric_id, story_id, title, description, status, task_type,
+		 assigned_to, assignee_type, sort_order, instructions, is_stale, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.NumericID, t.StoryID, t.Title, t.Description, t.Status, t.TaskType,
+		t.AssignedTo, t.AssigneeType, t.SortOrder,
+		t.Instructions, t.IsStale, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -111,8 +100,8 @@ func (s *TaskStore) Create(ctx context.Context, t *models.Task) error {
 // GetByID retrieves a task by its ID.
 func (s *TaskStore) GetByID(ctx context.Context, id string) (*models.Task, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, numeric_id, story_id, title, description, status, priority, task_type, estimate,
-		        assigned_to, assignee_type, sort_order, context, instructions, is_stale, created_at, updated_at
+		`SELECT id, numeric_id, story_id, title, description, status, task_type,
+		        assigned_to, assignee_type, sort_order, instructions, is_stale, created_at, updated_at
 		 FROM tasks WHERE id = ?`, id)
 
 	t, err := scanTask(row)
@@ -128,8 +117,8 @@ func (s *TaskStore) GetByID(ctx context.Context, id string) (*models.Task, error
 // GetByNumericID retrieves a task by its numeric ID.
 func (s *TaskStore) GetByNumericID(ctx context.Context, numID int) (*models.Task, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, numeric_id, story_id, title, description, status, priority, task_type, estimate,
-		        assigned_to, assignee_type, sort_order, context, instructions, is_stale, created_at, updated_at
+		`SELECT id, numeric_id, story_id, title, description, status, task_type,
+		        assigned_to, assignee_type, sort_order, instructions, is_stale, created_at, updated_at
 		 FROM tasks WHERE numeric_id = ?`, numID)
 
 	t, err := scanTask(row)
@@ -164,13 +153,13 @@ func (s *TaskStore) List(ctx context.Context, filter TaskFilter) ([]*models.Task
 		args = append(args, filter.TaskType)
 	}
 
-	query := `SELECT id, numeric_id, story_id, title, description, status, priority, task_type, estimate,
-	                 assigned_to, assignee_type, sort_order, context, instructions, is_stale, created_at, updated_at
+	query := `SELECT id, numeric_id, story_id, title, description, status, task_type,
+	                 assigned_to, assignee_type, sort_order, instructions, is_stale, created_at, updated_at
 	          FROM tasks`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
-	query += " ORDER BY sort_order, priority, created_at"
+	query += " ORDER BY sort_order, created_at"
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -202,18 +191,13 @@ func (s *TaskStore) List(ctx context.Context, filter TaskFilter) ([]*models.Task
 func (s *TaskStore) Update(ctx context.Context, t *models.Task) error {
 	t.UpdatedAt = time.Now().UTC()
 
-	var estimate *int
-	if t.Estimate != nil {
-		estimate = t.Estimate
-	}
-
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE tasks SET story_id=?, title=?, description=?, status=?, priority=?, task_type=?,
-		 estimate=?, assigned_to=?, assignee_type=?, sort_order=?, context=?, instructions=?,
+		`UPDATE tasks SET story_id=?, title=?, description=?, status=?, task_type=?,
+		 assigned_to=?, assignee_type=?, sort_order=?, instructions=?,
 		 is_stale=?, updated_at=?
 		 WHERE id=?`,
-		t.StoryID, t.Title, t.Description, t.Status, t.Priority, t.TaskType,
-		estimate, t.AssignedTo, t.AssigneeType, t.SortOrder, t.Context, t.Instructions,
+		t.StoryID, t.Title, t.Description, t.Status, t.TaskType,
+		t.AssignedTo, t.AssigneeType, t.SortOrder, t.Instructions,
 		t.IsStale, t.UpdatedAt, t.ID,
 	)
 	if err != nil {
@@ -246,18 +230,13 @@ func (s *TaskStore) BatchUpdate(ctx context.Context, tasks []*models.Task) error
 	for _, t := range tasks {
 		t.UpdatedAt = time.Now().UTC()
 
-		var estimate *int
-		if t.Estimate != nil {
-			estimate = t.Estimate
-		}
-
 		result, execErr := tx.ExecContext(ctx,
-			`UPDATE tasks SET story_id=?, title=?, description=?, status=?, priority=?, task_type=?,
-			 estimate=?, assigned_to=?, assignee_type=?, sort_order=?, context=?, instructions=?,
+			`UPDATE tasks SET story_id=?, title=?, description=?, status=?, task_type=?,
+			 assigned_to=?, assignee_type=?, sort_order=?, instructions=?,
 			 is_stale=?, updated_at=?
 			 WHERE id=?`,
-			t.StoryID, t.Title, t.Description, t.Status, t.Priority, t.TaskType,
-			estimate, t.AssignedTo, t.AssigneeType, t.SortOrder, t.Context, t.Instructions,
+			t.StoryID, t.Title, t.Description, t.Status, t.TaskType,
+			t.AssignedTo, t.AssigneeType, t.SortOrder, t.Instructions,
 			t.IsStale, t.UpdatedAt, t.ID,
 		)
 		if execErr != nil {
@@ -394,8 +373,8 @@ func (s *TaskStore) GetDependencies(ctx context.Context, taskID string) ([]strin
 // GetBlockers returns all tasks that the given task depends on and are not done.
 func (s *TaskStore) GetBlockers(ctx context.Context, taskID string) ([]*models.Task, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT t.id, t.numeric_id, t.story_id, t.title, t.description, t.status, t.priority, t.task_type, t.estimate,
-		        t.assigned_to, t.assignee_type, t.sort_order, t.context, t.instructions, t.is_stale, t.created_at, t.updated_at
+		`SELECT t.id, t.numeric_id, t.story_id, t.title, t.description, t.status, t.task_type,
+		        t.assigned_to, t.assignee_type, t.sort_order, t.instructions, t.is_stale, t.created_at, t.updated_at
 		 FROM tasks t
 		 JOIN task_dependencies td ON td.depends_on_task_id = t.id
 		 WHERE td.task_id = ? AND t.status != ?`, taskID, models.StatusDone)
@@ -489,8 +468,8 @@ func (s *TaskStore) dfsInMemory(currentID, targetID string, adj map[string][]str
 // GetDependents returns all tasks that depend on the given task (reverse lookup).
 func (s *TaskStore) GetDependents(ctx context.Context, taskID string) ([]*models.Task, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT t.id, t.numeric_id, t.story_id, t.title, t.description, t.status, t.priority, t.task_type, t.estimate,
-			t.assigned_to, t.assignee_type, t.sort_order, t.context, t.instructions, t.is_stale, t.created_at, t.updated_at
+		SELECT t.id, t.numeric_id, t.story_id, t.title, t.description, t.status, t.task_type,
+			t.assigned_to, t.assignee_type, t.sort_order, t.instructions, t.is_stale, t.created_at, t.updated_at
 		FROM tasks t
 		JOIN task_dependencies td ON td.task_id = t.id
 		WHERE td.depends_on_task_id = ?`, taskID)

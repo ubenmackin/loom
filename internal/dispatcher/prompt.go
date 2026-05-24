@@ -2,7 +2,6 @@ package dispatcher
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -22,7 +21,6 @@ var mustachePattern = regexp.MustCompile(`\{\{([\w.]+)\}\}`)
 //   - {{story.description}}   → story.Description
 //   - {{task.title}}          → task.Title
 //   - {{task.description}}    → task.Description
-//   - {{context.*}}           → resolved from task.Context JSON using dot-notation
 //   - {{last_build_comment}}  → most recent build-related comment on the task
 //   - {{last_review_comment}} → most recent review-related comment on the task
 func (d *Dispatcher) assemblePrompt(ctx context.Context, task *models.Task, story *models.Story) (string, error) {
@@ -47,14 +45,6 @@ func (d *Dispatcher) assemblePrompt(ctx context.Context, task *models.Task, stor
 	// Task fields.
 	values["task.title"] = task.Title
 	values["task.description"] = task.Description
-
-	// Context fields — parse task.Context as JSON and resolve dot-notation keys.
-	if task.Context != "" {
-		var ctxMap map[string]any
-		if err := json.Unmarshal([]byte(task.Context), &ctxMap); err == nil {
-			flattenContext(ctxMap, "context", values)
-		}
-	}
 
 	// Last build comment.
 	lastBuildComment, err := d.findLastComment(ctx, task.ID, "build")
@@ -83,26 +73,6 @@ func (d *Dispatcher) assemblePrompt(ctx context.Context, task *models.Task, stor
 	})
 
 	return result, nil
-}
-
-// flattenContext recursively flattens a nested map into dot-notation keys
-// prefixed with the given prefix. Only string values are stored; nested
-// maps are traversed further.
-func flattenContext(data map[string]any, prefix string, out map[string]string) {
-	for key, val := range data {
-		fullKey := prefix + "." + key
-		switch v := val.(type) {
-		case string:
-			out[fullKey] = v
-		case map[string]any:
-			flattenContext(v, fullKey, out)
-		default:
-			// Convert non-string values to their JSON representation.
-			if b, err := json.Marshal(v); err == nil {
-				out[fullKey] = string(b)
-			}
-		}
-	}
 }
 
 // findLastComment retrieves the most recent comment on a task that contains

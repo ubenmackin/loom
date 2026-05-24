@@ -79,9 +79,8 @@ func nextSessionID() string {
 func CreateTestStory(t *testing.T, s StoryStoreInterface, overrides ...func(*models.Story)) *models.Story {
 	t.Helper()
 	story := &models.Story{
-		Title:    fmt.Sprintf("Test Story %d", time.Now().UnixNano()),
-		Status:   models.StatusNew,
-		Priority: 0,
+		Title:  fmt.Sprintf("Test Story %d", time.Now().UnixNano()),
+		Status: models.StatusNew,
 	}
 	for _, o := range overrides {
 		o(story)

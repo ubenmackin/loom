@@ -5,7 +5,6 @@ import SharpTag from './SharpTag'
 export interface CreateStoryData {
   title: string
   description: string
-  priority: number
   requires_build: boolean
   requires_review: boolean
 }
@@ -19,7 +18,6 @@ interface CreateStoryFormProps {
 export default function CreateStoryForm({ open, onSubmit, onCancel }: CreateStoryFormProps) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
-  const [priority, setPriority] = useState(0)
   const [requiresBuild, setRequiresBuild] = useState(false)
   const [requiresReview, setRequiresReview] = useState(false)
   const [error, setError] = useState('')
@@ -48,7 +46,6 @@ export default function CreateStoryForm({ open, onSubmit, onCancel }: CreateStor
     onSubmit({
       title: title.trim(),
       description: description.trim(),
-      priority,
       requires_build: requiresBuild,
       requires_review: requiresReview,
     })
@@ -57,7 +54,6 @@ export default function CreateStoryForm({ open, onSubmit, onCancel }: CreateStor
   const handleCancel = () => {
     setTitle('')
     setDescription('')
-    setPriority(0)
     setRequiresBuild(false)
     setRequiresReview(false)
     setError('')
@@ -115,20 +111,6 @@ export default function CreateStoryForm({ open, onSubmit, onCancel }: CreateStor
               rows={4}
               placeholder="Markdown description..."
               className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-charcoal-darkest p-3 font-mono text-sm text-neutral-800 dark:text-light-neutral resize-y"
-            />
-          </div>
-
-          {/* Priority */}
-          <div>
-            <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
-              Priority
-            </label>
-            <input
-              type="number"
-              value={priority}
-              min="0"
-              onChange={(e) => setPriority(parseInt(e.target.value, 10) || 0)}
-              className="w-20 rounded-none border border-gray-200 dark:border-gray-border bg-transparent p-2 font-mono text-sm text-neutral-800 dark:text-light-neutral"
             />
           </div>
 

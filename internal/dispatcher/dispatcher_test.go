@@ -419,7 +419,7 @@ func TestPromptAssembly(t *testing.T) {
 
 	testhelpers.CreateTestTemplate(t, templateStore, func(tmpl *models.PromptTemplate) {
 		tmpl.TaskType = models.TaskTypeCode
-		tmpl.Template = "Task: {{task.title}}\nStory: {{story.title}}\nContext: {{context.file_path}}"
+		tmpl.Template = "Task: {{task.title}}\nStory: {{story.title}}\nDesc: {{task.description}}"
 	})
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Prompt Story"; s.Status = models.StatusReady })
@@ -432,7 +432,6 @@ func TestPromptAssembly(t *testing.T) {
 		ts.TaskType = models.TaskTypeCode
 	})
 	task.Description = "Task description here"
-	task.Context = `{"file_path": "src/main.go", "line": 42}`
 
 	result, err := d.assemblePrompt(ctx, task, story)
 	if err != nil {
@@ -445,8 +444,8 @@ func TestPromptAssembly(t *testing.T) {
 	if !containsStr(result, "Prompt Story") {
 		t.Errorf("assemblePrompt() result missing story title: %q", result)
 	}
-	if !containsStr(result, "src/main.go") {
-		t.Errorf("assemblePrompt() result missing context.file_path: %q", result)
+	if !containsStr(result, "Task description here") {
+		t.Errorf("assemblePrompt() result missing description: %q", result)
 	}
 }
 
@@ -602,7 +601,7 @@ func TestPromptAssembly_JSONContext(t *testing.T) {
 
 	testhelpers.CreateTestTemplate(t, templateStore, func(tmpl *models.PromptTemplate) {
 		tmpl.TaskType = models.TaskTypeCode
-		tmpl.Template = "File: {{context.file}}\nLine: {{context.line}}\nError: {{context.error.message}}"
+		tmpl.Template = "Task: {{task.title}}"
 	})
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "JSON Context Story"; s.Status = models.StatusReady })
@@ -612,21 +611,14 @@ func TestPromptAssembly_JSONContext(t *testing.T) {
 		ts.Status = models.StatusReady
 		ts.TaskType = models.TaskTypeCode
 	})
-	task.Context = `{"file": "main.go", "line": "42", "error": {"message": "syntax error"}}`
 
 	result, err := d.assemblePrompt(ctx, task, story)
 	if err != nil {
 		t.Fatalf("assemblePrompt() error = %v", err)
 	}
 
-	if !containsStr(result, "main.go") {
-		t.Errorf("prompt missing context.file: %q", result)
-	}
-	if !containsStr(result, "42") {
-		t.Errorf("prompt missing context.line: %q", result)
-	}
-	if !containsStr(result, "syntax error") {
-		t.Errorf("prompt missing context.error.message: %q", result)
+	if !containsStr(result, "JSON Context Task") {
+		t.Errorf("prompt missing task title: %q", result)
 	}
 }
 

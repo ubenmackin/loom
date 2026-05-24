@@ -37,7 +37,7 @@ func scanStoryRow(scanner interface{ Scan(...any) error }) (*models.Story, error
 	var numericID sql.NullInt64
 
 	err := scanner.Scan(
-		&story.ID, &numericID, &story.Title, &desc, &statusStr, &story.Priority,
+		&story.ID, &numericID, &story.Title, &desc, &statusStr,
 		&story.RequiresBuild, &story.RequiresReview, &assignedTo, &assigneeTypeStr,
 		&story.SortOrder, &createdAt, &updatedAt,
 	)
@@ -80,9 +80,9 @@ func (s *StoryStore) Create(ctx context.Context, story *models.Story) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO stories (id, numeric_id, title, description, status, priority, requires_build, requires_review, assigned_to, assignee_type, sort_order, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		story.ID, story.NumericID, story.Title, story.Description, story.Status, story.Priority,
+		`INSERT INTO stories (id, numeric_id, title, description, status, requires_build, requires_review, assigned_to, assignee_type, sort_order, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		story.ID, story.NumericID, story.Title, story.Description, story.Status,
 		story.RequiresBuild, story.RequiresReview, story.AssignedTo, story.AssigneeType,
 		story.SortOrder, story.CreatedAt, story.UpdatedAt,
 	)
@@ -95,7 +95,7 @@ func (s *StoryStore) Create(ctx context.Context, story *models.Story) error {
 // GetByID retrieves a story by its ID.
 func (s *StoryStore) GetByID(ctx context.Context, id string) (*models.Story, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, numeric_id, title, description, status, priority, requires_build, requires_review, assigned_to, assignee_type, sort_order, created_at, updated_at
+		`SELECT id, numeric_id, title, description, status, requires_build, requires_review, assigned_to, assignee_type, sort_order, created_at, updated_at
 		 FROM stories WHERE id = ?`, id)
 
 	story, err := scanStoryRow(row)
@@ -112,7 +112,7 @@ func (s *StoryStore) GetByID(ctx context.Context, id string) (*models.Story, err
 // GetByNumericID retrieves a story by its numeric ID.
 func (s *StoryStore) GetByNumericID(ctx context.Context, numID int) (*models.Story, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, numeric_id, title, description, status, priority, requires_build, requires_review, assigned_to, assignee_type, sort_order, created_at, updated_at
+		`SELECT id, numeric_id, title, description, status, requires_build, requires_review, assigned_to, assignee_type, sort_order, created_at, updated_at
 		 FROM stories WHERE numeric_id = ?`, numID)
 
 	story, err := scanStoryRow(row)
@@ -141,12 +141,12 @@ func (s *StoryStore) List(ctx context.Context, filter StoryFilter) ([]*models.St
 		args = append(args, filter.AssignedTo)
 	}
 
-	query := `SELECT id, numeric_id, title, description, status, priority, requires_build, requires_review, assigned_to, assignee_type, sort_order, created_at, updated_at
+	query := `SELECT id, numeric_id, title, description, status, requires_build, requires_review, assigned_to, assignee_type, sort_order, created_at, updated_at
 			  FROM stories`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
-	query += " ORDER BY sort_order, priority, created_at"
+	query += " ORDER BY sort_order, created_at"
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -179,10 +179,10 @@ func (s *StoryStore) Update(ctx context.Context, story *models.Story) error {
 	story.UpdatedAt = time.Now().UTC()
 
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE stories SET title=?, description=?, status=?, priority=?, requires_build=?, requires_review=?,
+		`UPDATE stories SET title=?, description=?, status=?, requires_build=?, requires_review=?,
 		 assigned_to=?, assignee_type=?, sort_order=?, updated_at=?
 		 WHERE id=?`,
-		story.Title, story.Description, story.Status, story.Priority,
+		story.Title, story.Description, story.Status,
 		story.RequiresBuild, story.RequiresReview, story.AssignedTo, story.AssigneeType,
 		story.SortOrder, story.UpdatedAt, story.ID,
 	)
@@ -275,16 +275,16 @@ func (s *StoryStore) Delete(ctx context.Context, id string) error {
 // GetWithTasks retrieves a story along with its tasks using a single LEFT JOIN query.
 func (s *StoryStore) GetWithTasks(ctx context.Context, id string) (*models.Story, []*models.Task, error) {
 	query := `SELECT
-		s.id, s.numeric_id, s.title, s.description, s.status, s.priority,
+		s.id, s.numeric_id, s.title, s.description, s.status,
 		s.requires_build, s.requires_review, s.assigned_to, s.assignee_type,
 		s.sort_order, s.created_at, s.updated_at,
 		t.id, t.numeric_id, t.story_id, t.title, t.description, t.status,
-		t.priority, t.task_type, t.estimate, t.assigned_to, t.assignee_type,
-		t.sort_order, t.context, t.instructions, t.is_stale, t.created_at, t.updated_at
+		t.task_type, t.assigned_to, t.assignee_type,
+		t.sort_order, t.instructions, t.is_stale, t.created_at, t.updated_at
 		FROM stories s
 		LEFT JOIN tasks t ON t.story_id = s.id
 		WHERE s.id = ?
-		ORDER BY t.sort_order, t.priority`
+		ORDER BY t.sort_order`
 
 	rows, err := s.db.QueryContext(ctx, query, id)
 	if err != nil {
@@ -304,25 +304,25 @@ func (s *StoryStore) GetWithTasks(ctx context.Context, id string) (*models.Story
 			// Story columns
 			sID, sTitle, sDesc, sStatusStr, sAssignedTo, sAssigneeTypeStr sql.NullString
 			sNumID                                                        sql.NullInt64
-			sPriority, sSortOrder                                         sql.NullInt64
+			sSortOrder                                                    sql.NullInt64
 			sRequiresBuild, sRequiresReview                               sql.NullBool
 			sCreatedAt, sUpdatedAt                                        sql.NullTime
 
 			// Task columns
 			tID, tStoryID, tTitle, tDesc, tStatusStr, tAssignedTo, tAssigneeTypeStr sql.NullString
-			tTaskTypeStr, tContext, tInstructions                                   sql.NullString
-			tNumID, tPriority, tEstimate, tSortOrder                                sql.NullInt64
+			tTaskTypeStr, tInstructions                                             sql.NullString
+			tNumID, tSortOrder                                                      sql.NullInt64
 			tCreatedAt, tUpdatedAt                                                  sql.NullTime
 			tIsStale                                                                sql.NullBool
 		)
 
 		err := rows.Scan(
-			&sID, &sNumID, &sTitle, &sDesc, &sStatusStr, &sPriority,
+			&sID, &sNumID, &sTitle, &sDesc, &sStatusStr,
 			&sRequiresBuild, &sRequiresReview, &sAssignedTo, &sAssigneeTypeStr,
 			&sSortOrder, &sCreatedAt, &sUpdatedAt,
 			&tID, &tNumID, &tStoryID, &tTitle, &tDesc, &tStatusStr,
-			&tPriority, &tTaskTypeStr, &tEstimate, &tAssignedTo, &tAssigneeTypeStr,
-			&tSortOrder, &tContext, &tInstructions, &tIsStale, &tCreatedAt, &tUpdatedAt,
+			&tTaskTypeStr, &tAssignedTo, &tAssigneeTypeStr,
+			&tSortOrder, &tInstructions, &tIsStale, &tCreatedAt, &tUpdatedAt,
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("scan story with tasks: %w", err)
@@ -335,7 +335,6 @@ func (s *StoryStore) GetWithTasks(ctx context.Context, id string) (*models.Story
 				Title:          sTitle.String,
 				Description:    sDesc.String,
 				Status:         models.Status(sStatusStr.String),
-				Priority:       int(sPriority.Int64),
 				RequiresBuild:  sRequiresBuild.Bool,
 				RequiresReview: sRequiresReview.Bool,
 				AssignedTo:     sAssignedTo.String,
@@ -354,20 +353,14 @@ func (s *StoryStore) GetWithTasks(ctx context.Context, id string) (*models.Story
 				Title:        tTitle.String,
 				Description:  tDesc.String,
 				Status:       models.Status(tStatusStr.String),
-				Priority:     int(tPriority.Int64),
 				TaskType:     models.TaskType(tTaskTypeStr.String),
 				AssignedTo:   tAssignedTo.String,
 				AssigneeType: models.AssigneeType(tAssigneeTypeStr.String),
 				SortOrder:    int(tSortOrder.Int64),
-				Context:      tContext.String,
 				Instructions: tInstructions.String,
 				IsStale:      tIsStale.Bool,
 				CreatedAt:    timeOrZero(tCreatedAt),
 				UpdatedAt:    timeOrZero(tUpdatedAt),
-			}
-			if tEstimate.Valid {
-				e := int(tEstimate.Int64)
-				task.Estimate = &e
 			}
 			tasks = append(tasks, task)
 		}

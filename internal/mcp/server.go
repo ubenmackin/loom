@@ -310,19 +310,3 @@ func getOptionalString(params map[string]any, key string) string {
 	}
 	return s
 }
-
-// getOptionalInt extracts an optional int parameter from the params map.
-func getOptionalInt(params map[string]any, key string) int {
-	v, ok := params[key]
-	if !ok {
-		return 0
-	}
-	switch n := v.(type) {
-	case float64:
-		return int(n)
-	case int:
-		return n
-	default:
-		return 0
-	}
-}

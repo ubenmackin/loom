@@ -67,7 +67,6 @@ export async function fetchStories(filter?: StoryFilter): Promise<Story[]> {
   const params = new URLSearchParams()
   if (filter?.status) params.set('status', filter.status)
   if (filter?.assigned_to) params.set('assigned_to', filter.assigned_to)
-  if (filter?.priority !== undefined) params.set('priority', String(filter.priority))
   const qs = params.toString()
   return request(`/stories${qs ? `?${qs}` : ''}`)
 }
@@ -108,6 +107,7 @@ export async function fetchTasks(filter?: TaskFilter): Promise<Task[]> {
 export interface TaskDetailResponse {
   task: Task
   dependencies: string[]
+  dependents: Task[]
 }
 
 export async function fetchTask(id: string): Promise<TaskDetailResponse> {
@@ -139,6 +139,10 @@ export async function addDependency(id: string, depId: string): Promise<void> {
 
 export async function removeDependency(id: string, depId: string): Promise<void> {
   await request(`/tasks/${id}/dependencies/${depId}`, { method: 'DELETE' })
+}
+
+export async function deleteTask(id: string): Promise<void> {
+  await request(`/tasks/${id}`, { method: 'DELETE' })
 }
 
 export async function fetchActivity(id: string): Promise<ActivityLogEntry[]> {

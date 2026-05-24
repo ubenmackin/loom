@@ -50,7 +50,6 @@ export interface Story {
   title: string
   description?: string
   status: StatusType
-  priority: number
   requires_build: boolean
   requires_review: boolean
   assigned_to?: string
@@ -67,13 +66,10 @@ export interface Task {
   title: string
   description?: string
   status: StatusType
-  priority: number
   task_type: TaskTypeType
-  estimate?: number
   assigned_to?: string
   assignee_type?: AssigneeTypeType
   sort_order: number
-  context?: string
   instructions?: string
   is_stale: boolean
   created_at: string
@@ -177,7 +173,6 @@ export interface WorkBlock {
 export interface StoryFilter {
   status?: StatusType
   assigned_to?: string
-  priority?: number
 }
 
 export interface TaskFilter {
@@ -185,7 +180,6 @@ export interface TaskFilter {
   task_type?: TaskTypeType
   assigned_to?: string
   status?: StatusType
-  priority?: number
 }
 
 export interface User {

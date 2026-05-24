@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Pencil, Check, X, Send } from 'lucide-react'
 import {
@@ -7,8 +7,10 @@ import {
   updateComment,
   deleteComment,
   fetchActivity,
+  getUsers,
 } from '../api/client'
-import type { Comment, ActivityLogEntry, WorkItemTypeType } from '../types'
+import type { Comment, ActivityLogEntry, User, WorkItemTypeType } from '../types'
+import { useAuthStore } from '../stores/auth'
 
 interface CommentThreadProps {
   workItemId: string
@@ -24,10 +26,22 @@ interface TimelineEntry {
 
 export default function CommentThread({ workItemId, workItemType }: CommentThreadProps) {
   const queryClient = useQueryClient()
+  const currentUser = useAuthStore((s) => s.user)
   const [newBody, setNewBody] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editBody, setEditBody] = useState('')
   const [optimisticIds, setOptimisticIds] = useState<Set<string>>(new Set())
+
+  const { data: users } = useQuery<User[]>({
+    queryKey: ['users'],
+    queryFn: getUsers,
+  })
+
+  const userMap = useMemo(() => {
+    const map = new Map<string, User>()
+    users?.forEach((u) => map.set(u.id, u))
+    return map
+  }, [users])
 
   const { data: comments = [] } = useQuery<Comment[]>({
     queryKey: ['comments', workItemId, workItemType],
@@ -55,7 +69,7 @@ export default function CommentThread({ workItemId, workItemType }: CommentThrea
     mutationFn: (body: string) =>
       addComment(workItemId, workItemType, {
         body,
-        author_id: 'current-user',
+        author_id: currentUser?.id ?? 'unknown',
         author_type: 'human',
       }),
     onMutate: async (body) => {
@@ -66,7 +80,7 @@ export default function CommentThread({ workItemId, workItemType }: CommentThrea
         id: tempId,
         work_item_id: workItemId,
         work_item_type: workItemType,
-        author_id: 'current-user',
+        author_id: currentUser?.id ?? 'unknown',
         author_type: 'human',
         body,
         created_at: new Date().toISOString(),
@@ -186,7 +200,9 @@ export default function CommentThread({ workItemId, workItemType }: CommentThrea
               <div className="flex items-center justify-between mb-1">
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
-                    {comment.author_id}
+                    {comment.author_id === currentUser?.id
+                      ? (currentUser?.display_name ?? currentUser?.username ?? comment.author_id)
+                      : (userMap.get(comment.author_id)?.display_name ?? userMap.get(comment.author_id)?.username ?? comment.author_id)}
                   </span>
                   {isAgent && (
                     <span className="status-dot status-dot-info status-dot-pulse" />
@@ -195,7 +211,7 @@ export default function CommentThread({ workItemId, workItemType }: CommentThrea
                     {formatTimestamp(comment.created_at)}
                   </span>
                 </div>
-                {comment.author_id === 'current-user' && !isOptimistic && (
+                {comment.author_id === (currentUser?.id ?? 'unknown') && !isOptimistic && (
                   <div className="flex items-center gap-1">
                     {!isEditing && (
                       <button
