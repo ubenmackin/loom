@@ -200,6 +200,7 @@ export default function Board() {
   const handleAddTask = useCallback(
     (storyId: string) => {
       setSelectedTaskId(`new-task-${storyId}`)
+      setSelectedStoryId(null)
     },
     [],
   )
@@ -293,7 +294,7 @@ export default function Board() {
                   <StoryCard
                     story={story}
                     isDraggable={true}
-                    onClick={() => setSelectedStoryId(story.id)}
+                    onClick={() => { setSelectedStoryId(story.id); setSelectedTaskId(null); }}
                     assigneeName={story.assigned_to ? assigneeNameMap[story.assigned_to] || story.assigned_to : undefined}
                   />
                 </div>
@@ -318,7 +319,7 @@ export default function Board() {
                                 <TaskCard
                                   key={task.id}
                                   task={task}
-                                  onClick={(taskId) => setSelectedTaskId(taskId)}
+                                  onClick={(taskId) => { setSelectedTaskId(taskId); setSelectedStoryId(null); }}
                                   isDraggable={true}
                                 />
                               ))}
@@ -371,7 +372,7 @@ export default function Board() {
         <StoryDetail
           storyId={selectedStoryId}
           onClose={() => setSelectedStoryId(null)}
-          onOpenTask={(taskId) => setSelectedTaskId(taskId)}
+          onOpenTask={(taskId) => { setSelectedTaskId(taskId); setSelectedStoryId(null); }}
         />
 
         {/* Task Detail Slide-in Panel */}

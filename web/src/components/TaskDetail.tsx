@@ -439,7 +439,7 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     },
   })
 
-  // ── RENDER ─────────────────────────────────────────────────────────────────
+// ── RENDER ─────────────────────────────────────────────────────────────────
 
   return (
     <SlideInPanel>
@@ -471,14 +471,16 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
         />
       </div>
 
-      {/* Fields */}
-      <div className="px-4 py-4 space-y-5">
+      {/* Scrollable content area */}
+      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
         {/* 1. Description */}
         <div>
           <FieldLabel>Description</FieldLabel>
           <textarea
             value={draft?.description ?? task.description ?? ''}
-            onChange={(e) => setDraft((prev) => (prev ? { ...prev, description: e.target.value } : null))}
+            onChange={(e) =>
+              setDraft((prev) => (prev ? { ...prev, description: e.target.value } : null))
+            }
             rows={4}
             className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-charcoal-darkest p-3 font-mono text-sm text-neutral-800 dark:text-light-neutral resize-y"
             placeholder="Markdown description..."
@@ -499,7 +501,11 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
           <FieldLabel margin="mb-2">Status</FieldLabel>
           <select
             value={draft?.status ?? task.status}
-            onChange={(e) => setDraft((prev) => (prev ? { ...prev, status: e.target.value as StatusType } : null))}
+            onChange={(e) =>
+              setDraft((prev) =>
+                prev ? { ...prev, status: e.target.value as StatusType } : null
+              )
+            }
             className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-transparent p-2 font-mono text-sm text-neutral-800 dark:text-light-neutral"
           >
             {STATUS_ORDER.map((s) => (
@@ -510,7 +516,7 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
           </select>
         </div>
 
-        {/* 5. Instructions (collapsible / advanced) */}
+        {/* 4. Instructions (collapsible / advanced) */}
         {task.instructions && (
           <details className="group">
             <summary className="cursor-pointer text-[10px] uppercase tracking-widest text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors">
@@ -522,7 +528,7 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
           </details>
         )}
 
-        {/* 6. Dependencies */}
+        {/* 5. Dependencies */}
         <div>
           {/* Depends On (predecessors) */}
           <div className="mb-4">
@@ -615,7 +621,7 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
           </div>
         </div>
 
-        {/* 7. Assigned To */}
+        {/* 6. Assigned To */}
         <div>
           <FieldLabel>Assigned To</FieldLabel>
           <div className="relative">
@@ -630,7 +636,9 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
                 />
                 <button
                   onClick={() =>
-                    setDraft((prev) => (prev ? { ...prev, assigned_to: '', assignee_type: '' } : null))
+                    setDraft((prev) =>
+                      prev ? { ...prev, assigned_to: '', assignee_type: '' } : null
+                    )
                   }
                   className="text-[10px] uppercase tracking-wider text-red-500 hover:text-red-400 transition-colors"
                 >
@@ -659,7 +667,9 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
                           key={opt.id}
                           onMouseDown={() => {
                             setDraft((prev) =>
-                              prev ? { ...prev, assigned_to: opt.id, assignee_type: opt.type } : null
+                              prev
+                                ? { ...prev, assigned_to: opt.id, assignee_type: opt.type }
+                                : null
                             )
                             setSearchTerm('')
                             setShowDropdown(false)
@@ -687,46 +697,69 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
           </div>
         </div>
 
-        {/* 8. Save / Cancel (sticky bottom bar) */}
-        <div className="sticky bottom-0 bg-white dark:bg-charcoal-dark border-t border-gray-200 dark:border-gray-border px-4 py-3 z-10 -mx-4 flex items-center justify-end gap-2">
-          <button
-            onClick={handleCancel}
-            className="px-4 py-1.5 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-800 dark:hover:text-neutral-100 transition-colors"
-          >
-            Cancel
-          </button>
-          <div ref={saveDropdownRef} className="relative flex">
-            <button
-              onClick={handleSave}
-              disabled={!isDirty}
-              className="rounded-l-md bg-purple-active px-4 py-1.5 text-sm font-medium text-white hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              Save
-            </button>
-            <button
-              onClick={() => setShowSaveDropdown(!showSaveDropdown)}
-              disabled={!isDirty}
-              className="rounded-r-md border-l border-purple-600 bg-purple-active px-2 py-1.5 text-white hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronDown className="h-4 w-4" />
-            </button>
-            {showSaveDropdown && (
-              <div className="absolute bottom-full right-0 mb-1 w-40 rounded-md border border-gray-200 dark:border-gray-border bg-white dark:bg-charcoal-dark py-1 shadow-lg z-20">
-                <button
-                  onClick={handleSaveAndClose}
-                  disabled={!isDirty}
-                  className="flex w-full items-center px-4 py-2 text-left text-sm text-gray-700 dark:text-light-neutral hover:bg-gray-100 dark:hover:bg-neutral-800 disabled:opacity-50"
-                >
-                  Save & Close
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* 9. Activity & Comments */}
+        {/* 7. CommentThread (moved inside scrollable area) */}
         <CommentThread workItemId={taskId} workItemType="task" />
+
+        {/* 8. Delete Task */}
+        <div className="border-t border-gray-200 dark:border-gray-border pt-4">
+          <button
+            onClick={() => setShowDeleteConfirm(true)}
+            disabled={deleteMutation.isPending}
+            className="text-xs font-mono uppercase tracking-wider text-red-500 hover:text-red-400 disabled:opacity-40 transition-colors"
+          >
+            <Trash2 size={14} className="inline mr-1.5 -mt-0.5" />
+            Delete Task
+          </button>
+        </div>
       </div>
+
+      {/* Save/Cancel bar at bottom (always visible, NOT sticky) */}
+      <div className="border-t border-gray-200 dark:border-gray-border px-4 py-3 flex items-center justify-end gap-2">
+        <button
+          onClick={handleCancel}
+          className="px-4 py-1.5 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-800 dark:hover:text-neutral-100 transition-colors"
+        >
+          Cancel
+        </button>
+        <div ref={saveDropdownRef} className="relative flex">
+          <button
+            onClick={handleSave}
+            disabled={!isDirty}
+            className="rounded-l-md bg-purple-active px-4 py-1.5 text-sm font-medium text-white hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            Save
+          </button>
+          <button
+            onClick={() => setShowSaveDropdown(!showSaveDropdown)}
+            disabled={!isDirty}
+            className="rounded-r-md border-l border-purple-600 bg-purple-active px-2 py-1.5 text-white hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <ChevronDown className="h-4 w-4" />
+          </button>
+          {showSaveDropdown && (
+            <div className="absolute bottom-full right-0 mb-1 w-40 rounded-md border border-gray-200 dark:border-gray-border bg-white dark:bg-charcoal-dark py-1 shadow-lg z-20">
+              <button
+                onClick={handleSaveAndClose}
+                disabled={!isDirty}
+                className="flex w-full items-center px-4 py-2 text-left text-sm text-gray-700 dark:text-light-neutral hover:bg-gray-100 dark:hover:bg-neutral-800 disabled:opacity-50"
+              >
+                Save &amp; Close
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <ConfirmModal
+        open={showDeleteConfirm}
+        title="Delete Task"
+        message="Are you sure you want to delete this task? This action cannot be undone."
+        onConfirm={() => {
+          setShowDeleteConfirm(false)
+          deleteMutation.mutate()
+        }}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
     </SlideInPanel>
   )
 }

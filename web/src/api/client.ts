@@ -145,8 +145,9 @@ export async function deleteTask(id: string): Promise<void> {
   await request(`/tasks/${id}`, { method: 'DELETE' })
 }
 
-export async function fetchActivity(id: string): Promise<ActivityLogEntry[]> {
-  return request(`/tasks/${id}/activity`)
+export async function fetchActivity(id: string, workItemType: string = 'task'): Promise<ActivityLogEntry[]> {
+  const endpoint = workItemType === 'story' ? `/stories/${id}/activity` : `/tasks/${id}/activity`
+  return request(endpoint)
 }
 
 // ── Global Activity ───────────────────────────────────────────────────
