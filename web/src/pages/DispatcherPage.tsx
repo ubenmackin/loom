@@ -50,7 +50,7 @@ export default function DispatcherPage() {
       <h1 className="text-2xl font-bold text-gray-900 dark:text-white font-mono">Dispatcher Dashboard</h1>
 
       {/* Status Bar */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-1">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-0">
         <div className="bg-white dark:bg-charcoal-dark border border-gray-200 dark:border-gray-border p-2">
           <div className="text-sm text-gray-500 dark:text-amber-muted font-mono mb-1">Status</div>
           <div className="flex items-center gap-2">
@@ -79,7 +79,7 @@ export default function DispatcherPage() {
       {status?.events_processed && (
         <div className="bg-white dark:bg-charcoal-dark border border-gray-200 dark:border-gray-border p-2">
           <h2 className="text-sm text-gray-500 dark:text-amber-muted font-mono mb-3 uppercase tracking-wider">Events Processed</h2>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-1">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-0">
             {Object.entries(status.events_processed).map(([key, value]) => (
               <div key={key} className="text-center">
                 <div className="font-mono text-xl font-bold dark:text-neutral-200">{value}</div>
@@ -113,21 +113,21 @@ export default function DispatcherPage() {
       </div>
 
       {/* Pipeline Panels */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-1">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-0">
         {/* Assignment Pipeline */}
         <div className="bg-white dark:bg-charcoal-dark border border-gray-200 dark:border-gray-border p-2">
           <h2 className="text-sm text-gray-500 dark:text-amber-muted font-mono mb-3 uppercase tracking-wider">Assignment Pipeline</h2>
           <div className="space-y-2">
             <div className="flex justify-between">
-              <span className="font-mono text-sm">Ready Tasks</span>
+              <span className="font-mono text-sm text-gray-500 dark:text-amber-muted">Ready Tasks</span>
               <span className="font-mono font-bold dark:text-neutral-200">—</span>
             </div>
             <div className="flex justify-between">
-              <span className="font-mono text-sm">Active Sessions</span>
+              <span className="font-mono text-sm text-gray-500 dark:text-amber-muted">Active Sessions</span>
               <span className="font-mono font-bold dark:text-neutral-200">—</span>
             </div>
             <div className="flex justify-between">
-              <span className="font-mono text-sm">Last Pass</span>
+              <span className="font-mono text-sm text-gray-500 dark:text-amber-muted">Last Pass</span>
               <span className="font-mono text-gray-500 dark:text-neutral-400">—</span>
             </div>
           </div>
@@ -138,11 +138,11 @@ export default function DispatcherPage() {
           <h2 className="text-sm text-gray-500 dark:text-amber-muted font-mono mb-3 uppercase tracking-wider">Gate Pipeline</h2>
           <div className="space-y-2">
             <div className="flex justify-between">
-              <span className="font-mono text-sm">Pending Build Gates</span>
+              <span className="font-mono text-sm text-gray-500 dark:text-amber-muted">Pending Build Gates</span>
               <span className="font-mono font-bold dark:text-neutral-200">—</span>
             </div>
             <div className="flex justify-between">
-              <span className="font-mono text-sm">Pending Review Gates</span>
+              <span className="font-mono text-sm text-gray-500 dark:text-amber-muted">Pending Review Gates</span>
               <span className="font-mono font-bold dark:text-neutral-200">—</span>
             </div>
           </div>
@@ -153,11 +153,11 @@ export default function DispatcherPage() {
           <h2 className="text-sm text-gray-500 dark:text-amber-muted font-mono mb-3 uppercase tracking-wider">Staleness Monitor</h2>
           <div className="space-y-2">
             <div className="flex justify-between">
-              <span className="font-mono text-sm">Stale Sessions</span>
+              <span className="font-mono text-sm text-gray-500 dark:text-amber-muted">Stale Sessions</span>
               <span className="font-mono font-bold dark:text-neutral-200">—</span>
             </div>
             <div className="flex justify-between">
-              <span className="font-mono text-sm">Last Check</span>
+              <span className="font-mono text-sm text-gray-500 dark:text-amber-muted">Last Check</span>
               <span className="font-mono text-gray-500 dark:text-neutral-400">—</span>
             </div>
           </div>
