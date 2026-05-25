@@ -23,6 +23,7 @@ type StoryStore interface {
 	GetByNumericID(ctx context.Context, numID int) (*models.Story, error)
 	List(ctx context.Context, filter store.StoryFilter) ([]*models.Story, error)
 	Update(ctx context.Context, story *models.Story) error
+	BatchUpdate(ctx context.Context, stories []*models.Story) error
 	UpdateStatus(ctx context.Context, id string, status models.Status) error
 	Delete(ctx context.Context, id string) error
 	GetWithTasks(ctx context.Context, id string) (*models.Story, []*models.Task, error)

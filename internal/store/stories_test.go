@@ -274,6 +274,61 @@ func TestDelete_NotNew(t *testing.T) {
 	}
 }
 
+func TestBatchUpdate(t *testing.T) {
+	t.Parallel()
+
+	dbConn := testhelpers.SetupTestDB(t)
+	storyStore := NewStoryStore(dbConn)
+	ctx := context.Background()
+
+	storyA := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Batch A"
+		s.SortOrder = 10
+	})
+	storyB := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Batch B"
+		s.SortOrder = 20
+	})
+	storyC := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Batch C"
+		s.SortOrder = 30
+	})
+
+	// Update sort orders via BatchUpdate
+	storyA.SortOrder = 100
+	storyB.SortOrder = 200
+	storyC.SortOrder = 300
+
+	if err := storyStore.BatchUpdate(ctx, []*models.Story{storyA, storyB, storyC}); err != nil {
+		t.Fatalf("BatchUpdate() error = %v", err)
+	}
+
+	// Verify all updates were persisted
+	gotA, err := storyStore.GetByID(ctx, storyA.ID)
+	if err != nil {
+		t.Fatalf("GetByID(%q) after batch update error = %v", storyA.ID, err)
+	}
+	if gotA.SortOrder != 100 {
+		t.Errorf("storyA SortOrder = %d, want 100", gotA.SortOrder)
+	}
+
+	gotB, err := storyStore.GetByID(ctx, storyB.ID)
+	if err != nil {
+		t.Fatalf("GetByID(%q) after batch update error = %v", storyB.ID, err)
+	}
+	if gotB.SortOrder != 200 {
+		t.Errorf("storyB SortOrder = %d, want 200", gotB.SortOrder)
+	}
+
+	gotC, err := storyStore.GetByID(ctx, storyC.ID)
+	if err != nil {
+		t.Fatalf("GetByID(%q) after batch update error = %v", storyC.ID, err)
+	}
+	if gotC.SortOrder != 300 {
+		t.Errorf("storyC SortOrder = %d, want 300", gotC.SortOrder)
+	}
+}
+
 func TestGetWithTasks(t *testing.T) {
 	t.Parallel()
 

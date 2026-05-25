@@ -23,7 +23,7 @@ import TaskDetail from './TaskDetail'
 import CreateStoryForm from './CreateStoryForm'
 import type { CreateStoryData } from './CreateStoryForm'
 import { Status, type StatusType, type Story, type Task, type User, type Session } from '../types'
-import { updateStory, updateTask, updateTaskStatus, getUsers, fetchSessions } from '../api/client'
+import { batchReorderStories, updateTask, getUsers, fetchSessions } from '../api/client'
 import { statusDotClass } from '../utils/status'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
@@ -131,67 +131,63 @@ export default function Board() {
         if (oldIndex === -1 || newIndex === -1) return
 
         const newStories = arrayMove(stories, oldIndex, newIndex)
-        newStories.forEach((story, idx) => {
-          if (story.sort_order !== idx) {
-            updateStory(story.id, { sort_order: idx }).catch((err) =>
-              console.error('Failed to update story sort_order:', err),
-            )
-          }
-        })
-        queryClient.invalidateQueries({ queryKey: ['board'] })
+        const reorderItems = newStories
+          .map((story, idx) => ({ id: story.id, sort_order: idx }))
+          .filter((item, idx) => item.sort_order !== stories[idx].sort_order)
+
+        if (reorderItems.length > 0) {
+          batchReorderStories(reorderItems)
+            .catch((err) => console.error('Failed to batch reorder stories:', err))
+            .finally(() => queryClient.invalidateQueries({ queryKey: ['board'] }))
+        }
       } else if (activeDataType === 'task') {
         const taskId = String(active.id)
         const sourceStoryId = getDragData<string>(active.data.current, 'storyId')
-        const sourceStatus = getDragData<string>(active.data.current, 'status')
-        const sourceSortOrder = getDragData<number>(active.data.current, 'sortOrder') ?? 0
+        const sourceStatus = getDragData<StatusType>(active.data.current, 'status')
 
         // Determine target story_id and status from the over droppable
         const targetData = over.data.current
         const targetStoryId = getDragData<string>(targetData, 'storyId') ?? sourceStoryId
         const targetStatus = getDragData<StatusType>(targetData, 'status') ?? sourceStatus
 
-        // If dropping onto another task, get its story_id and status
-        let targetSortOrder = 0
+        // Build a SINGLE update payload
+        const updates: Partial<Task> = {}
+
+        // Sort order computation
         if (getDragData<string>(targetData, 'type') === 'task') {
+          // Dropped on another task — insert before it
           const overTaskId = String(over.id)
           const overTask = allTasks.find((t) => t.id === overTaskId)
           if (overTask) {
-            targetSortOrder = overTask.sort_order
+            updates.sort_order = overTask.sort_order
           }
-        }
-
-        // Build the update payload
-        const updates: Partial<Task> = {}
-
-        // Sort order: place before the target
-        if (getDragData<string>(targetData, 'type') === 'task') {
-          updates.sort_order = targetSortOrder
         } else {
-          // Dropped on a drop zone cell — append to end
+          // Dropped on a cell drop zone — append to end
           const cellTasks =
             tasksByStoryAndStatus[targetStoryId ?? '']?.[targetStatus ?? ''] ?? []
-          updates.sort_order = cellTasks.length > 0 ? Math.max(...cellTasks.map((t) => t.sort_order)) + 1 : 0
+          updates.sort_order = cellTasks.length > 0
+            ? Math.max(...cellTasks.map((t) => t.sort_order)) + 1
+            : 0
         }
 
-        // Status change
+        // Include status if changed (folded into the single PUT call)
         if (targetStatus && targetStatus !== sourceStatus) {
-          updateTaskStatus(taskId, targetStatus).catch((err) =>
-            console.error('Failed to update task status:', err),
-          )
+          updates.status = targetStatus
         }
 
-        // Story re-parent
+        // Include story_id if changed
         if (targetStoryId && targetStoryId !== sourceStoryId) {
           updates.story_id = targetStoryId
         }
 
+        // Make a SINGLE coordinated API call
         if (Object.keys(updates).length > 0) {
-          updateTask(taskId, updates).catch((err) =>
-            console.error('Failed to update task:', err),
-          )
+          updateTask(taskId, updates)
+            .catch((err) => console.error('Failed to update task:', err))
+            .finally(() => queryClient.invalidateQueries({ queryKey: ['board'] }))
+        } else {
+          queryClient.invalidateQueries({ queryKey: ['board'] })
         }
-
-        queryClient.invalidateQueries({ queryKey: ['board'] })
       }
     },
     [stories, allTasks, tasksByStoryAndStatus, queryClient],

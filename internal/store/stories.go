@@ -201,6 +201,52 @@ func (s *StoryStore) Update(ctx context.Context, story *models.Story) error {
 	return nil
 }
 
+// BatchUpdate applies updates to multiple stories in a single transaction.
+func (s *StoryStore) BatchUpdate(ctx context.Context, stories []*models.Story) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	for _, story := range stories {
+		story.UpdatedAt = time.Now().UTC()
+
+		result, execErr := tx.ExecContext(ctx,
+			`UPDATE stories SET title=?, description=?, status=?, requires_build=?, requires_review=?,
+			 assigned_to=?, assignee_type=?, sort_order=?, updated_at=?
+			 WHERE id=?`,
+			story.Title, story.Description, story.Status,
+			story.RequiresBuild, story.RequiresReview, story.AssignedTo, story.AssigneeType,
+			story.SortOrder, story.UpdatedAt, story.ID,
+		)
+		if execErr != nil {
+			err = fmt.Errorf("update story %q in batch: %w", story.ID, execErr)
+			return err
+		}
+
+		rows, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			err = fmt.Errorf("rows affected story %q in batch: %w", story.ID, rowsErr)
+			return err
+		}
+		if rows == 0 {
+			err = fmt.Errorf("story %q: %w", story.ID, ErrNotFound)
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+
+	return nil
+}
+
 // UpdateStatus changes a story's status, validating against the state machine.
 func (s *StoryStore) UpdateStatus(ctx context.Context, id string, next models.Status) error {
 	// First, get current status

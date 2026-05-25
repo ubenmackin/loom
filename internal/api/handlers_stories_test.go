@@ -964,6 +964,120 @@ func TestUpdateStory_RequiresReview(t *testing.T) {
 	}
 }
 
+func TestBatchReorderStories(t *testing.T) {
+	t.Parallel()
+
+	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+
+	// Create 3 stories with distinct sort orders.
+	storyA := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Reorder A"
+		s.SortOrder = 10
+	})
+	storyB := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Reorder B"
+		s.SortOrder = 20
+	})
+	storyC := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Reorder C"
+		s.SortOrder = 30
+	})
+
+	// Send a reorder request that reverses the order.
+	rr := doRequest(t, mux, "PATCH", "/api/stories/reorder", map[string]any{
+		"stories": []map[string]any{
+			{"id": storyA.ID, "sort_order": 3},
+			{"id": storyB.ID, "sort_order": 2},
+			{"id": storyC.ID, "sort_order": 1},
+		},
+	})
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("batchReorderStories status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var resp map[string]any
+	decodeRespJSON(t, rr, &resp)
+
+	updated, _ := resp["updated"].(float64)
+	if int(updated) != 3 {
+		t.Errorf("batchReorderStories updated = %d, want %d", int(updated), 3)
+	}
+
+	// Verify new sort orders by fetching stories directly.
+	gotA, err := storyStore.GetByID(context.Background(), storyA.ID)
+	if err != nil {
+		t.Fatalf("get storyA: %v", err)
+	}
+	if gotA.SortOrder != 3 {
+		t.Errorf("storyA sort_order = %d, want %d", gotA.SortOrder, 3)
+	}
+
+	gotB, err := storyStore.GetByID(context.Background(), storyB.ID)
+	if err != nil {
+		t.Fatalf("get storyB: %v", err)
+	}
+	if gotB.SortOrder != 2 {
+		t.Errorf("storyB sort_order = %d, want %d", gotB.SortOrder, 2)
+	}
+
+	gotC, err := storyStore.GetByID(context.Background(), storyC.ID)
+	if err != nil {
+		t.Fatalf("get storyC: %v", err)
+	}
+	if gotC.SortOrder != 1 {
+		t.Errorf("storyC sort_order = %d, want %d", gotC.SortOrder, 1)
+	}
+}
+
+func TestBatchReorderStories_EmptyList(t *testing.T) {
+	t.Parallel()
+
+	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+
+	rr := doRequest(t, mux, "PATCH", "/api/stories/reorder", map[string]any{
+		"stories": []map[string]any{},
+	})
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("batchReorderStories status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestBatchReorderStories_NotFound(t *testing.T) {
+	t.Parallel()
+
+	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+
+	rr := doRequest(t, mux, "PATCH", "/api/stories/reorder", map[string]any{
+		"stories": []map[string]any{
+			{"id": "STORY-999", "sort_order": 1},
+		},
+	})
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("batchReorderStories status = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+}
+
+func TestBatchReorderStories_InvalidJSON(t *testing.T) {
+	t.Parallel()
+
+	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+
+	req := httptest.NewRequest("PATCH", "/api/stories/reorder", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	if token := lookupAuthToken(t.Name()); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("batchReorderStories status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
 func TestCreateStory_EmptyBody(t *testing.T) {
 	t.Parallel()
 

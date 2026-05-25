@@ -83,6 +83,10 @@ export async function updateStory(id: string, data: Partial<Story>): Promise<Sto
   return request(`/stories/${id}`, { method: 'PUT', body: JSON.stringify(data) })
 }
 
+export async function batchReorderStories(stories: { id: string; sort_order: number }[]): Promise<{ updated: number }> {
+  return request('/stories/reorder', { method: 'PATCH', body: JSON.stringify({ stories }) })
+}
+
 export async function updateStoryStatus(id: string, status: string): Promise<Story> {
   return request(`/stories/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) })
 }

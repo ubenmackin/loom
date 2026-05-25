@@ -39,6 +39,15 @@ type updateStatusRequest struct {
 	Status string `json:"status"`
 }
 
+type batchStoryReorderItem struct {
+	ID        string `json:"id"`
+	SortOrder int    `json:"sort_order"`
+}
+
+type batchStoryReorderRequest struct {
+	Stories []batchStoryReorderItem `json:"stories"`
+}
+
 type storyWithTasksResponse struct {
 	Story *models.Story  `json:"story"`
 	Tasks []*models.Task `json:"tasks"`
@@ -49,6 +58,7 @@ type storyWithTasksResponse struct {
 func (h *handlers) registerStoryRoutes(r chi.Router) {
 	r.Get("/", h.listStories)
 	r.Post("/", h.createStory)
+	r.Patch("/reorder", h.batchReorderStories)
 	r.Route("/{id}", func(r chi.Router) {
 		r.Get("/", h.getStory)
 		r.Put("/", h.updateStory)
@@ -387,6 +397,48 @@ func (h *handlers) deleteStory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// batchReorderStories handles PATCH /api/stories/reorder
+func (h *handlers) batchReorderStories(w http.ResponseWriter, r *http.Request) {
+	var req batchStoryReorderRequest
+	if err := decodeJSON(r, w, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	if len(req.Stories) == 0 {
+		respondError(w, http.StatusBadRequest, "stories array is required and must not be empty")
+		return
+	}
+
+	// Fetch all stories in the batch
+	stories := make([]*models.Story, len(req.Stories))
+	for i, item := range req.Stories {
+		story, err := h.stories.GetByID(r.Context(), item.ID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				respondError(w, http.StatusNotFound, "story "+item.ID+" not found")
+				return
+			}
+			respondError(w, http.StatusInternalServerError, "failed to get story: "+err.Error())
+			return
+		}
+		stories[i] = story
+	}
+
+	// Apply sort_order updates
+	for i, item := range req.Stories {
+		stories[i].SortOrder = item.SortOrder
+	}
+
+	// Apply all updates in a transaction
+	if err := h.stories.BatchUpdate(r.Context(), stories); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to batch update stories: "+err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{"updated": len(stories)})
 }
 
 // getStoryActivity handles GET /api/stories/{id}/activity
