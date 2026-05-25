@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/ubenmackin/loom/internal/models"
 )
@@ -22,6 +23,12 @@ import (
 //   - the Build task (if one exists) is Done
 //   - no Review task already exists for the story
 func (d *Dispatcher) checkGateConditions(ctx context.Context, storyID string) {
+	d.hub.Broadcast("dispatcher_event", map[string]string{
+		"type":      "gate_check",
+		"story_id":  storyID,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	})
+
 	story, err := d.stories.GetByID(ctx, storyID)
 	if err != nil {
 		slog.Error("dispatcher: failed to get story for gate check",

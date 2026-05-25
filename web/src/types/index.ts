@@ -145,11 +145,21 @@ export interface BoardState {
   stats: BoardStats
 }
 
+// ── Dispatcher Status ───────────────────────────────────────────────────
+
+export interface DispatcherStatus {
+  running: boolean
+  uptime_seconds: number
+  event_queue_depth: number
+  events_processed: Record<string, number>
+  started_at: string
+}
+
 // ── WebSocket Events ────────────────────────────────────────────────────
 
 export interface WebSocketEvent {
   type: string
-  payload?: unknown
+  data?: unknown
 }
 
 // ── Work Protocol ───────────────────────────────────────────────────────

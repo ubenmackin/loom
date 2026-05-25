@@ -55,6 +55,9 @@ type Dispatcher struct {
 
 	wg      sync.WaitGroup
 	stopped atomic.Bool
+
+	startedAt       time.Time
+	eventsProcessed map[string]*atomic.Int64
 }
 
 // DispatcherDeps groups all dependencies required by the Dispatcher.
@@ -67,6 +70,17 @@ type DispatcherDeps struct {
 	ActivityStore      *store.ActivityStore
 	Broadcaster        EventBroadcaster
 	StalenessThreshold time.Duration
+}
+
+// DispatcherStatus is a snapshot of the dispatcher's runtime state,
+// returned by Dispatcher.Status(). All fields are safe to read without
+// blocking the event loop.
+type DispatcherStatus struct {
+	Running         bool
+	StartedAt       time.Time
+	Uptime          time.Duration
+	EventQueueDepth int
+	EventsProcessed map[string]int64
 }
 
 // NewDispatcher creates a new Dispatcher with the given dependencies.
@@ -88,11 +102,20 @@ func NewDispatcher(deps DispatcherDeps) *Dispatcher {
 		eventCh:            make(chan Event, 256),
 		stalenessThreshold: stalenessThreshold,
 		done:               make(chan struct{}),
+		eventsProcessed: map[string]*atomic.Int64{
+			"task_status_changed": new(atomic.Int64),
+			"task_blocked":        new(atomic.Int64),
+			"session_registered":  new(atomic.Int64),
+			"work_requested":      new(atomic.Int64),
+			"dependency_added":    new(atomic.Int64),
+			"periodic_tick":       new(atomic.Int64),
+		},
 	}
 }
 
 // Start launches the dispatcher goroutine loop and the periodic ticker.
 func (d *Dispatcher) Start() {
+	d.startedAt = time.Now()
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
@@ -108,6 +131,25 @@ func (d *Dispatcher) Stop() {
 	}
 	close(d.done)
 	d.wg.Wait()
+}
+
+// Status returns a snapshot of the dispatcher's runtime state. It never
+// blocks the event loop — all values are read atomically or from immutable
+// fields.
+func (d *Dispatcher) Status() DispatcherStatus {
+	s := DispatcherStatus{
+		Running:         !d.stopped.Load(),
+		StartedAt:       d.startedAt,
+		EventQueueDepth: len(d.eventCh),
+		EventsProcessed: make(map[string]int64, len(d.eventsProcessed)),
+	}
+	if !d.startedAt.IsZero() {
+		s.Uptime = time.Since(d.startedAt)
+	}
+	for typ, ctr := range d.eventsProcessed {
+		s.EventsProcessed[typ] = ctr.Load()
+	}
+	return s
 }
 
 // Wait blocks until the dispatcher event loop exits.
@@ -168,6 +210,11 @@ func (d *Dispatcher) run() {
 
 // processEvent dispatches an event to the appropriate handler.
 func (d *Dispatcher) processEvent(event Event) {
+	// Increment the atomic counter for this event type (no-op if unknown).
+	if ctr, ok := d.eventsProcessed[event.Type]; ok {
+		ctr.Add(1)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

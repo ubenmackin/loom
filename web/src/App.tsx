@@ -4,6 +4,7 @@ import ProtectedRoute from './components/ProtectedRoute'
 import Board from './components/Board'
 import ActivityPage from './pages/ActivityPage'
 import AgentsPage from './pages/AgentsPage'
+import DispatcherPage from './pages/DispatcherPage'
 import LoginPage from './pages/LoginPage'
 import OnboardingPage from './pages/OnboardingPage'
 import UsersPage from './pages/UsersPage'
@@ -20,6 +21,7 @@ export default function App() {
           <Route index element={<Board />} />
           <Route path="activity" element={<ActivityPage />} />
           <Route path="agents" element={<AgentsPage />} />
+          <Route path="dispatcher" element={<DispatcherPage />} />
           <Route element={<ProtectedRoute requireAdmin />}>
             <Route path="users" element={<UsersPage />} />
           </Route>

@@ -11,6 +11,7 @@ import type {
   WorkComplete,
   WorkBlock,
   BoardState,
+  DispatcherStatus,
   User,
   AuthResponse,
 } from '../types'
@@ -161,6 +162,12 @@ export async function fetchActivityLog(limit?: number): Promise<ActivityLogEntry
   if (limit !== undefined) params.set('limit', String(limit))
   const qs = params.toString()
   return request(`/activity${qs ? `?${qs}` : ''}`)
+}
+
+// ── Dispatcher ─────────────────────────────────────────────────────────
+
+export async function fetchDispatcherStatus(): Promise<DispatcherStatus> {
+  return request<DispatcherStatus>('/dispatcher/status')
 }
 
 // ── Work Protocol ───────────────────────────────────────────────────────

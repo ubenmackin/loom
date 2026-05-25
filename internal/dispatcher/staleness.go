@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	"github.com/ubenmackin/loom/internal/models"
 )
@@ -11,6 +12,11 @@ import (
 // checkStaleness identifies sessions that have not been seen within the
 // staleness threshold and flags them along with their assigned tasks.
 func (d *Dispatcher) checkStaleness(ctx context.Context) {
+	d.hub.Broadcast("dispatcher_event", map[string]string{
+		"type":      "staleness_check",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	})
+
 	staleSessions, err := d.sessions.GetStaleSessions(ctx, d.stalenessThreshold)
 	if err != nil {
 		slog.Error("dispatcher: failed to get stale sessions", "error", err)

@@ -62,6 +62,9 @@ export default function TopNav() {
         <NavLink to="/activity" className={({ isActive }) => navLinkClass(isActive)}>
           <span className="uppercase">Activity</span>
         </NavLink>
+        <NavLink to="/dispatcher" className={({ isActive }) => navLinkClass(isActive)}>
+          <span className="uppercase">Dispatcher</span>
+        </NavLink>
         <NavLink to="/agents" className={({ isActive }) => navLinkClass(isActive)}>
           <span className="uppercase">Agents</span>
         </NavLink>

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -116,6 +117,55 @@ func (s *ActivityStore) GetByID(ctx context.Context, id string) (*models.Activit
 	}
 
 	return entry, nil
+}
+
+// GetByAction retrieves activity log entries where the action starts with one of the given prefixes.
+// Supports pagination via limit and offset. Results are ordered by created_at DESC.
+// When no prefixes are provided, all entries are returned (unfiltered).
+func (s *ActivityStore) GetByAction(ctx context.Context, limit, offset int, actionPrefixes ...string) ([]*models.ActivityLogEntry, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	query := `SELECT id, work_item_id, work_item_type, action, details, created_at
+		 FROM activity_log`
+	args := make([]interface{}, 0)
+
+	if len(actionPrefixes) > 0 {
+		conditions := make([]string, 0, len(actionPrefixes))
+		for _, prefix := range actionPrefixes {
+			conditions = append(conditions, "action LIKE ?")
+			args = append(args, prefix+"%")
+		}
+		query += " WHERE " + strings.Join(conditions, " OR ")
+	}
+
+	query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get activity by action: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
+
+	var entries []*models.ActivityLogEntry
+	for rows.Next() {
+		entry, err := scanActivityRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan activity log: %w", err)
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate activity log: %w", err)
+	}
+
+	return entries, nil
 }
 
 // GetRecent retrieves the most recent activity log entries across all work items.

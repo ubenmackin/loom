@@ -85,6 +85,7 @@ type ActivityStore interface {
 	Log(ctx context.Context, entry *models.ActivityLogEntry) error
 	GetRecent(ctx context.Context, limit int) ([]*models.ActivityLogEntry, error)
 	GetByWorkItem(ctx context.Context, workItemID string, workItemType models.WorkItemType, limit, offset int) ([]*models.ActivityLogEntry, error)
+	GetByAction(ctx context.Context, limit, offset int, actionPrefixes ...string) ([]*models.ActivityLogEntry, error)
 }
 
 // UserStore defines the interface for interacting with the users and user sessions storage.
@@ -179,6 +180,9 @@ func NewRouter(
 
 		// Global activity log endpoint.
 		r.Route("/activity", h.registerActivityRoutes)
+
+		// Dispatcher status endpoint.
+		r.Get("/dispatcher/status", h.handleDispatcherStatus)
 	})
 
 	// Admin-only user management endpoints

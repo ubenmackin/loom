@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/ubenmackin/loom/internal/models"
 	"github.com/ubenmackin/loom/internal/store"
@@ -14,6 +15,11 @@ import (
 // Ready task. Tasks are processed in the order returned by List,
 // so that all eligible tasks are assigned in a single pass.
 func (d *Dispatcher) runAssignmentPass(ctx context.Context) {
+	d.hub.Broadcast("dispatcher_event", map[string]string{
+		"type":      "assignment_pass_started",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	})
+
 	readyTasks, err := d.tasks.List(ctx, store.TaskFilter{Status: models.StatusReady})
 	if err != nil {
 		slog.Error("dispatcher: failed to list ready tasks", "error", err)
@@ -73,6 +79,11 @@ func (d *Dispatcher) runAssignmentPass(ctx context.Context) {
 				"task_id", task.ID, "session_id", session.ID, "error", err)
 		}
 	}
+
+	d.hub.Broadcast("dispatcher_event", map[string]string{
+		"type":      "assignment_pass_finished",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 // assignWorkToSession finds the best available Ready task for a specific
