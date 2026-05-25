@@ -50,8 +50,8 @@ export default function CommentThread({ workItemId, workItemType }: CommentThrea
   })
 
   const { data: activities = [] } = useQuery<ActivityLogEntry[]>({
-    queryKey: ['activity', workItemId],
-    queryFn: () => fetchActivity(workItemId),
+    queryKey: ['activity', workItemId, workItemType],
+    queryFn: () => fetchActivity(workItemId, workItemType),
     enabled: !!workItemId,
   })
 

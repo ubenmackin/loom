@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -53,6 +54,7 @@ func (h *handlers) registerStoryRoutes(r chi.Router) {
 		r.Put("/", h.updateStory)
 		r.Patch("/status", h.updateStoryStatus)
 		r.Delete("/", h.deleteStory)
+		r.Get("/activity", h.getStoryActivity)
 	})
 }
 
@@ -385,4 +387,45 @@ func (h *handlers) deleteStory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// getStoryActivity handles GET /api/stories/{id}/activity
+func (h *handlers) getStoryActivity(w http.ResponseWriter, r *http.Request) {
+	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeStory))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "story not found")
+			return
+		}
+		respondError(w, http.StatusBadRequest, "invalid story id: "+err.Error())
+		return
+	}
+
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	offset := 0
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	entries, err := h.activity.GetByWorkItem(r.Context(), id, models.WorkItemTypeStory, limit, offset)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to get activity: "+err.Error())
+		return
+	}
+
+	if entries == nil {
+		entries = []*models.ActivityLogEntry{}
+	}
+	respondJSON(w, http.StatusOK, entries)
 }

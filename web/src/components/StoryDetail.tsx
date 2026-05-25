@@ -5,6 +5,7 @@ import SharpTag from './SharpTag'
 import SlideInPanel, { PanelLoading, PanelNotFound } from './SlideInPanel'
 import EditableTitle from './EditableTitle'
 import FieldLabel from './FieldLabel'
+import CommentThread from './CommentThread'
 
 import ConfirmModal from './ConfirmModal'
 import {
@@ -203,21 +204,21 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
     setShowSaveDropdown(false)
   }
 
-const handleCancel = () => {
-  if (story) {
-    setDraft({
-      title: story.title,
-      description: story.description ?? '',
-      requires_build: story.requires_build,
-      requires_review: story.requires_review,
-      status: story.status,
-      assigned_to: story.assigned_to ?? '',
-      assignee_type: story.assignee_type ?? '',
-      sort_order: story.sort_order,
-    })
-    onClose()
+  const handleCancel = () => {
+    if (story) {
+      setDraft({
+        title: story.title,
+        description: story.description ?? '',
+        requires_build: story.requires_build,
+        requires_review: story.requires_review,
+        status: story.status,
+        assigned_to: story.assigned_to ?? '',
+        assignee_type: story.assignee_type ?? '',
+        sort_order: story.sort_order,
+      })
+      onClose()
+    }
   }
-}
 
   const assigneeOptions = [
     ...users.map((u) => ({ id: u.id, name: u.display_name || u.username, type: 'human' as const })),
@@ -474,41 +475,44 @@ const handleCancel = () => {
           )}
         </div>
 
+        {/* Activity & Comments */}
+        <CommentThread workItemId={storyId} workItemType="story" />
+
         {/* Save/Cancel */}
         <div className="sticky bottom-0 bg-white dark:bg-charcoal-dark border-t border-gray-200 dark:border-gray-border px-4 py-3 z-10 flex items-center justify-end gap-2">
-        <button
-          onClick={handleCancel}
-          className="px-4 py-1.5 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-800 dark:hover:text-neutral-100 transition-colors"
-        >
-          Cancel
-        </button>
-        <div ref={saveDropdownRef} className="relative flex">
           <button
-            onClick={handleSave}
-            disabled={!isDirty}
-            className="rounded-l-md bg-purple-active px-4 py-1.5 text-sm font-medium text-white hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            onClick={handleCancel}
+            className="px-4 py-1.5 text-sm font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-800 dark:hover:text-neutral-100 transition-colors"
           >
-            Save
+            Cancel
           </button>
-          <button
-            onClick={() => setShowSaveDropdown(!showSaveDropdown)}
-            disabled={!isDirty}
-            className="rounded-r-md border-l border-purple-600 bg-purple-active px-2 py-1.5 text-white hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            <ChevronDown className="h-4 w-4" />
-          </button>
-          {showSaveDropdown && (
-            <div className="absolute bottom-full right-0 mb-1 w-40 rounded-md border border-gray-200 dark:border-gray-border bg-white dark:bg-charcoal-dark py-1 shadow-lg z-20">
-              <button
-                onClick={handleSaveAndClose}
-                disabled={!isDirty}
-                className="flex w-full items-center px-4 py-2 text-left text-sm text-gray-700 dark:text-light-neutral hover:bg-gray-100 dark:hover:bg-neutral-800 disabled:opacity-50"
-              >
-                Save & Close
-              </button>
-            </div>
-          )}
-        </div>
+          <div ref={saveDropdownRef} className="relative flex">
+            <button
+              onClick={handleSave}
+              disabled={!isDirty}
+              className="rounded-l-md bg-purple-active px-4 py-1.5 text-sm font-medium text-white hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Save
+            </button>
+            <button
+              onClick={() => setShowSaveDropdown(!showSaveDropdown)}
+              disabled={!isDirty}
+              className="rounded-r-md border-l border-purple-600 bg-purple-active px-2 py-1.5 text-white hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronDown className="h-4 w-4" />
+            </button>
+            {showSaveDropdown && (
+              <div className="absolute bottom-full right-0 mb-1 w-40 rounded-md border border-gray-200 dark:border-gray-border bg-white dark:bg-charcoal-dark py-1 shadow-lg z-20">
+                <button
+                  onClick={handleSaveAndClose}
+                  disabled={!isDirty}
+                  className="flex w-full items-center px-4 py-2 text-left text-sm text-gray-700 dark:text-light-neutral hover:bg-gray-100 dark:hover:bg-neutral-800 disabled:opacity-50"
+                >
+                  Save & Close
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Delete */}
