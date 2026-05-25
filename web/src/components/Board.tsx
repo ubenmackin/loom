@@ -22,7 +22,7 @@ import StoryDetail from './StoryDetail'
 import TaskDetail from './TaskDetail'
 import CreateStoryForm from './CreateStoryForm'
 import type { CreateStoryData } from './CreateStoryForm'
-import { Status, type StatusType, type Story, type Task, type User, type Session } from '../types'
+import { Status, type BoardState, type StatusType, type Story, type Task, type User, type Session } from '../types'
 import { batchReorderStories, updateTask, getUsers, fetchSessions } from '../api/client'
 import { statusDotClass } from '../utils/status'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -136,9 +136,18 @@ export default function Board() {
           .filter((item, idx) => item.sort_order !== stories[idx].sort_order)
 
         if (reorderItems.length > 0) {
+          // Optimistically update local cache so dnd-kit sees the new order
+          queryClient.setQueryData<BoardState>(['board'], (old) => {
+            if (!old) return old
+            return { ...old, stories: newStories }
+          })
+
           batchReorderStories(reorderItems)
-            .catch((err) => console.error('Failed to batch reorder stories:', err))
-            .finally(() => queryClient.invalidateQueries({ queryKey: ['board'] }))
+            .catch((err) => {
+              console.error('Failed to batch reorder stories:', err)
+              // Revert to server state on failure
+              queryClient.invalidateQueries({ queryKey: ['board'] })
+            })
         }
       } else if (activeDataType === 'task') {
         const taskId = String(active.id)
