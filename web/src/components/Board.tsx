@@ -24,7 +24,7 @@ import StoryDetail from './StoryDetail'
 import TaskDetail from './TaskDetail'
 import CreateStoryForm from './CreateStoryForm'
 import type { CreateStoryData } from './CreateStoryForm'
-import { Status, type StatusType, type Story, type Task, type User, type Session } from '../types'
+import { Status, type StatusType, type Story, type Task, type User, type Session, type BoardState } from '../types'
 import { batchReorderStories, updateTask, getUsers, fetchSessions } from '../api/client'
 import { statusDotClass } from '../utils/status'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -225,8 +225,19 @@ export default function Board() {
       if (activeDataType === 'story') {
         // Reorder stories
         const oldIndex = stories.findIndex((s) => s.id === active.id)
-        const newIndex = stories.findIndex((s) => s.id === over.id)
-        if (oldIndex === -1 || newIndex === -1) return
+        if (oldIndex === -1) return
+
+        // Resolve over to a story ID — over may be a cell or task nested in a story row
+        let overStoryId: string | undefined
+        const overType = getDragData<string>(over.data.current, 'type')
+        if (overType === 'story') {
+          overStoryId = String(over.id)
+        } else if (overType === 'cell' || overType === 'task') {
+          overStoryId = getDragData<string>(over.data.current, 'storyId')
+        }
+        if (!overStoryId) return
+        const newIndex = stories.findIndex((s) => s.id === overStoryId)
+        if (newIndex === -1) return
 
         const newStories = arrayMove(stories, oldIndex, newIndex)
         const reorderItems = newStories
@@ -234,9 +245,17 @@ export default function Board() {
           .filter((item, idx) => item.sort_order !== stories[idx].sort_order)
 
         if (reorderItems.length > 0) {
+          // Optimistically update local cache so UI reflects new order immediately
+          queryClient.setQueryData<BoardState>(['board'], (old) => {
+            if (!old) return old
+            return { ...old, stories: newStories }
+          })
+
           batchReorderStories(reorderItems)
-            .catch((err) => console.error('Failed to batch reorder stories:', err))
-            .finally(() => queryClient.invalidateQueries({ queryKey: ['board'] }))
+            .catch((err) => {
+              console.error('Failed to batch reorder stories:', err)
+              queryClient.invalidateQueries({ queryKey: ['board'] })
+            })
         }
       } else if (activeDataType === 'task') {
         const taskId = String(active.id)
