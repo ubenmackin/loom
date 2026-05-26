@@ -37,14 +37,110 @@ const COLUMNS: { status: StatusType; label: string }[] = [
   { status: Status.Done, label: 'Done' },
 ]
 
-
-
 /** Type-safe access to drag event data — replaces raw `as` assertions */
 function getDragData<T>(data: unknown, key: string): T | undefined {
   if (data && typeof data === 'object' && key in data) {
     return (data as Record<string, unknown>)[key] as T
   }
   return undefined
+}
+
+interface SortableStoryRowProps {
+  story: Story
+  tasksByStoryAndStatus: Record<string, Record<string, Task[]>>
+  onStoryClick: (id: string) => void
+  onTaskClick: (id: string) => void
+  assigneeNameMap: Record<string, string>
+  handleAddTask: (storyId: string) => void
+}
+
+function SortableStoryRow({
+  story,
+  tasksByStoryAndStatus,
+  onStoryClick,
+  onTaskClick,
+  assigneeNameMap,
+  handleAddTask,
+}: SortableStoryRowProps) {
+  const {
+    attributes, listeners, setNodeRef, transform, transition, isDragging,
+  } = useSortable({
+    id: story.id,
+    data: { type: 'story', story },
+  })
+  const rowStyle = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  }
+  return (
+    <div
+      ref={setNodeRef}
+      style={rowStyle}
+      {...attributes}
+      {...listeners}
+      className="flex items-stretch border-b border-gray-100 dark:border-gray-border/50"
+    >
+      {/* Story Card cell */}
+      <div className="min-w-[240px] md:min-w-0 md:w-1/6 p-2 border-r border-gray-200 dark:border-gray-border">
+        <StoryCard
+          story={story}
+          onClick={() => onStoryClick(story.id)}
+          assigneeName={story.assigned_to ? assigneeNameMap[story.assigned_to] || story.assigned_to : undefined}
+        />
+      </div>
+      {/* Status column cells */}
+      {COLUMNS.map((col, colIdx) => {
+        const cellTasks = (tasksByStoryAndStatus[story.id]?.[col.status] ?? []).sort(
+          (a, b) => a.sort_order - b.sort_order,
+        )
+        const droppableId = `cell-${story.id}-${col.status}`
+        return (
+          <div
+            key={col.status}
+            className={`min-w-[200px] md:min-w-0 md:flex-1 p-1.5 ${
+              colIdx < COLUMNS.length - 1 ? 'border-r border-gray-200 dark:border-gray-border' : ''
+            }`}
+          >
+            <CellDropZone id={droppableId} storyId={story.id} status={col.status}>
+              {cellTasks.length > 0 ? (
+                <SortableContext items={cellTasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                  <div className="space-y-1.5">
+                    {cellTasks.map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        onClick={(taskId) => onTaskClick(taskId)}
+                        isDraggable={true}
+                      />
+                    ))}
+                  </div>
+                </SortableContext>
+              ) : (
+                <div className="flex items-center justify-center py-3">
+                  <span className="font-mono text-[10px] text-neutral-300 dark:text-neutral-600 uppercase tracking-widest">
+                    —
+                  </span>
+                </div>
+              )}
+              {col.status === Status.New && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    handleAddTask(story.id)
+                  }}
+                  className="w-full mt-1 flex items-center justify-center gap-1 py-1 border border-dashed border-neutral-300 dark:border-neutral-600 text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300 hover:border-neutral-400 dark:hover:border-neutral-500 transition-colors rounded-none"
+                >
+                  <Plus size={12} />
+                  <span className="font-mono text-[10px] uppercase tracking-widest">Add Task</span>
+                </button>
+              )}
+            </CellDropZone>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 export default function Board() {
@@ -244,139 +340,68 @@ export default function Board() {
           </button>
         </div>
 
-      {/* Swimlane Grid */}
-      <div className="flex flex-col flex-1 min-h-0">
-        {/* Frozen Header Row */}
-        <div className="flex shrink-0 border-b border-gray-200 dark:border-gray-border">
-          {/* Story header */}
-          <div className="min-w-[240px] md:min-w-0 md:w-1/6 flex items-center gap-2 px-4 py-3 border-r border-gray-200 dark:border-gray-border">
-            <span className="text-[10px] uppercase tracking-wider font-bold text-neutral-600 dark:text-neutral-300">
-              Story
-            </span>
-            <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500 ml-auto">
-              [{stories.length}]
-            </span>
-          </div>
-          {/* Status column headers */}
-          {COLUMNS.map((col, i) => {
-            let totalCount = 0
-            for (const story of stories) {
-              totalCount += (tasksByStoryAndStatus[story.id]?.[col.status] ?? []).length
-            }
-            return (
-              <div
-                key={col.status}
-                className={`min-w-[200px] md:min-w-0 md:flex-1 flex items-center gap-2 px-4 py-3 ${
-                  i < COLUMNS.length - 1 ? 'border-r border-gray-200 dark:border-gray-border' : ''
-                }`}
-              >
-                <span className={statusDotClass(col.status)} />
-                <span className="text-[10px] uppercase tracking-wider font-bold text-neutral-600 dark:text-neutral-300">
-                  {col.label}
-                </span>
-                <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500 ml-auto">
-                  [{totalCount}]
-                </span>
-              </div>
-            )
-          })}
-        </div>
-
-        {/* Scrollable Body */}
-        <div className="flex-1 overflow-y-auto">
-          <SortableContext items={stories.map((s) => s.id)} strategy={verticalListSortingStrategy}>
-            {stories.map((story) => {
-              const {
-                attributes, listeners, setNodeRef, transform, transition, isDragging,
-              } = useSortable({
-                id: story.id,
-                data: { type: 'story', story },
-              })
-              const rowStyle = {
-                transform: CSS.Transform.toString(transform),
-                transition,
-                opacity: isDragging ? 0.5 : 1,
+        {/* Swimlane Grid */}
+        <div className="flex flex-col flex-1 min-h-0">
+          {/* Frozen Header Row */}
+          <div className="flex shrink-0 border-b border-gray-200 dark:border-gray-border">
+            {/* Story header */}
+            <div className="min-w-[240px] md:min-w-0 md:w-1/6 flex items-center gap-2 px-4 py-3 border-r border-gray-200 dark:border-gray-border">
+              <span className="text-[10px] uppercase tracking-wider font-bold text-neutral-600 dark:text-neutral-300">
+                Story
+              </span>
+              <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500 ml-auto">
+                [{stories.length}]
+              </span>
+            </div>
+            {/* Status column headers */}
+            {COLUMNS.map((col, i) => {
+              let totalCount = 0
+              for (const story of stories) {
+                totalCount += (tasksByStoryAndStatus[story.id]?.[col.status] ?? []).length
               }
               return (
                 <div
-                  key={story.id}
-                  ref={setNodeRef}
-                  style={rowStyle}
-                  {...attributes}
-                  {...listeners}
-                  className="flex items-stretch border-b border-gray-100 dark:border-gray-border/50"
+                  key={col.status}
+                  className={`min-w-[200px] md:min-w-0 md:flex-1 flex items-center gap-2 px-4 py-3 ${
+                    i < COLUMNS.length - 1 ? 'border-r border-gray-200 dark:border-gray-border' : ''
+                  }`}
                 >
-                  {/* Story Card cell */}
-                  <div className="min-w-[240px] md:min-w-0 md:w-1/6 p-2 border-r border-gray-200 dark:border-gray-border">
-                    <StoryCard
-                      story={story}
-                      onClick={() => { setSelectedStoryId(story.id); setSelectedTaskId(null); }}
-                      assigneeName={story.assigned_to ? assigneeNameMap[story.assigned_to] || story.assigned_to : undefined}
-                    />
-                  </div>
-                  {/* Status column cells */}
-                  {COLUMNS.map((col, colIdx) => {
-                    const cellTasks = (tasksByStoryAndStatus[story.id]?.[col.status] ?? []).sort(
-                      (a, b) => a.sort_order - b.sort_order,
-                    )
-                    const droppableId = `cell-${story.id}-${col.status}`
-                    return (
-                      <div
-                        key={col.status}
-                        className={`min-w-[200px] md:min-w-0 md:flex-1 p-1.5 ${
-                          colIdx < COLUMNS.length - 1 ? 'border-r border-gray-200 dark:border-gray-border' : ''
-                        }`}
-                      >
-                        <CellDropZone id={droppableId} storyId={story.id} status={col.status}>
-                          {cellTasks.length > 0 ? (
-                            <SortableContext items={cellTasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-                              <div className="space-y-1.5">
-                                {cellTasks.map((task) => (
-                                  <TaskCard
-                                    key={task.id}
-                                    task={task}
-                                    onClick={(taskId) => { setSelectedTaskId(taskId); setSelectedStoryId(null); }}
-                                    isDraggable={true}
-                                  />
-                                ))}
-                              </div>
-                            </SortableContext>
-                          ) : (
-                            <div className="flex items-center justify-center py-3">
-                              <span className="font-mono text-[10px] text-neutral-300 dark:text-neutral-600 uppercase tracking-widest">
-                                —
-                              </span>
-                            </div>
-                          )}
-                          {col.status === Status.New && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleAddTask(story.id)
-                              }}
-                              className="w-full mt-1 flex items-center justify-center gap-1 py-1 border border-dashed border-neutral-300 dark:border-neutral-600 text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300 hover:border-neutral-400 dark:hover:border-neutral-500 transition-colors rounded-none"
-                            >
-                              <Plus size={12} />
-                              <span className="font-mono text-[10px] uppercase tracking-widest">Add Task</span>
-                            </button>
-                          )}
-                        </CellDropZone>
-                      </div>
-                    )
-                  })}
+                  <span className={statusDotClass(col.status)} />
+                  <span className="text-[10px] uppercase tracking-wider font-bold text-neutral-600 dark:text-neutral-300">
+                    {col.label}
+                  </span>
+                  <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500 ml-auto">
+                    [{totalCount}]
+                  </span>
                 </div>
               )
             })}
-          </SortableContext>
-          {stories.length === 0 && (
-            <div className="flex items-center justify-center py-8">
-              <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-600 uppercase tracking-widest">
-                Empty
-              </span>
-            </div>
-          )}
+          </div>
+
+          {/* Scrollable Body */}
+          <div className="flex-1 overflow-y-auto">
+            <SortableContext items={stories.map((s) => s.id)} strategy={verticalListSortingStrategy}>
+              {stories.map((story) => (
+                <SortableStoryRow
+                  key={story.id}
+                  story={story}
+                  tasksByStoryAndStatus={tasksByStoryAndStatus}
+                  onStoryClick={(id) => { setSelectedStoryId(id); setSelectedTaskId(null); }}
+                  onTaskClick={(id) => { setSelectedTaskId(id); setSelectedStoryId(null); }}
+                  assigneeNameMap={assigneeNameMap}
+                  handleAddTask={handleAddTask}
+                />
+              ))}
+            </SortableContext>
+            {stories.length === 0 && (
+              <div className="flex items-center justify-center py-8">
+                <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-600 uppercase tracking-widest">
+                  Empty
+                </span>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
 
         {/* Create Story Modal */}
         <CreateStoryForm
@@ -397,7 +422,7 @@ export default function Board() {
           taskId={selectedTaskId}
           onClose={() => setSelectedTaskId(null)}
         />
-    </div>
-  </DndContext>
+      </div>
+    </DndContext>
   )
 }
