@@ -12,7 +12,9 @@ import {
   SortableContext,
   verticalListSortingStrategy,
   arrayMove,
+  useSortable,
 } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { useBoard } from '../hooks/useBoard'
 import { useCreateStory } from '../hooks/useCreateStory'
 import StoryCard from './StoryCard'
@@ -22,7 +24,7 @@ import StoryDetail from './StoryDetail'
 import TaskDetail from './TaskDetail'
 import CreateStoryForm from './CreateStoryForm'
 import type { CreateStoryData } from './CreateStoryForm'
-import { Status, type BoardState, type StatusType, type Story, type Task, type User, type Session } from '../types'
+import { Status, type StatusType, type Story, type Task, type User, type Session } from '../types'
 import { batchReorderStories, updateTask, getUsers, fetchSessions } from '../api/client'
 import { statusDotClass } from '../utils/status'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -136,18 +138,9 @@ export default function Board() {
           .filter((item, idx) => item.sort_order !== stories[idx].sort_order)
 
         if (reorderItems.length > 0) {
-          // Optimistically update local cache so dnd-kit sees the new order
-          queryClient.setQueryData<BoardState>(['board'], (old) => {
-            if (!old) return old
-            return { ...old, stories: newStories }
-          })
-
           batchReorderStories(reorderItems)
-            .catch((err) => {
-              console.error('Failed to batch reorder stories:', err)
-              // Revert to server state on failure
-              queryClient.invalidateQueries({ queryKey: ['board'] })
-            })
+            .catch((err) => console.error('Failed to batch reorder stories:', err))
+            .finally(() => queryClient.invalidateQueries({ queryKey: ['board'] }))
         }
       } else if (activeDataType === 'task') {
         const taskId = String(active.id)
@@ -292,69 +285,88 @@ export default function Board() {
         {/* Scrollable Body */}
         <div className="flex-1 overflow-y-auto">
           <SortableContext items={stories.map((s) => s.id)} strategy={verticalListSortingStrategy}>
-            {stories.map((story) => (
-              <div key={story.id} className="flex items-stretch border-b border-gray-100 dark:border-gray-border/50">
-                {/* Story Card cell */}
-                <div className="min-w-[240px] md:min-w-0 md:w-1/6 p-2 border-r border-gray-200 dark:border-gray-border">
-                  <StoryCard
-                    story={story}
-                    isDraggable={true}
-                    onClick={() => { setSelectedStoryId(story.id); setSelectedTaskId(null); }}
-                    assigneeName={story.assigned_to ? assigneeNameMap[story.assigned_to] || story.assigned_to : undefined}
-                  />
-                </div>
-                {/* Status column cells */}
-                {COLUMNS.map((col, colIdx) => {
-                  const cellTasks = (tasksByStoryAndStatus[story.id]?.[col.status] ?? []).sort(
-                    (a, b) => a.sort_order - b.sort_order,
-                  )
-                  const droppableId = `cell-${story.id}-${col.status}`
-                  return (
-                    <div
-                      key={col.status}
-                      className={`min-w-[200px] md:min-w-0 md:flex-1 p-1.5 ${
-                        colIdx < COLUMNS.length - 1 ? 'border-r border-gray-200 dark:border-gray-border' : ''
-                      }`}
-                    >
-                      <CellDropZone id={droppableId} storyId={story.id} status={col.status}>
-                        {cellTasks.length > 0 ? (
-                          <SortableContext items={cellTasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-                            <div className="space-y-1.5">
-                              {cellTasks.map((task) => (
-                                <TaskCard
-                                  key={task.id}
-                                  task={task}
-                                  onClick={(taskId) => { setSelectedTaskId(taskId); setSelectedStoryId(null); }}
-                                  isDraggable={true}
-                                />
-                              ))}
+            {stories.map((story) => {
+              const {
+                attributes, listeners, setNodeRef, transform, transition, isDragging,
+              } = useSortable({
+                id: story.id,
+                data: { type: 'story', story },
+              })
+              const rowStyle = {
+                transform: CSS.Transform.toString(transform),
+                transition,
+                opacity: isDragging ? 0.5 : 1,
+              }
+              return (
+                <div
+                  key={story.id}
+                  ref={setNodeRef}
+                  style={rowStyle}
+                  {...attributes}
+                  {...listeners}
+                  className="flex items-stretch border-b border-gray-100 dark:border-gray-border/50"
+                >
+                  {/* Story Card cell */}
+                  <div className="min-w-[240px] md:min-w-0 md:w-1/6 p-2 border-r border-gray-200 dark:border-gray-border">
+                    <StoryCard
+                      story={story}
+                      onClick={() => { setSelectedStoryId(story.id); setSelectedTaskId(null); }}
+                      assigneeName={story.assigned_to ? assigneeNameMap[story.assigned_to] || story.assigned_to : undefined}
+                    />
+                  </div>
+                  {/* Status column cells */}
+                  {COLUMNS.map((col, colIdx) => {
+                    const cellTasks = (tasksByStoryAndStatus[story.id]?.[col.status] ?? []).sort(
+                      (a, b) => a.sort_order - b.sort_order,
+                    )
+                    const droppableId = `cell-${story.id}-${col.status}`
+                    return (
+                      <div
+                        key={col.status}
+                        className={`min-w-[200px] md:min-w-0 md:flex-1 p-1.5 ${
+                          colIdx < COLUMNS.length - 1 ? 'border-r border-gray-200 dark:border-gray-border' : ''
+                        }`}
+                      >
+                        <CellDropZone id={droppableId} storyId={story.id} status={col.status}>
+                          {cellTasks.length > 0 ? (
+                            <SortableContext items={cellTasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                              <div className="space-y-1.5">
+                                {cellTasks.map((task) => (
+                                  <TaskCard
+                                    key={task.id}
+                                    task={task}
+                                    onClick={(taskId) => { setSelectedTaskId(taskId); setSelectedStoryId(null); }}
+                                    isDraggable={true}
+                                  />
+                                ))}
+                              </div>
+                            </SortableContext>
+                          ) : (
+                            <div className="flex items-center justify-center py-3">
+                              <span className="font-mono text-[10px] text-neutral-300 dark:text-neutral-600 uppercase tracking-widest">
+                                —
+                              </span>
                             </div>
-                          </SortableContext>
-                        ) : (
-                          <div className="flex items-center justify-center py-3">
-                            <span className="font-mono text-[10px] text-neutral-300 dark:text-neutral-600 uppercase tracking-widest">
-                              —
-                            </span>
-                          </div>
-                        )}
-                        {col.status === Status.New && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              handleAddTask(story.id)
-                            }}
-                            className="w-full mt-1 flex items-center justify-center gap-1 py-1 border border-dashed border-neutral-300 dark:border-neutral-600 text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300 hover:border-neutral-400 dark:hover:border-neutral-500 transition-colors rounded-none"
-                          >
-                            <Plus size={12} />
-                            <span className="font-mono text-[10px] uppercase tracking-widest">Add Task</span>
-                          </button>
-                        )}
-                      </CellDropZone>
-                    </div>
-                  )
-                })}
-              </div>
-            ))}
+                          )}
+                          {col.status === Status.New && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleAddTask(story.id)
+                              }}
+                              className="w-full mt-1 flex items-center justify-center gap-1 py-1 border border-dashed border-neutral-300 dark:border-neutral-600 text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300 hover:border-neutral-400 dark:hover:border-neutral-500 transition-colors rounded-none"
+                            >
+                              <Plus size={12} />
+                              <span className="font-mono text-[10px] uppercase tracking-widest">Add Task</span>
+                            </button>
+                          )}
+                        </CellDropZone>
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })}
           </SortableContext>
           {stories.length === 0 && (
             <div className="flex items-center justify-center py-8">

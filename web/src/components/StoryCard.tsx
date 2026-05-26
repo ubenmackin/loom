@@ -1,7 +1,5 @@
 import { memo } from 'react'
 import { CheckSquare } from 'lucide-react'
-import { useSortable } from '@dnd-kit/sortable'
-import { CSS } from '@dnd-kit/utilities'
 import SharpTag from './SharpTag'
 import type { Story } from '../types'
 import { statusVariant } from '../utils/status'
@@ -9,42 +7,14 @@ import { statusVariant } from '../utils/status'
 interface StoryCardProps {
   story: Story
   onClick?: () => void
-  isDraggable?: boolean
   assigneeName?: string
 }
 
-function StoryCard({ story, onClick, isDraggable = false, assigneeName }: StoryCardProps) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({
-    id: story.id,
-    disabled: !isDraggable,
-    data: {
-      type: 'story',
-      story,
-    },
-  })
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  }
-
-  const sortableProps = isDraggable
-    ? { ref: setNodeRef, style, ...attributes, ...listeners }
-    : {}
-
+function StoryCard({ story, onClick, assigneeName }: StoryCardProps) {
   return (
     <div
       className="border border-gray-200 dark:border-gray-border p-3 rounded-none shadow-none bg-white dark:bg-charcoal-dark cursor-pointer"
       onClick={onClick}
-      {...sortableProps}
     >
       {/* Title row */}
       <div className="flex items-start justify-between gap-2">
