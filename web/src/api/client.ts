@@ -131,6 +131,10 @@ export async function updateTaskStatus(id: string, status: string): Promise<Task
   return request(`/tasks/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) })
 }
 
+export async function batchReorderTasks(tasks: { id: string; sort_order: number }[]): Promise<{ updated: number }> {
+  return request('/tasks/reorder', { method: 'PATCH', body: JSON.stringify({ tasks }) })
+}
+
 export async function fetchBlockers(id: string): Promise<Task[]> {
   return request(`/tasks/${id}/blockers`)
 }
