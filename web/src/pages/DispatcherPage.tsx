@@ -1,8 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useWebSocket } from '../hooks/useWebSocket'
-import { useDispatcher, type DispatcherEvent } from '../hooks/useDispatcher'
-import SharpTag from '../components/SharpTag'
-import type { DispatcherStatus } from '../types'
+import { useDispatcher } from '../hooks/useDispatcher'
 
 function formatTime(ts: string): string {
   const d = new Date(ts)

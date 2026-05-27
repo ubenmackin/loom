@@ -212,9 +212,7 @@ export default function Board() {
 
   // Sync displayStories from query data on initial load and refetches
   useEffect(() => {
-    if (data?.stories) {
-      setDisplayStories(stories)
-    }
+    setDisplayStories(stories)
   }, [stories])
 
   // Sync displayTaskOrder from query data on initial load and refetches

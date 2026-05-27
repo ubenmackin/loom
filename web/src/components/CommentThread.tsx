@@ -57,12 +57,12 @@ export default function CommentThread({ workItemId, workItemType }: CommentThrea
 
   // Merge and sort chronologically
   const timeline: TimelineEntry[] = (() => {
-    const items: (TimelineEntry & { _ts: number })[] = [
-      ...comments.map((c) => ({ id: c.id, type: 'comment' as const, created_at: c.created_at, data: c, _ts: new Date(c.created_at).getTime() })),
-      ...activities.map((a) => ({ id: a.id, type: 'activity' as const, created_at: a.created_at, data: a, _ts: new Date(a.created_at).getTime() })),
+    const items: TimelineEntry[] = [
+      ...comments.map((c) => ({ id: c.id, type: 'comment' as const, created_at: c.created_at, data: c })),
+      ...activities.map((a) => ({ id: a.id, type: 'activity' as const, created_at: a.created_at, data: a })),
     ]
-    items.sort((a, b) => a._ts - b._ts)
-    return items.map(({ _ts, ...rest }) => rest)
+    items.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    return items
   })()
 
   const addMutation = useMutation({

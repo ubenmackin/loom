@@ -14,6 +14,7 @@ import type {
   DispatcherStatus,
   User,
   AuthResponse,
+  TaskDetailResponse,
 } from '../types'
 import { useAuthStore } from '../stores/auth'
 
@@ -109,12 +110,6 @@ export async function fetchTasks(filter?: TaskFilter): Promise<Task[]> {
 }
 
 /** Response shape of GET /api/tasks/{id} */
-export interface TaskDetailResponse {
-  task: Task
-  dependencies: string[]
-  dependents: Task[]
-}
-
 export async function fetchTask(id: string): Promise<TaskDetailResponse> {
   return request(`/tasks/${id}`)
 }

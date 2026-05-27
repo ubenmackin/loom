@@ -19,9 +19,8 @@ import {
   deleteTask,
   getUsers,
   fetchSessions,
-  TaskDetailResponse,
 } from '../api/client'
-import type { Task, TaskTypeType, User, Session, StoryWithTasks, StatusType, AssigneeTypeType } from '../types'
+import type { Task, TaskTypeType, User, Session, StoryWithTasks, StatusType, AssigneeTypeType, TaskDetailResponse } from '../types'
 import { TaskType, AssigneeType } from '../types'
 import { STATUS_ORDER } from '../utils/status'
 import { taskTypeLabel, taskTypeVariant } from '../utils/taskType'
@@ -103,7 +102,7 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
 
   const { data: storyData } = useQuery<StoryWithTasks>({
     queryKey: ['story', task?.story_id],
-    queryFn: () => fetchStory(task?.story_id!),
+    queryFn: () => fetchStory(task!.story_id),
     enabled: !!task?.story_id,
   })
 
@@ -215,6 +214,19 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [showSaveDropdown])
+
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteTask(taskId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['board'] })
+      if (task?.story_id) {
+        queryClient.invalidateQueries({ queryKey: ['story', task.story_id] })
+      }
+      onClose()
+    },
+  })
 
   if (!taskId) return null
 
@@ -426,19 +438,6 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     archived: 'Archived',
   }
 
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
-
-  const deleteMutation = useMutation({
-    mutationFn: () => deleteTask(taskId!),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['board'] })
-      if (task?.story_id) {
-        queryClient.invalidateQueries({ queryKey: ['story', task.story_id] })
-      }
-      onClose()
-    },
-  })
-
 // ── RENDER ─────────────────────────────────────────────────────────────────
 
   return (
@@ -597,9 +596,9 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
           {/* Depended On By (successors) */}
           <div>
             <FieldLabel margin="mb-2">Depended On By</FieldLabel>
-            {dependents.length > 0 ? (
+              {dependents.length > 0 ? (
               <div className="space-y-1">
-                {dependents.map((dep) => (
+                {dependents.map((dep: Task) => (
                   <div
                     key={dep.id}
                     className="flex items-center gap-2 px-3 py-1 border border-gray-200 dark:border-gray-border"

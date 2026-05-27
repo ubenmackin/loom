@@ -42,6 +42,13 @@ export const WorkItemType = {
 
 export type WorkItemTypeType = (typeof WorkItemType)[keyof typeof WorkItemType]
 
+// TaskDetailResponse type (re-exported from client.ts for test imports)
+export interface TaskDetailResponse {
+  task: Task
+  dependencies: string[]
+  dependents: Task[]
+}
+
 // ── Domain Models ───────────────────────────────────────────────────────
 
 export interface Story {

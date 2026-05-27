@@ -33,7 +33,7 @@ build: $(BINARY_SERVER)
 $(BINARY_SERVER):
 	@mkdir -p dist
 	@echo "$(GREEN)Building loom-server...$(NC)"
-	$(GOBUILD) $(LD_FLAGS) -o $(BINARY_SERVER) $(SERVER_DIR)
+	CGO_ENABLED=1 $(GOBUILD) $(LD_FLAGS) -o $(BINARY_SERVER) $(SERVER_DIR)
 
 # Build web frontend
 web-build:
@@ -51,7 +51,7 @@ test-go:
 # React frontend tests
 test-web:
 	@echo "$(GREEN)Running React tests...$(NC)"
-	cd web && npm ci && npm run test -- --run 2>/dev/null || echo "No test runner configured yet"
+	cd web && npm ci && npm run test -- --run
 
 # Clean build artifacts
 clean:
@@ -81,7 +81,7 @@ lint-go:
 # React-specific linting
 lint-web:
 	@echo "$(GREEN)Linting React code...$(NC)"
-	cd web && npm run lint 2>/dev/null || echo "No lint script configured in web/package.json"
+	cd web && npm run lint
 
 # Unified verification target
 verify: fmt lint test all

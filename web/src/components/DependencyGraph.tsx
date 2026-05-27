@@ -1,5 +1,5 @@
 import SharpTag from './SharpTag'
-import type { Task, StatusType } from '../types'
+import type { Task } from '../types'
 import { Status } from '../types'
 import { statusVariant, statusDotClass } from '../utils/status'
 

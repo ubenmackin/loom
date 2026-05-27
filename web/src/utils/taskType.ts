@@ -24,7 +24,6 @@ export function taskTypeVariant(type: TaskTypeType): 'default' | 'primary' | 'am
     case 'review':
       return 'success'
     default: {
-      const _exhaustive: never = type
       return 'default'
     }
   }

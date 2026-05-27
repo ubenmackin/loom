@@ -23,7 +23,7 @@ export default function OnboardingPage() {
       if (!result.onboarding_required) {
           navigate('/login')
         }
-      } catch (err) {
+      } catch {
         setError('Failed to check onboarding status')
       }
     }
