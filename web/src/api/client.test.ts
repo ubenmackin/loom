@@ -50,7 +50,7 @@ import {
   deleteUser,
 } from './client'
 import { useAuthStore } from '../stores/auth'
-import type { User, AuthResponse, Story, StoryWithTasks, Task, BoardState, TaskDetailResponse, Session, Comment, ActivityLogEntry, PromptTemplate } from '../types'
+import type { User, AuthResponse, Story, StoryWithTasks, Task, BoardState, TaskDetailResponse, Session, Comment, ActivityLogEntry, PromptTemplate, UserRoleType } from '../types'
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -481,7 +481,7 @@ const handlers = [
   }),
 
   http.post('/api/users', async ({ request }) => {
-    const body = (await request.json()) as { username: string; email: string; display_name: string; password: string; role: 'admin' | 'normal' }
+    const body = (await request.json()) as { username: string; email: string; display_name: string; password: string; role: UserRoleType }
     return HttpResponse.json({
       id: 'user-new',
       username: body.username,
@@ -520,7 +520,6 @@ describe('API Client', () => {
       user: null,
       token: null,
       isAuthenticated: false,
-      isAdmin: false,
     })
 
     // Restore window.location in case a test replaced it
@@ -1154,7 +1153,7 @@ describe('API Client', () => {
         }),
       )
 
-      await completeWork('session-1', 'task-2', { task_id: 'task-2', result: 'Done' })
+      await completeWork('session-1', 'task-2', 'Done')
 
       expect(capturedBody).toEqual({ session_id: 'session-1', task_id: 'task-2', result: 'Done' })
     })
@@ -1168,7 +1167,7 @@ describe('API Client', () => {
         }),
       )
 
-      await blockWork('session-1', 'task-2', { task_id: 'task-2', reason: 'Waiting for review' })
+      await blockWork('session-1', 'task-2', 'Waiting for review')
 
       expect(capturedBody).toEqual({ session_id: 'session-1', task_id: 'task-2', reason: 'Waiting for review' })
     })
@@ -1332,7 +1331,7 @@ describe('API Client', () => {
             username: (capturedBody as { username: string }).username,
             email: (capturedBody as { email: string }).email,
             display_name: (capturedBody as { display_name: string }).display_name,
-            role: (capturedBody as { role: 'admin' | 'normal' }).role,
+            role: (capturedBody as { role: UserRoleType }).role,
             created_at: '2025-01-01T00:00:00Z',
           } satisfies User)
         }),

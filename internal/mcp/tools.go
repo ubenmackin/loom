@@ -198,7 +198,7 @@ func (s *Server) registerTools() {
 		},
 		{
 			name:        "create_task",
-			description: "Create a new task under a story.",
+			description: "Create a new task under a story. Optionally specify task IDs this task depends on.",
 			schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -206,6 +206,11 @@ func (s *Server) registerTools() {
 					"title":       map[string]any{"type": "string", "description": "The task title"},
 					"description": map[string]any{"type": "string", "description": "The task description"},
 					"task_type":   map[string]any{"type": "string", "description": "The task type (code, build, review)", "enum": []string{"code", "build", "review"}},
+					"depends_on": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Optional list of task IDs this task depends on",
+					},
 				},
 				"required": []string{"story_id", "title"},
 			},
@@ -264,8 +269,8 @@ func (s *Server) handleRegisterSession(ctx context.Context, params map[string]an
 	})
 
 	// Submit a session_registered event.
-	s.submitEvent(dispatcher.Event{
-		Type:      "session_registered",
+	s.submitEvent(ctx, dispatcher.Event{
+		Type:      dispatcher.EventSessionRegistered,
 		SessionID: session.ID,
 	})
 
@@ -289,8 +294,8 @@ func (s *Server) handleRequestWork(ctx context.Context, params map[string]any) (
 	}
 
 	// Submit a WorkRequested event.
-	s.submitEvent(dispatcher.Event{
-		Type:      "work_requested",
+	s.submitEvent(ctx, dispatcher.Event{
+		Type:      dispatcher.EventWorkRequested,
 		SessionID: sessionID,
 	})
 
@@ -338,7 +343,7 @@ func (s *Server) handleRequestWork(ctx context.Context, params map[string]any) (
 
 	// Try to get a prompt template for this task type.
 	if bestTask.TaskType != "" && s.templates != nil {
-		tmpl, err := s.templates.GetByTaskType(ctx, string(bestTask.TaskType))
+		tmpl, err := s.templates.GetByTaskType(ctx, bestTask.TaskType)
 		if err == nil && tmpl != nil {
 			result["prompt_template"] = tmpl.Template
 		}
@@ -437,7 +442,7 @@ func (s *Server) handleCompleteWork(ctx context.Context, params map[string]any) 
 			WorkItemID:   taskID,
 			WorkItemType: models.WorkItemTypeTask,
 			AuthorID:     sessionID,
-			AuthorType:   string(models.AssigneeTypeSession),
+			AuthorType:   models.AuthorType(models.AssigneeTypeSession),
 			Body:         fmt.Sprintf("Work completed. Result: %s", resultStr),
 		}); err != nil {
 			slog.Error("mcp: failed to create comment", "error", err, "task_id", taskID)
@@ -445,7 +450,7 @@ func (s *Server) handleCompleteWork(ctx context.Context, params map[string]any) 
 	}
 
 	// Submit event.
-	s.submitEvent(dispatcher.Event{
+	s.submitEvent(ctx, dispatcher.Event{
 		Type:   dispatcher.EventTaskCompleted,
 		TaskID: taskID,
 	})
@@ -488,7 +493,7 @@ func (s *Server) handleReportBlocked(ctx context.Context, params map[string]any)
 			WorkItemID:   taskID,
 			WorkItemType: models.WorkItemTypeTask,
 			AuthorID:     sessionID,
-			AuthorType:   string(models.AssigneeTypeSession),
+			AuthorType:   models.AuthorType(models.AssigneeTypeSession),
 			Body:         fmt.Sprintf("Blocked: %s", reason),
 		}); err != nil {
 			slog.Error("mcp: failed to create comment", "error", err, "task_id", taskID)
@@ -496,7 +501,7 @@ func (s *Server) handleReportBlocked(ctx context.Context, params map[string]any)
 	}
 
 	// Submit event.
-	s.submitEvent(dispatcher.Event{
+	s.submitEvent(ctx, dispatcher.Event{
 		Type:      dispatcher.EventTaskBlocked,
 		TaskID:    taskID,
 		SessionID: sessionID,
@@ -580,7 +585,7 @@ func (s *Server) handleAddComment(ctx context.Context, params map[string]any) (*
 		WorkItemID:   workItemID,
 		WorkItemType: models.WorkItemType(workItemType),
 		AuthorID:     authorID,
-		AuthorType:   authorType,
+		AuthorType:   models.AuthorType(authorType),
 		Body:         body,
 	}
 
@@ -668,8 +673,8 @@ func (s *Server) handleAddDependency(ctx context.Context, params map[string]any)
 	}
 
 	// Submit event.
-	s.submitEvent(dispatcher.Event{
-		Type:   "dependency_added",
+	s.submitEvent(ctx, dispatcher.Event{
+		Type:   dispatcher.EventDependencyAdded,
 		TaskID: taskID,
 	})
 
@@ -700,6 +705,13 @@ func (s *Server) handleCreateTask(ctx context.Context, params map[string]any) (*
 
 	if err := s.tasks.Create(ctx, task); err != nil {
 		return nil, fmt.Errorf("create task: %w", err)
+	}
+
+	dependsOn := getOptionalStringSlice(params, "depends_on")
+	for _, depID := range dependsOn {
+		if err := s.tasks.AddDependency(ctx, task.ID, depID); err != nil {
+			return nil, fmt.Errorf("create task: failed to add dependency on %q: %w", depID, err)
+		}
 	}
 
 	return jsonTextResult(task)

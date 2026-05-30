@@ -22,19 +22,13 @@ type EventBroadcaster interface {
 }
 
 // Event represents a discrete event processed by the dispatcher loop.
+// See events.go for the canonical list of event type constants.
 type Event struct {
-	Type      string // "task_status_changed", "task_blocked", "session_registered", "work_requested", "dependency_added", "periodic_tick"
+	Type      string
 	TaskID    string
 	SessionID string
 	Payload   any
 }
-
-// Event type constants for external consumers (e.g., API handlers).
-const (
-	EventTaskCompleted = "task_status_changed"
-	EventTaskBlocked   = "task_blocked"
-	EventWorkRequested = "work_requested"
-)
 
 // Dispatcher is the brain of the Loom system. It runs as a background
 // goroutine with an event-driven loop that processes state changes and
@@ -55,6 +49,7 @@ type Dispatcher struct {
 
 	wg      sync.WaitGroup
 	stopped atomic.Bool
+	started atomic.Bool
 
 	startedAt       time.Time
 	eventsProcessed map[string]*atomic.Int64
@@ -103,18 +98,23 @@ func NewDispatcher(deps DispatcherDeps) *Dispatcher {
 		stalenessThreshold: stalenessThreshold,
 		done:               make(chan struct{}),
 		eventsProcessed: map[string]*atomic.Int64{
-			"task_status_changed": new(atomic.Int64),
-			"task_blocked":        new(atomic.Int64),
-			"session_registered":  new(atomic.Int64),
-			"work_requested":      new(atomic.Int64),
-			"dependency_added":    new(atomic.Int64),
-			"periodic_tick":       new(atomic.Int64),
+			EventTaskCompleted:     new(atomic.Int64),
+			EventTaskBlocked:       new(atomic.Int64),
+			EventSessionRegistered: new(atomic.Int64),
+			EventWorkRequested:     new(atomic.Int64),
+			EventDependencyAdded:   new(atomic.Int64),
+			EventPeriodicTick:      new(atomic.Int64),
+			EventTasksGenerated:    new(atomic.Int64),
 		},
 	}
 }
 
 // Start launches the dispatcher goroutine loop and the periodic ticker.
+// It is safe to call multiple times — subsequent calls are no-ops.
 func (d *Dispatcher) Start() {
+	if d.started.Swap(true) {
+		return
+	}
 	d.startedAt = time.Now()
 	d.wg.Add(1)
 	go func() {
@@ -158,11 +158,12 @@ func (d *Dispatcher) Wait() {
 }
 
 // Submit sends an event to the dispatcher channel. It prefers delivering the
-// event, but if the channel is full it blocks until either the event can be
-// delivered or the dispatcher is shutting down.
-func (d *Dispatcher) Submit(event Event) {
+// event, but if the channel is full it blocks until either the context is
+// canceled, the event can be delivered, or the dispatcher is shutting down.
+func (d *Dispatcher) Submit(ctx context.Context, event Event) {
 	select {
 	case d.eventCh <- event:
+	case <-ctx.Done():
 	case <-d.done:
 		// Dispatcher is shutting down; discard event.
 	}
@@ -219,18 +220,20 @@ func (d *Dispatcher) processEvent(event Event) {
 	defer cancel()
 
 	switch event.Type {
-	case "task_status_changed":
+	case EventTaskCompleted:
 		d.handleTaskStatusChanged(ctx, event)
-	case "task_blocked":
+	case EventTaskBlocked:
 		d.handleTaskBlocked(ctx, event)
-	case "session_registered":
+	case EventSessionRegistered:
 		d.runAssignmentPass(ctx)
-	case "work_requested":
+	case EventWorkRequested:
 		d.handleWorkRequested(ctx, event)
-	case "dependency_added":
+	case EventDependencyAdded:
 		d.handleDependencyAdded(ctx, event)
-	case "periodic_tick":
+	case EventPeriodicTick:
 		d.checkStaleness(ctx)
+	case EventTasksGenerated:
+		// Informational event — no action needed.
 	default:
 		slog.Warn("dispatcher: unknown event type", "event_type", event.Type)
 	}
@@ -335,7 +338,7 @@ func (d *Dispatcher) tryUnblockTask(ctx context.Context, taskID string) {
 		return
 	}
 	d.logActivity(ctx, taskID, string(models.WorkItemTypeTask), "unblocked", "")
-	d.hub.Broadcast("task_status_changed", map[string]string{
+	d.hub.Broadcast(EventTaskCompleted, map[string]string{
 		"task_id": taskID,
 		"status":  string(models.StatusReady),
 	})

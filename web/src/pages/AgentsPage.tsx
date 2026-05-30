@@ -2,6 +2,7 @@ import { useSessions } from '../hooks/useSessions'
 import { SessionStatus, type Session, type SessionStatusType } from '../types'
 import SharpTag from '../components/SharpTag'
 import { relativeTime } from '../utils/relativeTime'
+import AsyncBoundary from '../components/AsyncBoundary'
 
 function statusDotClass(status: SessionStatusType): string {
   switch (status) {
@@ -78,32 +79,6 @@ const STATUS_ORDER: SessionStatusType[] = [
 export default function AgentsPage() {
   const { data: sessions, isLoading, error, refetch } = useSessions()
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <span className="font-mono text-sm text-neutral-500 dark:text-amber-muted">
-          Loading agents...
-        </span>
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="flex flex-col items-center justify-center h-64 gap-2">
-        <span className="font-mono text-sm text-red-500">
-          Error loading agents: {error.message}
-        </span>
-        <button
-          onClick={() => refetch()}
-          className="glow-button text-xs"
-        >
-          Retry
-        </button>
-      </div>
-    )
-  }
-
   // Group sessions by status
   const grouped: Record<string, Session[]> = {}
   for (const s of sessions ?? []) {
@@ -135,8 +110,14 @@ export default function AgentsPage() {
 
       {/* Agent Cards — grouped by status */}
       <div className="flex-1 overflow-y-auto p-4">
-        {sessions && sessions.length > 0 ? (
-          STATUS_ORDER.map((status) => {
+        <AsyncBoundary
+          isLoading={isLoading}
+          error={error}
+          onRetry={refetch}
+          isEmpty={!sessions || sessions.length === 0}
+          emptyMessage="No agents connected"
+        >
+          {STATUS_ORDER.map((status) => {
             const group = grouped[status]
             if (!group || group.length === 0) return null
             return (
@@ -157,14 +138,8 @@ export default function AgentsPage() {
                 </div>
               </div>
             )
-          })
-        ) : (
-          <div className="flex items-center justify-center py-16">
-            <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-600 uppercase tracking-widest">
-              No agents connected
-            </span>
-          </div>
-        )}
+          })}
+        </AsyncBoundary>
       </div>
     </div>
   )

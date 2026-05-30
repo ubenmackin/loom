@@ -42,9 +42,13 @@ func scanUserRow(scanner interface{ Scan(...any) error }) (*models.User, error) 
 	user.DisplayName = stringOrZero(displayName)
 	user.CreatedAt = timeOrZero(createdAt)
 
-	if role.Valid && role.String == string(models.RoleAdmin) {
+	switch {
+	case role.Valid && role.String == string(models.RoleAdmin):
 		user.Role = models.RoleAdmin
-	} else {
+	case role.Valid && role.String != "" && role.String != string(models.RoleNormal):
+		log.Printf("scanUserRow: unrecognized role %q for user %q, defaulting to normal", role.String, user.Username)
+		user.Role = models.RoleNormal
+	default:
 		user.Role = models.RoleNormal
 	}
 
@@ -58,13 +62,13 @@ func (s *UserStore) CreateUser(ctx context.Context, username, email, displayName
 	displayName = strings.TrimSpace(displayName)
 
 	if username == "" {
-		return nil, errors.New("username is required")
+		return nil, fmt.Errorf("username is required")
 	}
 	if email == "" {
-		return nil, errors.New("email is required")
+		return nil, fmt.Errorf("email is required")
 	}
 	if len(plaintextPassword) < 6 {
-		return nil, errors.New("password must be at least 6 characters")
+		return nil, fmt.Errorf("password must be at least 6 characters")
 	}
 	if role == "" {
 		role = models.RoleNormal
@@ -90,31 +94,52 @@ func (s *UserStore) CreateUser(ctx context.Context, username, email, displayName
 		user.DisplayName = user.Username
 	}
 
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// Check email uniqueness inside the transaction.
 	var emailExists int
-	err = s.db.QueryRowContext(ctx, "SELECT 1 FROM users WHERE email = ?", email).Scan(&emailExists)
+	err = tx.QueryRowContext(ctx, "SELECT 1 FROM users WHERE email = ?", email).Scan(&emailExists)
 	if err == nil {
-		return nil, errors.New("email address already registered")
+		err = fmt.Errorf("%w: %s", ErrEmailAlreadyRegistered, email)
+		return nil, err
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("check email uniqueness: %w", err)
+	if err != sql.ErrNoRows {
+		err = fmt.Errorf("check email uniqueness: %w", err)
+		return nil, err
 	}
 
+	// Check username uniqueness inside the transaction.
 	var usernameExists int
-	err = s.db.QueryRowContext(ctx, "SELECT 1 FROM users WHERE username = ?", username).Scan(&usernameExists)
+	err = tx.QueryRowContext(ctx, "SELECT 1 FROM users WHERE username = ?", username).Scan(&usernameExists)
 	if err == nil {
-		return nil, errors.New("username already taken")
+		err = fmt.Errorf("%w: %s", ErrUsernameAlreadyTaken, username)
+		return nil, err
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("check username uniqueness: %w", err)
+	if err != sql.ErrNoRows {
+		err = fmt.Errorf("check username uniqueness: %w", err)
+		return nil, err
 	}
 
-	_, err = s.db.ExecContext(ctx,
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO users (id, username, email, password_hash, display_name, role, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		user.ID, user.Username, user.Email, user.PasswordHash, user.DisplayName, string(user.Role), user.CreatedAt,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create user: %w", err)
+		err = fmt.Errorf("failed to create user: %w", err)
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 
 	return user, nil
@@ -137,7 +162,7 @@ func (s *UserStore) AuthenticateUser(ctx context.Context, usernameOrEmail, passw
 	err := row.Scan(&user.ID, &user.Username, &email, &passwordHash, &displayName, &role, &createdAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, errors.New("invalid credentials")
+			return nil, fmt.Errorf("%w", ErrInvalidCredentials)
 		}
 		return nil, fmt.Errorf("query user failed: %w", err)
 	}
@@ -155,7 +180,7 @@ func (s *UserStore) AuthenticateUser(ctx context.Context, usernameOrEmail, passw
 
 	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password))
 	if err != nil {
-		return nil, errors.New("invalid credentials")
+		return nil, fmt.Errorf("%w", ErrInvalidCredentials)
 	}
 
 	return user, nil
@@ -197,8 +222,8 @@ func (s *UserStore) GetUserBySessionToken(ctx context.Context, token string) (*m
 
 	err := row.Scan(&user.ID, &user.Username, &email, &displayName, &role, &createdAt)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, errors.New("session expired or invalid")
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("session expired or invalid")
 		}
 		return nil, fmt.Errorf("query session user: %w", err)
 	}
@@ -250,39 +275,20 @@ func (s *UserStore) ListAll(ctx context.Context) ([]*models.User, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	var users []*models.User
-	for rows.Next() {
-		u, err := scanUserRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan user: %w", err)
-		}
-		users = append(users, u)
+	users, err := collectRows(rows, scanUserRow)
+	if err != nil {
+		return nil, fmt.Errorf("scan users: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate users: %w", err)
-	}
-
 	return users, nil
 }
 
 // DeleteUser removes a user by ID.
 func (s *UserStore) DeleteUser(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, "DELETE FROM users WHERE id = ?", id)
+	result, err := s.db.ExecContext(ctx, "DELETE FROM users WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("delete user: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("delete user rows affected: %w", err)
-	}
-	if n == 0 {
-		return errors.New("user not found")
-	}
-	return nil
+	return requireOneRow(result, nil, "user", id)
 }

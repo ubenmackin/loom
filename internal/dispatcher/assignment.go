@@ -11,11 +11,25 @@ import (
 	"github.com/ubenmackin/loom/internal/store"
 )
 
+// fetchUnassignedTaskBlockers batch-fetches blockers for all unassigned tasks.
+func (d *Dispatcher) fetchUnassignedTaskBlockers(ctx context.Context, readyTasks []*models.Task) (map[string][]string, error) {
+	taskIDs := make([]string, 0, len(readyTasks))
+	for _, t := range readyTasks {
+		if t.AssignedTo == "" {
+			taskIDs = append(taskIDs, t.ID)
+		}
+	}
+	if len(taskIDs) == 0 {
+		return map[string][]string{}, nil
+	}
+	return d.tasks.GetBlockersForTasks(ctx, taskIDs)
+}
+
 // runAssignmentPass finds the best available session for each unassigned
 // Ready task. Tasks are processed in the order returned by List,
 // so that all eligible tasks are assigned in a single pass.
 func (d *Dispatcher) runAssignmentPass(ctx context.Context) {
-	d.hub.Broadcast("dispatcher_event", map[string]string{
+	d.hub.Broadcast(EventDispatcherAction, map[string]string{
 		"type":      "assignment_pass_started",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
@@ -26,21 +40,10 @@ func (d *Dispatcher) runAssignmentPass(ctx context.Context) {
 		return
 	}
 
-	// Batch fetch blockers for all unassigned tasks.
-	taskIDs := make([]string, 0, len(readyTasks))
-	for _, t := range readyTasks {
-		if t.AssignedTo == "" {
-			taskIDs = append(taskIDs, t.ID)
-		}
-	}
-
-	blockerMap := make(map[string][]string)
-	if len(taskIDs) > 0 {
-		blockerMap, err = d.tasks.GetBlockersForTasks(ctx, taskIDs)
-		if err != nil {
-			slog.Error("dispatcher: failed to batch fetch blockers", "error", err)
-			return
-		}
+	blockerMap, err := d.fetchUnassignedTaskBlockers(ctx, readyTasks)
+	if err != nil {
+		slog.Error("dispatcher: failed to batch fetch blockers", "error", err)
+		return
 	}
 
 	for _, task := range readyTasks {
@@ -80,7 +83,7 @@ func (d *Dispatcher) runAssignmentPass(ctx context.Context) {
 		}
 	}
 
-	d.hub.Broadcast("dispatcher_event", map[string]string{
+	d.hub.Broadcast(EventDispatcherAction, map[string]string{
 		"type":      "assignment_pass_finished",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
@@ -104,31 +107,18 @@ func (d *Dispatcher) findAndAssignTaskForSession(ctx context.Context, session *m
 	}
 
 	// Parse session capabilities.
-	var caps []string
-	if session.Capabilities != "" {
-		if err := json.Unmarshal([]byte(session.Capabilities), &caps); err != nil {
-			return nil, fmt.Errorf("parse session capabilities for %q: %w", session.ID, err)
-		}
+	caps, err := session.CapabilitiesSlice()
+	if err != nil {
+		return nil, fmt.Errorf("parse session capabilities for %q: %w", session.ID, err)
 	}
 	capSet := make(map[string]bool, len(caps))
 	for _, c := range caps {
 		capSet[c] = true
 	}
 
-	// Batch fetch blockers for all unassigned tasks.
-	taskIDs := make([]string, 0, len(readyTasks))
-	for _, t := range readyTasks {
-		if t.AssignedTo == "" {
-			taskIDs = append(taskIDs, t.ID)
-		}
-	}
-
-	blockerMap := make(map[string][]string)
-	if len(taskIDs) > 0 {
-		blockerMap, err = d.tasks.GetBlockersForTasks(ctx, taskIDs)
-		if err != nil {
-			return nil, fmt.Errorf("batch fetch blockers: %w", err)
-		}
+	blockerMap, err := d.fetchUnassignedTaskBlockers(ctx, readyTasks)
+	if err != nil {
+		return nil, fmt.Errorf("batch fetch blockers: %w", err)
 	}
 
 	for _, task := range readyTasks {
@@ -203,17 +193,18 @@ func (d *Dispatcher) assignTaskToSession(ctx context.Context, task *models.Task,
 	task.Status = models.StatusInProgress
 
 	// Assemble prompt instructions for the assigned session.
+	unreadSection := d.getUnreadHumanComments(ctx, task.ID, session.ID)
 	story, err := d.stories.GetByID(ctx, task.StoryID)
 	if err != nil {
 		slog.Warn("dispatcher: assembling prompt with degraded content",
 			"task_id", task.ID, "error", err)
-		task.Instructions = defaultPrompt(task, nil)
+		task.Instructions = defaultPrompt(task, nil, unreadSection)
 	} else {
-		instructions, err := d.assemblePrompt(ctx, task, story)
+		instructions, err := d.assemblePrompt(ctx, task, story, session.ID)
 		if err != nil {
 			slog.Warn("dispatcher: assembling prompt with degraded content",
 				"task_id", task.ID, "error", err)
-			task.Instructions = defaultPrompt(task, story)
+			task.Instructions = defaultPrompt(task, story, unreadSection)
 		} else {
 			task.Instructions = instructions
 		}
@@ -223,10 +214,13 @@ func (d *Dispatcher) assignTaskToSession(ctx context.Context, task *models.Task,
 		return fmt.Errorf("update task %q for assignment: %w", task.ID, err)
 	}
 
-	details, _ := json.Marshal(map[string]string{
+	details, err := json.Marshal(map[string]string{
 		"session_id": session.ID,
 		"task_type":  string(task.TaskType),
 	})
+	if err != nil {
+		slog.Error("dispatcher: failed to marshal assignment details", "error", err)
+	}
 	d.logActivity(ctx, task.ID, string(models.WorkItemTypeTask), "assigned", string(details))
 
 	d.hub.Broadcast("task_assigned", map[string]string{

@@ -126,7 +126,7 @@ describe('useWebSocket', () => {
     expect(result.current.lastEvent).toEqual(event)
   })
 
-  it('invalidates board, activity, and sessions queries on message', () => {
+  it('invalidates board, activity, and sessions queries on message (debounced)', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
@@ -146,9 +146,46 @@ describe('useWebSocket', () => {
       ws.triggerMessage(JSON.stringify({ type: 'board_updated' }))
     })
 
+    // Invalidation is debounced by 500ms, so it hasn't fired yet
+    expect(spy).not.toHaveBeenCalled()
+
+    // Advance past the debounce window
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+
+    expect(spy).toHaveBeenCalledTimes(3)
     expect(spy).toHaveBeenCalledWith({ queryKey: ['board'] })
     expect(spy).toHaveBeenCalledWith({ queryKey: ['activity'] })
     expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+  })
+
+  it('does not call invalidateQueries for irrelevant messages (e.g. ping)', () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const spy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    renderHook(() => useWebSocket(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
+      ),
+    })
+
+    const ws = FakeWebSocket.instances[0]
+    act(() => {
+      ws.triggerOpen()
+      ws.triggerMessage(JSON.stringify({ type: 'ping' }))
+    })
+
+    // Advance past the debounce window to ensure invalidation never fires
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+
+    expect(spy).not.toHaveBeenCalled()
   })
 
   it('does not throw on malformed JSON messages', () => {
@@ -195,6 +232,9 @@ describe('useWebSocket', () => {
   })
 
   it('reconnects with exponential backoff on close (250ms base, capped at 30s)', () => {
+    // Mock Math.random to return 0 so jitter doesn't affect exact timing
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+
     renderHook(() => useWebSocket(), { wrapper: createWrapper() })
 
     // First close → reconnect after 250ms

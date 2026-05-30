@@ -3,10 +3,9 @@ import { render, screen } from '@testing-library/react'
 
 // ── Mocks ─────────────────────────────────────────────────────────────────
 
-const mockNavigate = vi.fn()
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
-  return { ...actual, useNavigate: () => mockNavigate }
+  return actual
 })
 
 vi.mock('../stores/auth', () => ({
@@ -51,22 +50,28 @@ function renderProtected(requireAdmin = false) {
   )
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let authState: any = {
+  user: null,
+  isAuthenticated: false,
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe('ProtectedRoute', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockUseAuthStore.mockReturnValue({
-      user: null,
-      isAuthenticated: false,
-      isAdmin: false,
-    })
+    authState = { user: null, isAuthenticated: false }
+    mockUseAuthStore.mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ((selector?: any) => (selector ? selector(authState) : authState)) as any,
+    )
   })
 
   describe('when not authenticated', () => {
-    it('calls navigate with "/login"', () => {
+    it('navigates to login page', () => {
       renderProtected()
-      expect(mockNavigate).toHaveBeenCalledWith('/login')
+      expect(screen.getByTestId('login-page')).toBeInTheDocument()
     })
 
     it('does not render the child route content', () => {
@@ -74,19 +79,16 @@ describe('ProtectedRoute', () => {
       expect(screen.queryByTestId('protected-content')).not.toBeInTheDocument()
     })
 
-    it('renders nothing (returns null)', () => {
-      const { container } = renderProtected()
-      // ProtectedRoute returns null, so the Routes match but nothing renders
-      expect(screen.queryByTestId('protected-content')).not.toBeInTheDocument()
-      expect(screen.queryByTestId('login-page')).not.toBeInTheDocument()
-      // The Outlet is never reached, so no child renders
-      expect(container.textContent).toBe('')
+    it('does not render the home page', () => {
+      renderProtected()
+      expect(screen.getByTestId('login-page')).toBeInTheDocument()
+      expect(screen.queryByTestId('home-page')).not.toBeInTheDocument()
     })
   })
 
   describe('when authenticated (non-admin)', () => {
     beforeEach(() => {
-      mockUseAuthStore.mockReturnValue({
+      authState = {
         user: {
           id: '1',
           username: 'testuser',
@@ -95,13 +97,12 @@ describe('ProtectedRoute', () => {
           created_at: '2025-01-01T00:00:00Z',
         },
         isAuthenticated: true,
-        isAdmin: false,
-      })
+      }
     })
 
-    it('does not call navigate', () => {
+    it('does not navigate (stays on protected route)', () => {
       renderProtected()
-      expect(mockNavigate).not.toHaveBeenCalled()
+      expect(screen.getByTestId('protected-content')).toBeInTheDocument()
     })
 
     it('renders the child route content via Outlet', () => {
@@ -113,7 +114,7 @@ describe('ProtectedRoute', () => {
 
   describe('when requireAdmin is true and user is not admin', () => {
     beforeEach(() => {
-      mockUseAuthStore.mockReturnValue({
+      authState = {
         user: {
           id: '1',
           username: 'testuser',
@@ -122,13 +123,12 @@ describe('ProtectedRoute', () => {
           created_at: '2025-01-01T00:00:00Z',
         },
         isAuthenticated: true,
-        isAdmin: false,
-      })
+      }
     })
 
-    it('calls navigate with "/"', () => {
+    it('navigates to home page', () => {
       renderProtected(true)
-      expect(mockNavigate).toHaveBeenCalledWith('/')
+      expect(screen.getByTestId('home-page')).toBeInTheDocument()
     })
 
     it('does not render the child route content', () => {
@@ -139,7 +139,7 @@ describe('ProtectedRoute', () => {
 
   describe('when authenticated and admin with requireAdmin', () => {
     beforeEach(() => {
-      mockUseAuthStore.mockReturnValue({
+      authState = {
         user: {
           id: '1',
           username: 'admin',
@@ -148,13 +148,12 @@ describe('ProtectedRoute', () => {
           created_at: '2025-01-01T00:00:00Z',
         },
         isAuthenticated: true,
-        isAdmin: true,
-      })
+      }
     })
 
-    it('does not call navigate', () => {
+    it('does not navigate (stays on protected route)', () => {
       renderProtected(true)
-      expect(mockNavigate).not.toHaveBeenCalled()
+      expect(screen.getByTestId('protected-content')).toBeInTheDocument()
     })
 
     it('renders the child route content via Outlet', () => {
@@ -166,7 +165,7 @@ describe('ProtectedRoute', () => {
 
   describe('when requireAdmin is false but user is admin', () => {
     beforeEach(() => {
-      mockUseAuthStore.mockReturnValue({
+      authState = {
         user: {
           id: '1',
           username: 'admin',
@@ -175,13 +174,12 @@ describe('ProtectedRoute', () => {
           created_at: '2025-01-01T00:00:00Z',
         },
         isAuthenticated: true,
-        isAdmin: true,
-      })
+      }
     })
 
-    it('does not call navigate', () => {
+    it('does not navigate (stays on protected route)', () => {
       renderProtected(false)
-      expect(mockNavigate).not.toHaveBeenCalled()
+      expect(screen.getByTestId('protected-content')).toBeInTheDocument()
     })
 
     it('renders the child route content', () => {

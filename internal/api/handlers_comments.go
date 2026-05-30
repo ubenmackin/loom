@@ -37,34 +37,43 @@ func (h *handlers) registerCommentRoutes(r chi.Router) {
 
 // --- Handlers ---
 
-// getComments handles GET /api/work-items/{id}/comments
-func (h *handlers) getComments(w http.ResponseWriter, r *http.Request) {
+// resolveCommentWorkItem extracts and resolves the work item ID for comment handlers.
+func (h *handlers) resolveCommentWorkItem(w http.ResponseWriter, r *http.Request) (workItemID string, workItemType string, ok bool) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		respondError(w, http.StatusBadRequest, "missing work item id")
-		return
+		return "", "", false
 	}
 
-	workItemType := r.URL.Query().Get("type")
+	workItemType = r.URL.Query().Get("type")
 	if workItemType == "" {
 		workItemType = string(models.WorkItemTypeTask)
 	}
 
 	if !validWorkItemType(workItemType) {
 		respondError(w, http.StatusBadRequest, "type must be 'story' or 'task'")
-		return
+		return "", "", false
 	}
 
 	resolvedID, err := h.resolveWorkItemID(r.Context(), id, workItemType)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "work item not found")
-			return
+		} else {
+			respondError(w, http.StatusBadRequest, "invalid work item id: "+err.Error())
 		}
-		respondError(w, http.StatusBadRequest, "invalid work item id: "+err.Error())
+		return "", "", false
+	}
+
+	return resolvedID, workItemType, true
+}
+
+// getComments handles GET /api/work-items/{id}/comments
+func (h *handlers) getComments(w http.ResponseWriter, r *http.Request) {
+	id, workItemType, ok := h.resolveCommentWorkItem(w, r)
+	if !ok {
 		return
 	}
-	id = resolvedID
 
 	comments, err := h.comments.GetByWorkItem(r.Context(), id, models.WorkItemType(workItemType))
 	if err != nil {
@@ -80,32 +89,10 @@ func (h *handlers) getComments(w http.ResponseWriter, r *http.Request) {
 
 // createComment handles POST /api/work-items/{id}/comments
 func (h *handlers) createComment(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if id == "" {
-		respondError(w, http.StatusBadRequest, "missing work item id")
+	id, workItemType, ok := h.resolveCommentWorkItem(w, r)
+	if !ok {
 		return
 	}
-
-	workItemType := r.URL.Query().Get("type")
-	if workItemType == "" {
-		workItemType = string(models.WorkItemTypeTask)
-	}
-
-	if !validWorkItemType(workItemType) {
-		respondError(w, http.StatusBadRequest, "type must be 'story' or 'task'")
-		return
-	}
-
-	resolvedID, err := h.resolveWorkItemID(r.Context(), id, workItemType)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "work item not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid work item id: "+err.Error())
-		return
-	}
-	id = resolvedID
 
 	var req createCommentRequest
 	if err := decodeJSON(r, w, &req); err != nil {
@@ -130,7 +117,7 @@ func (h *handlers) createComment(w http.ResponseWriter, r *http.Request) {
 		WorkItemID:   id,
 		WorkItemType: models.WorkItemType(workItemType),
 		AuthorID:     req.AuthorID,
-		AuthorType:   req.AuthorType,
+		AuthorType:   models.AuthorType(req.AuthorType),
 		Body:         req.Body,
 	}
 

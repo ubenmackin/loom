@@ -23,8 +23,8 @@ import (
 //   - the Build task (if one exists) is Done
 //   - no Review task already exists for the story
 func (d *Dispatcher) checkGateConditions(ctx context.Context, storyID string) {
-	d.hub.Broadcast("dispatcher_event", map[string]string{
-		"type":      "gate_check",
+	d.hub.Broadcast(EventDispatcherAction, map[string]string{
+		"type":      EventGateCheck,
 		"story_id":  storyID,
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
@@ -84,110 +84,95 @@ func (d *Dispatcher) checkGateConditions(ctx context.Context, storyID string) {
 	}
 }
 
+// createGateTask is a shared helper that creates a gate task (build or review)
+// with the given parameters, assembles prompt instructions, logs the activity,
+// and broadcasts a WebSocket event.
+func (d *Dispatcher) createGateTask(ctx context.Context, story *models.Story, taskType models.TaskType, titlePrefix string, sortOrder int, addDeps func(string) error) error {
+	task := &models.Task{
+		StoryID:   story.ID,
+		Title:     fmt.Sprintf("%s: %s", titlePrefix, story.Title),
+		Status:    models.StatusReady,
+		TaskType:  taskType,
+		SortOrder: sortOrder,
+	}
+
+	if err := d.tasks.Create(ctx, task); err != nil {
+		return fmt.Errorf("create %s task: %w", taskType, err)
+	}
+
+	// Add dependencies if a callback is provided.
+	if addDeps != nil {
+		if err := addDeps(task.ID); err != nil {
+			slog.Error("dispatcher: failed to add dependencies on gate task",
+				"task_id", task.ID, "task_type", taskType, "error", err)
+		}
+	}
+
+	// Assemble prompt instructions.
+	instructions, err := d.assemblePrompt(ctx, task, story, "")
+	if err != nil {
+		slog.Error("dispatcher: failed to assemble prompt",
+			"task_id", task.ID, "task_type", taskType, "error", err)
+	} else {
+		task.Instructions = instructions
+		if err := d.tasks.Update(ctx, task); err != nil {
+			slog.Error("dispatcher: failed to update task with instructions",
+				"task_id", task.ID, "error", err)
+		}
+	}
+
+	details, err := json.Marshal(map[string]string{"story_id": story.ID, "task_type": string(taskType)})
+	if err != nil {
+		slog.Error("dispatcher: failed to marshal gate task details", "error", err)
+	} else {
+		d.logActivity(ctx, task.ID, string(models.WorkItemTypeTask), "gate_created", string(details))
+	}
+
+	d.hub.Broadcast(EventGateTaskCreated, map[string]string{
+		"task_id":   task.ID,
+		"story_id":  story.ID,
+		"task_type": string(taskType),
+		"status":    string(models.StatusReady),
+	})
+
+	slog.Info("dispatcher: created gate task",
+		"task_id", task.ID, "story_id", story.ID, "task_type", taskType)
+
+	return nil
+}
+
 // createBuildTask creates a new Build gate task for the given story, with
 // dependencies on all Done code tasks. It returns an error if the task
 // creation fails.
 func (d *Dispatcher) createBuildTask(ctx context.Context, story *models.Story, existingTasks []*models.Task) error {
-	buildTask := &models.Task{
-		StoryID:   story.ID,
-		Title:     fmt.Sprintf("Build: %s", story.Title),
-		Status:    models.StatusReady,
-		TaskType:  models.TaskTypeBuild,
-		SortOrder: 9000, // Gate tasks sort after regular tasks.
-	}
-
-	if err := d.tasks.Create(ctx, buildTask); err != nil {
-		return fmt.Errorf("create build task: %w", err)
-	}
-
-	// Add dependencies on all Done code tasks.
-	for _, t := range existingTasks {
-		if t.TaskType != models.TaskTypeBuild && t.TaskType != models.TaskTypeReview && t.Status == models.StatusDone {
-			if err := d.tasks.AddDependency(ctx, buildTask.ID, t.ID); err != nil {
-				slog.Error("dispatcher: failed to add dependency on build task",
-					"build_task_id", buildTask.ID, "depends_on", t.ID, "error", err)
+	return d.createGateTask(ctx, story, models.TaskTypeBuild, "Build", 9000, func(taskID string) error {
+		for _, t := range existingTasks {
+			if t.TaskType != models.TaskTypeBuild && t.TaskType != models.TaskTypeReview && t.Status == models.StatusDone {
+				if err := d.tasks.AddDependency(ctx, taskID, t.ID); err != nil {
+					slog.Error("dispatcher: failed to add dependency on build task",
+						"build_task_id", taskID, "depends_on", t.ID, "error", err)
+				}
 			}
 		}
-	}
-
-	// Assemble prompt instructions for the build task.
-	instructions, err := d.assemblePrompt(ctx, buildTask, story)
-	if err != nil {
-		slog.Error("dispatcher: failed to assemble build prompt",
-			"task_id", buildTask.ID, "error", err)
-	} else {
-		buildTask.Instructions = instructions
-		if err := d.tasks.Update(ctx, buildTask); err != nil {
-			slog.Error("dispatcher: failed to update build task with instructions",
-				"task_id", buildTask.ID, "error", err)
-		}
-	}
-
-	details, _ := json.Marshal(map[string]string{"story_id": story.ID, "task_type": "build"})
-	d.logActivity(ctx, buildTask.ID, string(models.WorkItemTypeTask), "gate_created", string(details))
-
-	d.hub.Broadcast("gate_task_created", map[string]string{
-		"task_id":   buildTask.ID,
-		"story_id":  story.ID,
-		"task_type": string(models.TaskTypeBuild),
-		"status":    string(models.StatusReady),
+		return nil
 	})
-
-	slog.Info("dispatcher: created build gate task",
-		"task_id", buildTask.ID, "story_id", story.ID)
-	return nil
 }
 
 // createReviewTask creates a new Review gate task for the given story,
 // optionally depending on the Build task.
 func (d *Dispatcher) createReviewTask(ctx context.Context, story *models.Story, buildTask *models.Task) {
-	reviewTask := &models.Task{
-		StoryID:   story.ID,
-		Title:     fmt.Sprintf("Review: %s", story.Title),
-		Status:    models.StatusReady,
-		TaskType:  models.TaskTypeReview,
-		SortOrder: 9100, // Review tasks sort after build tasks.
-	}
-
-	if err := d.tasks.Create(ctx, reviewTask); err != nil {
+	err := d.createGateTask(ctx, story, models.TaskTypeReview, "Review", 9100, func(taskID string) error {
+		if buildTask != nil {
+			if err := d.tasks.AddDependency(ctx, taskID, buildTask.ID); err != nil {
+				return fmt.Errorf("add dependency on build task: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		slog.Error("dispatcher: failed to create review task",
 			"story_id", story.ID, "error", err)
-		return
 	}
-
-	// Add dependency on the Build task if one exists.
-	if buildTask != nil {
-		if err := d.tasks.AddDependency(ctx, reviewTask.ID, buildTask.ID); err != nil {
-			slog.Error("dispatcher: failed to add dependency on review task",
-				"review_task_id", reviewTask.ID, "depends_on", buildTask.ID, "error", err)
-		}
-	}
-
-	// Assemble prompt instructions for the review task.
-	instructions, err := d.assemblePrompt(ctx, reviewTask, story)
-	if err != nil {
-		slog.Error("dispatcher: failed to assemble review prompt",
-			"task_id", reviewTask.ID, "error", err)
-	} else {
-		reviewTask.Instructions = instructions
-		if err := d.tasks.Update(ctx, reviewTask); err != nil {
-			slog.Error("dispatcher: failed to update review task with instructions",
-				"task_id", reviewTask.ID, "error", err)
-		}
-	}
-
-	details, _ := json.Marshal(map[string]string{"story_id": story.ID, "task_type": "review"})
-	d.logActivity(ctx, reviewTask.ID, string(models.WorkItemTypeTask), "gate_created", string(details))
-
-	d.hub.Broadcast("gate_task_created", map[string]string{
-		"task_id":   reviewTask.ID,
-		"story_id":  story.ID,
-		"task_type": string(models.TaskTypeReview),
-		"status":    string(models.StatusReady),
-	})
-
-	slog.Info("dispatcher: created review gate task",
-		"task_id", reviewTask.ID, "story_id", story.ID)
 }
 
 // resolveDependencies finds all tasks that depend on the just-completed task
@@ -207,10 +192,14 @@ func (d *Dispatcher) resolveDependencies(ctx context.Context, completedTaskID st
 
 		d.tryUnblockTask(ctx, dep.ID)
 
-		details, _ := json.Marshal(map[string]string{
+		details, err := json.Marshal(map[string]string{
 			"resolved_by": completedTaskID,
 		})
-		d.logActivity(ctx, dep.ID, string(models.WorkItemTypeTask), "unblocked", string(details))
+		if err != nil {
+			slog.Error("dispatcher: failed to marshal resolution details", "error", err)
+		} else {
+			d.logActivity(ctx, dep.ID, string(models.WorkItemTypeTask), "unblocked", string(details))
+		}
 
 		slog.Info("dispatcher: resolved dependency, task unblocked",
 			"task_id", dep.ID, "resolved_by", completedTaskID)

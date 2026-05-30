@@ -19,4 +19,15 @@ var (
 	// ErrUnauthorizedAuthor is returned when an operation on a resource (like a comment)
 	// is attempted by a user who is not its original author.
 	ErrUnauthorizedAuthor = errors.New("only the author can modify this resource")
+
+	// ErrInvalidCredentials is returned when authentication fails.
+	ErrInvalidCredentials = errors.New("invalid credentials")
+
+	// ErrEmailAlreadyRegistered is returned when a user tries to register with an
+	// email address that is already in use.
+	ErrEmailAlreadyRegistered = errors.New("email address already registered")
+
+	// ErrUsernameAlreadyTaken is returned when a user tries to register with a
+	// username that is already taken.
+	ErrUsernameAlreadyTaken = errors.New("username already taken")
 )

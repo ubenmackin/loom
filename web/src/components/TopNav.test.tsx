@@ -47,6 +47,13 @@ const adminUser = {
   role: 'admin' as const,
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let authState: any = {
+  user: null,
+  isAuthenticated: false,
+  logout: mockLogout,
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 function renderTopNav() {
@@ -62,12 +69,16 @@ function renderTopNav() {
 describe('TopNav', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockUseAuthStore.mockReturnValue({
+    mockLogout.mockClear()
+    authState = {
       user: null,
       isAuthenticated: false,
-      isAdmin: false,
       logout: mockLogout,
-    })
+    }
+    mockUseAuthStore.mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ((selector?: any) => (selector ? selector(authState) : authState)) as any,
+    )
     mockUseTheme.mockReturnValue({
       isDark: false,
       toggle: vi.fn(),
@@ -127,12 +138,11 @@ describe('TopNav', () => {
 
   describe('when authenticated', () => {
     beforeEach(() => {
-      mockUseAuthStore.mockReturnValue({
+      authState = {
         user: defaultUser,
         isAuthenticated: true,
-        isAdmin: false,
         logout: mockLogout,
-      })
+      }
     })
 
     it('shows the user display_name', () => {
@@ -151,12 +161,11 @@ describe('TopNav', () => {
     })
 
     it('falls back to username when display_name is not set', () => {
-      mockUseAuthStore.mockReturnValue({
+      authState = {
         user: { ...defaultUser, display_name: undefined },
         isAuthenticated: true,
-        isAdmin: false,
         logout: mockLogout,
-      })
+      }
       renderTopNav()
       expect(screen.getByText('testuser')).toBeInTheDocument()
     })
@@ -195,12 +204,11 @@ describe('TopNav', () => {
 
   describe('when admin', () => {
     beforeEach(() => {
-      mockUseAuthStore.mockReturnValue({
+      authState = {
         user: adminUser,
         isAuthenticated: true,
-        isAdmin: true,
         logout: mockLogout,
-      })
+      }
     })
 
     it('shows the Users link in the dropdown', async () => {
@@ -227,12 +235,11 @@ describe('TopNav', () => {
   describe('when not admin', () => {
     it('does not show the Users link in the dropdown', async () => {
       const user = userEvent.setup()
-      mockUseAuthStore.mockReturnValue({
+      authState = {
         user: defaultUser,
         isAuthenticated: true,
-        isAdmin: false,
         logout: mockLogout,
-      })
+      }
       renderTopNav()
       await user.click(screen.getByLabelText('User menu'))
 

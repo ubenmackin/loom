@@ -1,8 +1,12 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { X } from 'lucide-react'
 import { getUsers, postUser, deleteUser } from '../api/client'
-import type { User } from '../types'
+import type { User, UserRoleType } from '../types'
 import { relativeTime } from '../utils/relativeTime'
+import AsyncBoundary from '../components/AsyncBoundary'
+import ConfirmModal from '../components/ConfirmModal'
+import FieldLabel from '../components/FieldLabel'
 
 export default function UsersPage() {
   const queryClient = useQueryClient()
@@ -37,8 +41,9 @@ export default function UsersPage() {
   const [email, setEmail] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
-  const [role, setRole] = useState<'admin' | 'normal'>('normal')
+  const [role, setRole] = useState<UserRoleType>('normal')
   const [formError, setFormError] = useState<string | null>(null)
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault()
@@ -78,10 +83,8 @@ export default function UsersPage() {
     setIsModalOpen(false)
   }
 
-  const handleDelete = (userId: string) => {
-    if (confirm('Are you sure you want to delete this user?')) {
-      deleteMutation.mutate(userId)
-    }
+const handleDelete = (userId: string) => {
+    setDeleteTargetId(userId)
   }
 
   return (
@@ -101,25 +104,13 @@ export default function UsersPage() {
 
       {/* Table */}
       <div className="flex-1 overflow-auto">
-        {isLoading ? (
-          <div className="flex items-center justify-center h-64">
-            <span className="font-mono text-sm text-neutral-500 dark:text-amber-muted">
-              Loading users...
-            </span>
-          </div>
-        ) : queryError ? (
-          <div className="flex flex-col items-center justify-center h-64 gap-2">
-            <span className="font-mono text-sm text-red-500">
-              Error loading users: {queryError.message}
-            </span>
-            <button
-              onClick={() => refetch()}
-              className="glow-button text-xs"
-            >
-              Retry
-            </button>
-          </div>
-        ) : users && users.length > 0 ? (
+        <AsyncBoundary
+          isLoading={isLoading}
+          error={queryError}
+          onRetry={refetch}
+          isEmpty={!users || users.length === 0}
+          emptyMessage="No users found"
+        >
           <table className="w-full border-collapse">
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-border">
@@ -144,7 +135,7 @@ export default function UsersPage() {
               </tr>
             </thead>
             <tbody>
-              {users.map((user) => (
+              {users?.map((user) => (
                 <tr key={user.id} className="border-b border-gray-200 dark:border-gray-border hover:bg-gray-50 dark:hover:bg-charcoal-darkest">
                   <td className="px-4 py-3 font-mono text-sm text-neutral-800 dark:text-light-neutral">
                     {user.username}
@@ -176,13 +167,7 @@ export default function UsersPage() {
               ))}
             </tbody>
           </table>
-        ) : (
-          <div className="flex items-center justify-center py-16">
-            <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-600 uppercase tracking-widest">
-              No users found
-            </span>
-          </div>
-        )}
+        </AsyncBoundary>
       </div>
 
       {/* Create User Modal */}
@@ -199,7 +184,7 @@ export default function UsersPage() {
                 className="p-1 rounded-none text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
                 aria-label="Close"
               >
-                &times;
+                <X size={16} />
               </button>
             </div>
 
@@ -207,17 +192,17 @@ export default function UsersPage() {
             <form onSubmit={handleCreate} className="px-4 py-4 space-y-4">
               {/* Username */}
               <div>
-                <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
+                <FieldLabel>
                   Username <span className="text-red-500">*</span>
-                </label>
+                </FieldLabel>
                 <input
                   type="text"
                   value={username}
-          onChange={(e) => {
-                setUsername(e.target.value)
-                if (formError) setFormError(null)
-              }}
-              placeholder="Enter username"
+                  onChange={(e) => {
+                    setUsername(e.target.value)
+                    if (formError) setFormError(null)
+                  }}
+                  placeholder="Enter username"
                   className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-charcoal-darkest p-2 text-sm text-neutral-800 dark:text-light-neutral font-mono"
                   autoFocus
                   required
@@ -226,17 +211,17 @@ export default function UsersPage() {
 
               {/* Email */}
               <div>
-                <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
+                <FieldLabel>
                   Email <span className="text-red-500">*</span>
-                </label>
+                </FieldLabel>
                 <input
                   type="email"
                   value={email}
-          onChange={(e) => {
-                setEmail(e.target.value)
-                if (formError) setFormError(null)
-              }}
-              placeholder="Enter email"
+                  onChange={(e) => {
+                    setEmail(e.target.value)
+                    if (formError) setFormError(null)
+                  }}
+                  placeholder="Enter email"
                   className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-charcoal-darkest p-2 text-sm text-neutral-800 dark:text-light-neutral font-mono"
                   required
                 />
@@ -244,9 +229,7 @@ export default function UsersPage() {
 
               {/* Display Name */}
               <div>
-                <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
-                  Display Name
-                </label>
+                <FieldLabel>Display Name</FieldLabel>
                 <input
                   type="text"
                   value={displayName}
@@ -258,17 +241,17 @@ export default function UsersPage() {
 
               {/* Password */}
               <div>
-                <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
+                <FieldLabel>
                   Password <span className="text-red-500">*</span>
-                </label>
+                </FieldLabel>
                 <input
                   type="password"
                   value={password}
-          onChange={(e) => {
-                setPassword(e.target.value)
-                if (formError) setFormError(null)
-              }}
-              placeholder="Enter password"
+                  onChange={(e) => {
+                    setPassword(e.target.value)
+                    if (formError) setFormError(null)
+                  }}
+                  placeholder="Enter password"
                   className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-charcoal-darkest p-2 text-sm text-neutral-800 dark:text-light-neutral font-mono"
                   required
                 />
@@ -276,12 +259,12 @@ export default function UsersPage() {
 
               {/* Role */}
               <div>
-                <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
+                <FieldLabel>
                   Role <span className="text-red-500">*</span>
-                </label>
+                </FieldLabel>
                 <select
                   value={role}
-                  onChange={(e) => setRole(e.target.value as 'admin' | 'normal')}
+                  onChange={(e) => setRole(e.target.value as UserRoleType)}
                   className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-charcoal-darkest p-2 text-sm text-neutral-800 dark:text-light-neutral font-mono"
                 >
                   <option value="normal">Normal</option>
@@ -289,10 +272,10 @@ export default function UsersPage() {
                 </select>
               </div>
 
-  {/* Error */}
-          {formError && (
-            <p className="font-mono text-xs text-red-500">{formError}</p>
-          )}
+              {/* Error */}
+              {formError && (
+                <p className="font-mono text-xs text-red-500">{formError}</p>
+              )}
 
               {/* Actions */}
               <div className="pt-3 border-t border-gray-200 dark:border-gray-border flex items-center justify-end gap-2">
@@ -315,6 +298,20 @@ export default function UsersPage() {
           </div>
         </div>
       )}
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        open={deleteTargetId !== null}
+        title="Delete User"
+        message="Are you sure you want to delete this user? This action cannot be undone."
+        onConfirm={() => {
+          if (deleteTargetId) {
+            deleteMutation.mutate(deleteTargetId)
+          }
+          setDeleteTargetId(null)
+        }}
+        onCancel={() => setDeleteTargetId(null)}
+      />
     </div>
   )
 }

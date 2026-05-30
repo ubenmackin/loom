@@ -216,6 +216,22 @@ func (h *handlers) SessionAuthenticator(next http.Handler) http.Handler {
 	})
 }
 
+// AdminOnly is a middleware that rejects requests from non-admin users.
+func (h *handlers) AdminOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user := GetUser(r)
+		if user == nil {
+			respondError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		if user.Role != models.RoleAdmin {
+			respondError(w, http.StatusForbidden, "admin access required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // resolveWorkItemID resolves a numeric or string ID to the standard string ID.
 // It uses strconv.Atoi which requires the full string to be numeric,
 // preventing partial matches like "42abc" from being accepted.
@@ -236,6 +252,18 @@ func (h *handlers) resolveWorkItemID(ctx context.Context, idStr string, itemType
 				return "", err
 			}
 			return task.ID, nil
+		}
+	}
+	// For non-numeric IDs (e.g., "STORY-999"), verify the item exists
+	if itemType == string(models.WorkItemTypeStory) {
+		_, err := h.stories.GetByID(ctx, idStr)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		_, err := h.tasks.GetByID(ctx, idStr)
+		if err != nil {
+			return "", err
 		}
 	}
 	return idStr, nil

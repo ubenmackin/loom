@@ -80,6 +80,25 @@ describe('useDispatcher', () => {
     expect(result.current.status).toEqual(sampleStatus)
   })
 
+  it('continues polling even when fetchDispatcherStatus fails', async () => {
+    mockFetchDispatcherStatus.mockRejectedValue(new Error('Network error'))
+
+    renderHook(() => useDispatcher())
+    // Flush the initial poll (which will fail, but should not crash)
+    await act(async () => {})
+
+    // The hook caught the error (ignored), so the interval should still be active.
+    // Advance 2s — second poll should fire even though the first one failed.
+    mockFetchDispatcherStatus.mockResolvedValue(sampleStatus)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+
+    // fetchDispatcherStatus should have been called twice:
+    // once on mount (rejected) and once after 2s interval (resolved)
+    expect(mockFetchDispatcherStatus).toHaveBeenCalledTimes(2)
+  })
+
   it('lastWsEvent with type dispatcher_event adds to events and sets isConnected', async () => {
     const { result, rerender } = renderHook(
       (lastWsEvent?: WebSocketEvent | null) => useDispatcher(lastWsEvent),

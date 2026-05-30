@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,23 +14,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/ubenmackin/loom/internal/dispatcher"
 	"github.com/ubenmackin/loom/internal/models"
 	"github.com/ubenmackin/loom/internal/store"
 	"github.com/ubenmackin/loom/internal/testhelpers"
 )
-
-// mockHub implements HubInterface for testing.
-type mockHub struct{}
-
-func (m *mockHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusSwitchingProtocols)
-}
-
-// testBroadcaster implements dispatcher.EventBroadcaster for testing.
-type testBroadcaster struct{}
-
-func (m *testBroadcaster) Broadcast(eventType string, payload any) {}
 
 func createTestComment(t *testing.T, s *store.CommentStore, workItemID string, workItemType models.WorkItemType, authorID, authorType, body string) *models.Comment {
 	t.Helper()
@@ -39,81 +25,13 @@ func createTestComment(t *testing.T, s *store.CommentStore, workItemID string, w
 		WorkItemID:   workItemID,
 		WorkItemType: workItemType,
 		AuthorID:     authorID,
-		AuthorType:   authorType,
+		AuthorType:   models.AuthorType(authorType),
 		Body:         body,
 	}
 	if err := s.Create(context.Background(), c); err != nil {
 		t.Fatalf("create test comment: %v", err)
 	}
 	return c
-}
-
-func newTestRouter(t *testing.T) (chi.Router, *sql.DB, *store.StoryStore, *store.TaskStore, *store.SessionStore, *store.CommentStore, *store.TemplateStore, *store.ActivityStore, *dispatcher.Dispatcher) {
-	t.Helper()
-
-	// Set agent secret so SessionAuthenticator allows /sessions and /work routes via X-Agent-Secret.
-	origAgentSecret := os.Getenv("LOOM_AGENT_SECRET")
-	os.Setenv("LOOM_AGENT_SECRET", "test-agent-secret")
-	t.Cleanup(func() {
-		if origAgentSecret == "" {
-			os.Unsetenv("LOOM_AGENT_SECRET")
-		} else {
-			os.Setenv("LOOM_AGENT_SECRET", origAgentSecret)
-		}
-	})
-
-	dbConn := testhelpers.SetupTestDB(t)
-
-	storyStore := store.NewStoryStore(dbConn)
-	taskStore := store.NewTaskStore(dbConn)
-	sessionStore := store.NewSessionStore(dbConn)
-	commentStore := store.NewCommentStore(dbConn)
-	templateStore := store.NewTemplateStore(dbConn)
-	activityStore := store.NewActivityStore(dbConn)
-	userStore := store.NewUserStore(dbConn)
-
-	// Create a test user and session token so protected routes work in tests.
-	testUser, err := userStore.CreateUser(context.Background(), "testuser", "test@example.com", "Test User", "password123", models.RoleNormal)
-	if err != nil {
-		t.Fatalf("create test user: %v", err)
-	}
-	testToken, err := userStore.CreateSession(context.Background(), testUser.ID)
-	if err != nil {
-		t.Fatalf("create test user session: %v", err)
-	}
-	// Store token in context for use by doRequest via t.Setenv trick — instead use package-level map.
-	testAuthTokens.Store(t.Name(), testToken)
-	t.Cleanup(func() { testAuthTokens.Delete(t.Name()) })
-
-	broadcaster := &testBroadcaster{}
-	d := dispatcher.NewDispatcher(dispatcher.DispatcherDeps{
-		StoryStore:         storyStore,
-		TaskStore:          taskStore,
-		SessionStore:       sessionStore,
-		TemplateStore:      templateStore,
-		CommentStore:       commentStore,
-		ActivityStore:      activityStore,
-		Broadcaster:        broadcaster,
-		StalenessThreshold: 30 * time.Minute,
-	})
-
-	apiRouter := NewRouter(
-		storyStore,
-		taskStore,
-		sessionStore,
-		commentStore,
-		templateStore,
-		activityStore,
-		userStore,
-		d,
-		&mockHub{},
-	)
-
-	// Mount under /api — same as production (cmd/server/main.go).
-	mux := chi.NewRouter()
-	mux.Mount("/api", apiRouter)
-
-	return mux, dbConn, storyStore, taskStore, sessionStore, commentStore, templateStore, activityStore, d
 }
 
 // testAuthTokens maps test name to a valid Bearer token for protected routes.
@@ -196,7 +114,7 @@ func decodeRespJSON(t *testing.T, rr *httptest.ResponseRecorder, v any) {
 func TestWorkRequest_NoWorkAvailable(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, sessionStore, _, _, _, _ := newTestRouter(t)
+	mux, _, _, sessionStore, _, _, _ := newTestRouter(t)
 
 	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
 		s.HarnessType = "opencode"
@@ -223,7 +141,7 @@ func TestWorkRequest_NoWorkAvailable(t *testing.T) {
 func TestWorkRequest_WorkAvailable(t *testing.T) {
 	t.Parallel()
 
-	mux, _, storyStore, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
+	mux, storyStore, taskStore, sessionStore, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Work Available Story"; s.Status = models.StatusReady })
 	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
@@ -264,7 +182,7 @@ func TestWorkRequest_WorkAvailable(t *testing.T) {
 func TestWorkComplete(t *testing.T) {
 	t.Parallel()
 
-	mux, _, storyStore, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
+	mux, storyStore, taskStore, sessionStore, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Work Complete Story"; s.Status = models.StatusReady })
 	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
@@ -314,7 +232,7 @@ func TestWorkComplete(t *testing.T) {
 func TestWorkBlock(t *testing.T) {
 	t.Parallel()
 
-	mux, _, storyStore, taskStore, sessionStore, commentStore, _, _, _ := newTestRouter(t)
+	mux, storyStore, taskStore, sessionStore, commentStore, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Work Block Story"; s.Status = models.StatusReady })
 	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
@@ -377,7 +295,7 @@ func TestWorkBlock(t *testing.T) {
 func TestWorkStart(t *testing.T) {
 	t.Parallel()
 
-	mux, _, storyStore, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
+	mux, storyStore, taskStore, sessionStore, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Work Start Story"; s.Status = models.StatusReady })
 	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
@@ -425,7 +343,7 @@ func TestWorkStart(t *testing.T) {
 func TestFullLifecycle(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
+	mux, _, taskStore, sessionStore, _, _, _ := newTestRouter(t)
 
 	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
 		s.HarnessType = "opencode"
@@ -541,7 +459,7 @@ func TestFullLifecycle(t *testing.T) {
 func TestStalenessInAPI(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, sessionStore, _, _, _, _ := newTestRouter(t)
+	mux, _, _, sessionStore, _, _, _ := newTestRouter(t)
 
 	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
 		s.HarnessType = "opencode"
@@ -572,7 +490,7 @@ func TestStalenessInAPI(t *testing.T) {
 func TestWorkRequest_InvalidSession(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _, _, _ := newTestRouter(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "POST", "/api/work/request", map[string]string{
 		"session_id": "nonexistent",
@@ -586,7 +504,7 @@ func TestWorkRequest_InvalidSession(t *testing.T) {
 func TestWorkRequest_MissingSessionID(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _, _, _ := newTestRouter(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "POST", "/api/work/request", map[string]string{})
 
@@ -598,7 +516,7 @@ func TestWorkRequest_MissingSessionID(t *testing.T) {
 func TestWorkComplete_WrongSession(t *testing.T) {
 	t.Parallel()
 
-	mux, _, storyStore, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
+	mux, storyStore, taskStore, sessionStore, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Wrong Session Story"; s.Status = models.StatusReady })
 	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
@@ -640,7 +558,7 @@ func TestWorkComplete_WrongSession(t *testing.T) {
 func TestWorkStart_MissingTaskID(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, sessionStore, _, _, _, _ := newTestRouter(t)
+	mux, _, _, sessionStore, _, _, _ := newTestRouter(t)
 
 	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
 		s.HarnessType = "opencode"
@@ -660,7 +578,7 @@ func TestWorkStart_MissingTaskID(t *testing.T) {
 func TestWorkBlock_MissingReason(t *testing.T) {
 	t.Parallel()
 
-	mux, _, storyStore, taskStore, sessionStore, commentStore, _, _, _ := newTestRouter(t)
+	mux, storyStore, taskStore, sessionStore, commentStore, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Block No Reason Story"; s.Status = models.StatusReady })
 	task := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
@@ -706,7 +624,7 @@ func TestWorkBlock_MissingReason(t *testing.T) {
 func TestWorkKeepalive_InvalidSession(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _, _, _ := newTestRouter(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "POST", "/api/work/keepalive", map[string]string{
 		"session_id": "nonexistent",
@@ -720,7 +638,7 @@ func TestWorkKeepalive_InvalidSession(t *testing.T) {
 func TestWorkRequest_InactiveSession(t *testing.T) {
 	t.Parallel()
 
-	mux, dbConn, _, _, sessionStore, _, _, _, _ := newTestRouter(t)
+	mux, _, _, sessionStore, _, _, _, dbConn := newTestRouterWithDB(t)
 
 	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
 		s.HarnessType = "opencode"
@@ -750,7 +668,7 @@ func TestWorkRequest_InactiveSession(t *testing.T) {
 func TestWorkComplete_MissingSessionID(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _, _, _ := newTestRouter(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "POST", "/api/work/complete", map[string]string{
 		"task_id": "TASK-000001",
@@ -764,7 +682,7 @@ func TestWorkComplete_MissingSessionID(t *testing.T) {
 func TestWorkComplete_MissingFields(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _, _, _ := newTestRouter(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "POST", "/api/work/complete", map[string]string{
 		"session_id": "some-session",
@@ -778,7 +696,7 @@ func TestWorkComplete_MissingFields(t *testing.T) {
 func TestWorkRequest_CapabilityMismatch(t *testing.T) {
 	t.Parallel()
 
-	mux, _, storyStore, taskStore, sessionStore, _, _, _, _ := newTestRouter(t)
+	mux, storyStore, taskStore, sessionStore, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Capability Mismatch Story"; s.Status = models.StatusReady })
 	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {

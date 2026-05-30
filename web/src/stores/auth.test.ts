@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useAuthStore } from './auth'
+import { testSSRSafety } from './__tests__/testSSRSafety'
 import type { User, AuthResponse } from '../types'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -8,7 +9,6 @@ const defaultState = {
   user: null,
   token: null,
   isAuthenticated: false,
-  isAdmin: false,
 }
 
 const adminUser: User = {
@@ -39,6 +39,12 @@ const normalAuthResponse: AuthResponse = {
   token: 'normal-token-xyz',
 }
 
+// ── Selector helpers (isAdmin is now computed) ──────────────────────────────
+
+function isAdmin(): boolean {
+  return useAuthStore.getState().user?.role === 'admin'
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe('useAuthStore', () => {
@@ -53,7 +59,7 @@ describe('useAuthStore', () => {
       expect(state.user).toBeNull()
       expect(state.token).toBeNull()
       expect(state.isAuthenticated).toBe(false)
-      expect(state.isAdmin).toBe(false)
+      expect(isAdmin()).toBe(false)
     })
   })
 
@@ -65,7 +71,7 @@ describe('useAuthStore', () => {
       expect(state.user).toEqual(adminUser)
       expect(state.token).toBe('admin-token-abc')
       expect(state.isAuthenticated).toBe(true)
-      expect(state.isAdmin).toBe(true)
+      expect(isAdmin()).toBe(true)
     })
 
     it('sets isAdmin=false for normal users', () => {
@@ -75,19 +81,20 @@ describe('useAuthStore', () => {
       expect(state.user).toEqual(normalUser)
       expect(state.token).toBe('normal-token-xyz')
       expect(state.isAuthenticated).toBe(true)
-      expect(state.isAdmin).toBe(false)
+      expect(isAdmin()).toBe(false)
     })
 
-    it('stores token and user in localStorage', () => {
+    it('stores token and user in localStorage via persist middleware', () => {
       useAuthStore.getState().login(normalAuthResponse)
 
-      expect(localStorage.getItem('loom_auth_token')).toBe('normal-token-xyz')
-      expect(localStorage.getItem('loom_auth_user')).toBe(JSON.stringify(normalUser))
+      const stored = JSON.parse(localStorage.getItem('loom_auth')!)
+      expect(stored.state.token).toBe('normal-token-xyz')
+      expect(stored.state.user).toEqual(normalUser)
     })
   })
 
   describe('logout', () => {
-    it('clears all state (user, token, isAuthenticated, isAdmin)', () => {
+    it('clears all state (user, token, isAuthenticated)', () => {
       useAuthStore.getState().login(adminAuthResponse)
       expect(useAuthStore.getState().isAuthenticated).toBe(true)
 
@@ -97,30 +104,31 @@ describe('useAuthStore', () => {
       expect(state.user).toBeNull()
       expect(state.token).toBeNull()
       expect(state.isAuthenticated).toBe(false)
-      expect(state.isAdmin).toBe(false)
+      expect(isAdmin()).toBe(false)
     })
 
     it('removes token and user from localStorage', () => {
       useAuthStore.getState().login(normalAuthResponse)
-      expect(localStorage.getItem('loom_auth_token')).not.toBeNull()
+      expect(localStorage.getItem('loom_auth')).not.toBeNull()
 
       useAuthStore.getState().logout()
 
-      expect(localStorage.getItem('loom_auth_token')).toBeNull()
-      expect(localStorage.getItem('loom_auth_user')).toBeNull()
+      const stored = JSON.parse(localStorage.getItem('loom_auth')!)
+      expect(stored.state.token).toBeNull()
+      expect(stored.state.user).toBeNull()
     })
   })
 
   describe('updateUser', () => {
     it('updates user and re-evaluates isAdmin', () => {
       useAuthStore.getState().login(adminAuthResponse)
-      expect(useAuthStore.getState().isAdmin).toBe(true)
+      expect(isAdmin()).toBe(true)
 
       useAuthStore.getState().updateUser(normalUser)
 
       const state = useAuthStore.getState()
       expect(state.user).toEqual(normalUser)
-      expect(state.isAdmin).toBe(false)
+      expect(isAdmin()).toBe(false)
       // Token and authenticated status remain unchanged
       expect(state.token).toBe('admin-token-abc')
       expect(state.isAuthenticated).toBe(true)
@@ -132,16 +140,17 @@ describe('useAuthStore', () => {
       const updatedUser: User = { ...normalUser, display_name: 'Updated Name' }
       useAuthStore.getState().updateUser(updatedUser)
 
-      expect(localStorage.getItem('loom_auth_user')).toBe(JSON.stringify(updatedUser))
+      const stored = JSON.parse(localStorage.getItem('loom_auth')!)
+      expect(stored.state.user).toEqual(updatedUser)
     })
 
     it('sets isAdmin=true when updated user has admin role', () => {
       useAuthStore.getState().login(normalAuthResponse)
-      expect(useAuthStore.getState().isAdmin).toBe(false)
+      expect(isAdmin()).toBe(false)
 
       useAuthStore.getState().updateUser(adminUser)
 
-      expect(useAuthStore.getState().isAdmin).toBe(true)
+      expect(isAdmin()).toBe(true)
     })
   })
 
@@ -159,35 +168,36 @@ describe('useAuthStore', () => {
       expect(freshStore.getState().user).toBeNull()
       expect(freshStore.getState().token).toBeNull()
       expect(freshStore.getState().isAuthenticated).toBe(false)
-      expect(freshStore.getState().isAdmin).toBe(false)
     })
 
     it('provides unauthenticated initial state when no tokens exist in storage', () => {
-      // localStorage is empty (cleared in beforeEach), so even when running
-      // in a browser-like environment, the store initializes as unauthenticated.
-      // This mirrors the SSR code path where `typeof window === 'undefined'`
-      // and no tokens are available.
+      // localStorage is empty (cleared in beforeEach), so the store initializes as unauthenticated.
       const state = useAuthStore.getState()
       expect(state.user).toBeNull()
       expect(state.token).toBeNull()
       expect(state.isAuthenticated).toBe(false)
-      expect(state.isAdmin).toBe(false)
+      expect(isAdmin()).toBe(false)
     })
 
     it('returns unauthenticated state when localStorage has a valid token but corrupt user JSON', async () => {
-      // Arrange: set a valid token but an invalid user JSON so JSON.parse fails
-      localStorage.setItem('loom_auth_token', 'some-valid-token')
-      localStorage.setItem('loom_auth_user', '{bad-json}')
+      // Arrange: put corrupt json in the persist store
+      localStorage.setItem('loom_auth', '{bad-json}')
 
-      // Force module re-evaluation so getInitialAuth() picks up the corrupt data
+      // Force module re-evaluation so persist tries to rehydrate from corrupt data
       vi.resetModules()
       const { useAuthStore: freshStore } = await import('./auth')
 
-      // Assert: the catch block returns the fallback unauthenticated state
+      // Assert: persist will fail to parse and fall back to initial state
       expect(freshStore.getState().user).toBeNull()
       expect(freshStore.getState().token).toBeNull()
       expect(freshStore.getState().isAuthenticated).toBe(false)
-      expect(freshStore.getState().isAdmin).toBe(false)
     })
   })
+
+  // Shared SSR safety test — verifies initial state when window is undefined
+  testSSRSafety(
+    () => import('./auth'),
+    'useAuthStore',
+    { user: null, token: null, isAuthenticated: false },
+  )
 })

@@ -42,7 +42,7 @@ export const WorkItemType = {
 
 export type WorkItemTypeType = (typeof WorkItemType)[keyof typeof WorkItemType]
 
-// TaskDetailResponse type (re-exported from client.ts for test imports)
+// TaskDetailResponse — detail response for a single task
 export interface TaskDetailResponse {
   task: Task
   dependencies: string[]
@@ -79,6 +79,7 @@ export interface Task {
   sort_order: number
   instructions?: string
   is_stale: boolean
+  has_unread_comments?: boolean
   created_at: string
   updated_at: string
 }
@@ -199,12 +200,15 @@ export interface TaskFilter {
   status?: StatusType
 }
 
+export const UserRole = { Admin: 'admin', Normal: 'normal' } as const
+export type UserRoleType = (typeof UserRole)[keyof typeof UserRole]
+
 export interface User {
   id: string
   username: string
   email: string
   display_name?: string
-  role: 'admin' | 'normal'
+  role: UserRoleType
   created_at: string
 }
 

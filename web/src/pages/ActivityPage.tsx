@@ -3,6 +3,7 @@ import { useActivity } from '../hooks/useActivity'
 import { relativeTime } from '../utils/relativeTime'
 import type { ActivityLogEntry } from '../types'
 import StoryDetail from '../components/StoryDetail'
+import AsyncBoundary from '../components/AsyncBoundary'
 
 function actionColor(action: string): string {
   switch (action) {
@@ -73,32 +74,6 @@ export default function ActivityPage() {
   const { data: entries, isLoading, error, refetch } = useActivity()
   const [selectedStoryId, setSelectedStoryId] = useState<string | null>(null)
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <span className="font-mono text-sm text-neutral-500 dark:text-amber-muted">
-          Loading activity...
-        </span>
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="flex flex-col items-center justify-center h-64 gap-2">
-        <span className="font-mono text-sm text-red-500">
-          Error loading activity: {error.message}
-        </span>
-        <button
-          onClick={() => refetch()}
-          className="glow-button text-xs"
-        >
-          Retry
-        </button>
-      </div>
-    )
-  }
-
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -113,17 +88,17 @@ export default function ActivityPage() {
 
       {/* Activity List */}
       <div className="flex-1 overflow-y-auto">
-        {entries && entries.length > 0 ? (
-          entries.map((entry) => (
+        <AsyncBoundary
+          isLoading={isLoading}
+          error={error}
+          onRetry={refetch}
+          isEmpty={!entries || entries.length === 0}
+          emptyMessage="No activity yet"
+        >
+          {entries?.map((entry) => (
             <ActivityItem key={entry.id} entry={entry} onStoryClick={setSelectedStoryId} />
-          ))
-        ) : (
-          <div className="flex items-center justify-center py-16">
-            <span className="font-mono text-[10px] text-neutral-400 dark:text-neutral-600 uppercase tracking-widest">
-              No activity yet
-            </span>
-          </div>
-        )}
+          ))}
+        </AsyncBoundary>
       </div>
 
       {selectedStoryId && <StoryDetail storyId={selectedStoryId} onClose={() => setSelectedStoryId(null)} />}

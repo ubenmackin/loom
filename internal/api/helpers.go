@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
@@ -30,6 +31,68 @@ func (h *handlers) resolveIDParam(r *http.Request, param string, itemType string
 		return "", fmt.Errorf("resolve %s: %w", itemType, err)
 	}
 	return resolved, nil
+}
+
+// Pagination holds parsed limit/offset query parameters.
+type Pagination struct {
+	Limit  int
+	Offset int
+}
+
+// parsePagination extracts and clamps limit/offset from query parameters.
+func parsePagination(r *http.Request, defaultLimit, maxLimit int) Pagination {
+	limit := defaultLimit
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	offset := 0
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	return Pagination{Limit: limit, Offset: offset}
+}
+
+// resolveAndRespond resolves an ID URL parameter and sends an error response
+// on failure, returning the resolved ID and true on success.
+func (h *handlers) resolveAndRespond(w http.ResponseWriter, r *http.Request, param, itemType, label string) (string, bool) {
+	id, err := h.resolveIDParam(r, param, itemType)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, label+" not found")
+		} else {
+			respondError(w, http.StatusBadRequest, "invalid "+label+" id: "+err.Error())
+		}
+		return "", false
+	}
+	return id, true
+}
+
+// getWorkItemActivity handles GET /api/{type}/{id}/activity for any work item type.
+func (h *handlers) getWorkItemActivity(w http.ResponseWriter, r *http.Request, itemType models.WorkItemType, label string) {
+	id, ok := h.resolveAndRespond(w, r, "id", string(itemType), label)
+	if !ok {
+		return
+	}
+
+	p := parsePagination(r, 50, 500)
+
+	entries, err := h.activity.GetByWorkItem(r.Context(), id, itemType, p.Limit, p.Offset)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to get activity: "+err.Error())
+		return
+	}
+
+	if entries == nil {
+		entries = []*models.ActivityLogEntry{}
+	}
+	respondJSON(w, http.StatusOK, entries)
 }
 
 // logActivity safely logs an activity entry, logging errors via slog.

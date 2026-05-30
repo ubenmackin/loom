@@ -2,22 +2,21 @@ package api
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/ubenmackin/loom/internal/models"
 	"github.com/ubenmackin/loom/internal/store"
 )
 
-// BoardState is the response structure for the full board state.
-type BoardState struct {
+// boardState is the response structure for the full board state.
+type boardState struct {
 	Stories               []*models.Story                      `json:"stories"`
 	TasksByStatus         map[string][]*models.Task            `json:"tasks_by_status"`
 	TasksByStoryAndStatus map[string]map[string][]*models.Task `json:"tasks_by_story_and_status,omitempty"`
-	Stats                 BoardStats                           `json:"stats"`
+	Stats                 boardStats                           `json:"stats"`
 }
 
-// BoardStats holds aggregate counts for the board.
-type BoardStats struct {
+// boardStats holds aggregate counts for the board.
+type boardStats struct {
 	TotalStories    int `json:"total_stories"`
 	TotalTasks      int `json:"total_tasks"`
 	ReadyTasks      int `json:"ready_tasks"`
@@ -33,22 +32,9 @@ type BoardStats struct {
 func (h *handlers) GetBoard(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	limit := 100
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > 500 {
-		limit = 500
-	}
-
-	offset := 0
-	if v := r.URL.Query().Get("offset"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			offset = n
-		}
-	}
+	p := parsePagination(r, 100, 500)
+	offset := p.Offset
+	limit := p.Limit
 
 	// Fetch stories with pagination.
 	stories, err := h.stories.List(ctx, store.StoryFilter{})
@@ -98,7 +84,7 @@ func (h *handlers) GetBoard(w http.ResponseWriter, r *http.Request) {
 
 	// Group tasks by status.
 	tasksByStatus := make(map[string][]*models.Task)
-	stats := BoardStats{
+	stats := boardStats{
 		TotalStories: len(stories),
 		TotalTasks:   len(tasks),
 	}
@@ -127,15 +113,7 @@ func (h *handlers) GetBoard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Ensure all status keys exist in the map (even if empty).
-	for _, status := range []models.Status{
-		models.StatusNew,
-		models.StatusReady,
-		models.StatusInProgress,
-		models.StatusBlocked,
-		models.StatusDone,
-		models.StatusCancelled,
-		models.StatusArchived,
-	} {
+	for _, status := range models.AllStatuses() {
 		if _, ok := tasksByStatus[string(status)]; !ok {
 			tasksByStatus[string(status)] = []*models.Task{}
 		}
@@ -151,7 +129,7 @@ func (h *handlers) GetBoard(w http.ResponseWriter, r *http.Request) {
 			tasksByStoryAndStatus[task.StoryID][string(task.Status)], task)
 	}
 
-	respondJSON(w, http.StatusOK, BoardState{
+	respondJSON(w, http.StatusOK, boardState{
 		Stories:               stories,
 		TasksByStatus:         tasksByStatus,
 		TasksByStoryAndStatus: tasksByStoryAndStatus,

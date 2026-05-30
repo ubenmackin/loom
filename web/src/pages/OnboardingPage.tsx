@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/auth'
 import { getOnboardingCheck, signup } from '../api/client'
+import FieldLabel from '../components/FieldLabel'
 
 export default function OnboardingPage() {
   const navigate = useNavigate()
@@ -80,12 +81,7 @@ export default function OnboardingPage() {
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Username */}
           <div>
-            <label
-              htmlFor="username"
-              className="block text-[10px] uppercase tracking-widest text-amber-primary mb-1"
-            >
-              Username
-            </label>
+            <FieldLabel htmlFor="username">Username</FieldLabel>
             <input
               id="username"
               type="text"
@@ -99,12 +95,7 @@ export default function OnboardingPage() {
 
           {/* Email */}
           <div>
-            <label
-              htmlFor="email"
-              className="block text-[10px] uppercase tracking-widest text-amber-primary mb-1"
-            >
-              Email
-            </label>
+            <FieldLabel htmlFor="email">Email</FieldLabel>
             <input
               id="email"
               type="email"
@@ -118,12 +109,7 @@ export default function OnboardingPage() {
 
           {/* Display Name */}
           <div>
-            <label
-              htmlFor="displayName"
-              className="block text-[10px] uppercase tracking-widest text-amber-primary mb-1"
-            >
-              Display Name
-            </label>
+            <FieldLabel htmlFor="displayName">Display Name</FieldLabel>
             <input
               id="displayName"
               type="text"
@@ -137,12 +123,7 @@ export default function OnboardingPage() {
 
           {/* Password */}
           <div>
-            <label
-              htmlFor="password"
-              className="block text-[10px] uppercase tracking-widest text-amber-primary mb-1"
-            >
-              Password
-            </label>
+            <FieldLabel htmlFor="password">Password</FieldLabel>
             <input
               id="password"
               type="password"
@@ -156,12 +137,7 @@ export default function OnboardingPage() {
 
           {/* Confirm Password */}
           <div>
-            <label
-              htmlFor="confirmPassword"
-              className="block text-[10px] uppercase tracking-widest text-amber-primary mb-1"
-            >
-              Confirm Password
-            </label>
+            <FieldLabel htmlFor="confirmPassword">Confirm Password</FieldLabel>
             <input
               id="confirmPassword"
               type="password"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -433,29 +434,20 @@ func TestPromptAssembly(t *testing.T) {
 	})
 	task.Description = "Task description here"
 
-	result, err := d.assemblePrompt(ctx, task, story)
+	result, err := d.assemblePrompt(ctx, task, story, "")
 	if err != nil {
 		t.Fatalf("assemblePrompt() error = %v", err)
 	}
 
-	if !containsStr(result, "Prompt Task") {
+	if !strings.Contains(result, "Prompt Task") {
 		t.Errorf("assemblePrompt() result missing task title: %q", result)
 	}
-	if !containsStr(result, "Prompt Story") {
+	if !strings.Contains(result, "Prompt Story") {
 		t.Errorf("assemblePrompt() result missing story title: %q", result)
 	}
-	if !containsStr(result, "Task description here") {
+	if !strings.Contains(result, "Task description here") {
 		t.Errorf("assemblePrompt() result missing description: %q", result)
 	}
-}
-
-func containsStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 func TestFullLifecycle_BuildFailFixRebuildReview(t *testing.T) {
@@ -580,15 +572,15 @@ func TestPromptAssembly_NoTemplate(t *testing.T) {
 	})
 	task.Description = "Task desc"
 
-	result, err := d.assemblePrompt(ctx, task, story)
+	result, err := d.assemblePrompt(ctx, task, story, "")
 	if err != nil {
 		t.Fatalf("assemblePrompt() error = %v", err)
 	}
 
-	if !containsStr(result, "No Template Task") {
+	if !strings.Contains(result, "No Template Task") {
 		t.Errorf("default prompt missing task title: %q", result)
 	}
-	if !containsStr(result, "No Template Story") {
+	if !strings.Contains(result, "No Template Story") {
 		t.Errorf("default prompt missing story title: %q", result)
 	}
 }
@@ -612,12 +604,12 @@ func TestPromptAssembly_JSONContext(t *testing.T) {
 		ts.TaskType = models.TaskTypeCode
 	})
 
-	result, err := d.assemblePrompt(ctx, task, story)
+	result, err := d.assemblePrompt(ctx, task, story, "")
 	if err != nil {
 		t.Fatalf("assemblePrompt() error = %v", err)
 	}
 
-	if !containsStr(result, "JSON Context Task") {
+	if !strings.Contains(result, "JSON Context Task") {
 		t.Errorf("prompt missing task title: %q", result)
 	}
 }
@@ -1044,7 +1036,7 @@ func TestBuildTask_InstructionsAssembled(t *testing.T) {
 			if tsk.Instructions == "" {
 				t.Fatal("Build task Instructions is empty, expected assembled prompt")
 			}
-			if !containsStr(tsk.Instructions, "Build the project") {
+			if !strings.Contains(tsk.Instructions, "Build the project") {
 				t.Errorf("Build task Instructions missing template text: %q", tsk.Instructions)
 			}
 			return
@@ -1114,7 +1106,7 @@ func TestReviewTask_InstructionsAssembled(t *testing.T) {
 			if tsk.Instructions == "" {
 				t.Fatal("Review task Instructions is empty, expected assembled prompt")
 			}
-			if !containsStr(tsk.Instructions, "Review") {
+			if !strings.Contains(tsk.Instructions, "Review") {
 				t.Errorf("Review task Instructions missing template text: %q", tsk.Instructions)
 			}
 			return
@@ -1184,7 +1176,7 @@ func TestEventSubmission(t *testing.T) {
 
 	d, _, _, _, _, _, _, _, _ := newTestDispatcher(t)
 
-	d.Submit(Event{Type: "periodic_tick"})
+	d.Submit(context.Background(), Event{Type: EventPeriodicTick})
 	d.Stop()
 }
 

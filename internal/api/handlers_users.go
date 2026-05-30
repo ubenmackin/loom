@@ -1,27 +1,13 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/ubenmackin/loom/internal/models"
+	"github.com/ubenmackin/loom/internal/store"
 )
-
-// AdminOnly is a middleware that rejects requests from non-admin users.
-func (h *handlers) AdminOnly(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user := GetUser(r)
-		if user == nil {
-			respondError(w, http.StatusUnauthorized, "authentication required")
-			return
-		}
-		if user.Role != models.RoleAdmin {
-			respondError(w, http.StatusForbidden, "admin access required")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
 
 func (h *handlers) registerUserRoutes(r chi.Router) {
 	r.Get("/", h.listUsers)
@@ -42,9 +28,20 @@ func (h *handlers) listUsers(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, users)
 }
 
+// adminCreateUserRequest is the request type for admin-driven user creation.
+// It mirrors signupRequest but is intentionally decoupled to prevent accidental
+// coupling between public signup and admin user creation.
+type adminCreateUserRequest struct {
+	Username    string          `json:"username"`
+	Email       string          `json:"email"`
+	DisplayName string          `json:"display_name"`
+	Password    string          `json:"password"`
+	Role        models.UserRole `json:"role"`
+}
+
 // createUserAsAdmin handles POST /api/users — admin creates a new user with an explicit role.
 func (h *handlers) createUserAsAdmin(w http.ResponseWriter, r *http.Request) {
-	var req signupRequest
+	var req adminCreateUserRequest
 	if err := decodeJSON(r, w, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
@@ -92,7 +89,7 @@ func (h *handlers) deleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.users.DeleteUser(r.Context(), targetID); err != nil {
-		if err.Error() == "user not found" {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "user not found")
 			return
 		}

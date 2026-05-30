@@ -2,7 +2,7 @@ import { memo } from 'react'
 import { CheckSquare } from 'lucide-react'
 import SharpTag from './SharpTag'
 import type { Story } from '../types'
-import { statusVariant } from '../utils/status'
+import { statusVariant, isStale } from '../utils/status'
 
 interface StoryCardProps {
   story: Story
@@ -55,11 +55,6 @@ function StoryCard({ story, onClick, assigneeName }: StoryCardProps) {
       )}
     </div>
   )
-}
-
-function isStale(updatedAt: string): boolean {
-  const hours = (Date.now() - new Date(updatedAt).getTime()) / (1000 * 60 * 60)
-  return hours > 2
 }
 
 export default memo(StoryCard)

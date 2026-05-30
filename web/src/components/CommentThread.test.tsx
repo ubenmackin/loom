@@ -488,6 +488,11 @@ describe('CommentThread', () => {
 
   // ── 19. Hide edit/delete for other users ──────────────────────────────
   it('does not show Edit/Delete buttons for comments authored by other users', () => {
+    // Note: This test verifies that non-owner users cannot edit/delete comments.
+    // A known limitation: the test does not verify behavior if the current user
+    // somehow attempts to edit a comment while another user's comment is being
+    // rendered — the UI currently only checks author_id equality and assumes
+    // the backend enforces ownership on write operations.
     setupQueryMocks({ comments: [mockComments[1]] })
     renderWithProviders(<CommentThread workItemId="story-1" workItemType="story" />)
 

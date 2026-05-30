@@ -60,7 +60,7 @@ describe('AgentsPage', () => {
 
       render(<AgentsPage />)
 
-      expect(screen.getByText('Loading agents...')).toBeInTheDocument()
+      expect(screen.getByText('Loading...')).toBeInTheDocument()
     })
   })
 
@@ -76,7 +76,8 @@ describe('AgentsPage', () => {
 
       render(<AgentsPage />)
 
-      expect(screen.getByText('Error loading agents: Server error')).toBeInTheDocument()
+      expect(screen.getByText(/Error:/)).toBeInTheDocument()
+      expect(screen.getByText((content) => content.includes('Server error'))).toBeInTheDocument()
 
       const retryButton = screen.getByText('Retry')
       expect(retryButton).toBeInTheDocument()

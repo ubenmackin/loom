@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -152,25 +151,12 @@ func (s *StoryStore) List(ctx context.Context, filter StoryFilter) ([]*models.St
 	if err != nil {
 		return nil, fmt.Errorf("list stories: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	var stories []*models.Story
-	for rows.Next() {
-		story, err := scanStoryRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan story: %w", err)
-		}
-
-		stories = append(stories, story)
+	stories, err := collectRows(rows, scanStoryRow)
+	if err != nil {
+		return nil, fmt.Errorf("scan stories: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate stories: %w", err)
-	}
-
 	return stories, nil
 }
 
@@ -190,33 +176,14 @@ func (s *StoryStore) Update(ctx context.Context, story *models.Story) error {
 		return fmt.Errorf("update story %q: %w", story.ID, err)
 	}
 
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected story %q: %w", story.ID, err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("story %q: %w", story.ID, ErrNotFound)
-	}
-
-	return nil
+	return requireOneRow(result, nil, "story", story.ID)
 }
 
 // BatchUpdate applies updates to multiple stories in a single transaction.
 func (s *StoryStore) BatchUpdate(ctx context.Context, stories []*models.Story) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	for _, story := range stories {
+	return batchExecTx(ctx, s.db, stories, func(tx *sql.Tx, story *models.Story) error {
 		story.UpdatedAt = time.Now().UTC()
-
-		result, execErr := tx.ExecContext(ctx,
+		result, err := tx.ExecContext(ctx,
 			`UPDATE stories SET title=?, description=?, status=?, requires_build=?, requires_review=?,
 			 assigned_to=?, assignee_type=?, sort_order=?, updated_at=?
 			 WHERE id=?`,
@@ -224,27 +191,11 @@ func (s *StoryStore) BatchUpdate(ctx context.Context, stories []*models.Story) e
 			story.RequiresBuild, story.RequiresReview, story.AssignedTo, story.AssigneeType,
 			story.SortOrder, story.UpdatedAt, story.ID,
 		)
-		if execErr != nil {
-			err = fmt.Errorf("update story %q in batch: %w", story.ID, execErr)
-			return err
+		if err != nil {
+			return fmt.Errorf("update story %q in batch: %w", story.ID, err)
 		}
-
-		rows, rowsErr := result.RowsAffected()
-		if rowsErr != nil {
-			err = fmt.Errorf("rows affected story %q in batch: %w", story.ID, rowsErr)
-			return err
-		}
-		if rows == 0 {
-			err = fmt.Errorf("story %q: %w", story.ID, ErrNotFound)
-			return err
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-
-	return nil
+		return requireOneRow(result, nil, "story", story.ID)
+	})
 }
 
 // UpdateStatus changes a story's status, validating against the state machine.
@@ -286,21 +237,6 @@ func (s *StoryStore) UpdateStatus(ctx context.Context, id string, next models.St
 
 // Delete removes a story, but only if its status is "new".
 func (s *StoryStore) Delete(ctx context.Context, id string) error {
-	// First, check if the story exists.
-	var status string
-	err := s.db.QueryRowContext(ctx, `SELECT status FROM stories WHERE id=?`, id).Scan(&status)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("delete story %q: %w", id, ErrNotFound)
-		}
-		return fmt.Errorf("delete story %q: %w", id, err)
-	}
-
-	if status != string(models.StatusNew) {
-		return fmt.Errorf("delete story %q: status %s: %w", id, status, ErrInvalidTransition)
-	}
-
-	// Atomic DELETE — race-safe against concurrent deletes.
 	result, err := s.db.ExecContext(ctx,
 		`DELETE FROM stories WHERE id=? AND status=?`, id, models.StatusNew)
 	if err != nil {
@@ -312,7 +248,13 @@ func (s *StoryStore) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("rows affected: %w", err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("delete story %q: %w", id, ErrNotFound)
+		// Story does not exist or is not in "new" status.
+		var status string
+		_ = s.db.QueryRowContext(ctx, `SELECT status FROM stories WHERE id=?`, id).Scan(&status)
+		if status == "" {
+			return fmt.Errorf("delete story %q: %w", id, ErrNotFound)
+		}
+		return fmt.Errorf("delete story %q: status %s: %w", id, status, ErrInvalidTransition)
 	}
 
 	return nil
@@ -336,11 +278,7 @@ func (s *StoryStore) GetWithTasks(ctx context.Context, id string) (*models.Story
 	if err != nil {
 		return nil, nil, fmt.Errorf("query story with tasks %q: %w", id, err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
 	var story *models.Story
 	var tasks []*models.Task

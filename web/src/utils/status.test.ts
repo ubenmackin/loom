@@ -3,8 +3,10 @@ import { Status, type StatusType } from '../types'
 import {
   STATUS_ORDER,
   VALID_TRANSITIONS,
+  STATUS_LABELS,
   statusVariant,
   statusDotClass,
+  isStale,
 } from './status'
 
 const ALL_STATUSES: StatusType[] = [
@@ -71,6 +73,31 @@ describe('status', () => {
       { status: Status.Archived, expected: 'status-dot status-dot-info' },
     ])('returns "$expected" for $status', ({ status, expected }) => {
       expect(statusDotClass(status)).toBe(expected)
+    })
+  })
+
+  describe('STATUS_LABELS', () => {
+    it('has a label for every status', () => {
+      ALL_STATUSES.forEach((status) => {
+        expect(STATUS_LABELS[status]).toBeDefined()
+        expect(typeof STATUS_LABELS[status]).toBe('string')
+      })
+    })
+
+    it('maps in_progress to "In Progress"', () => {
+      expect(STATUS_LABELS[Status.InProgress]).toBe('In Progress')
+    })
+  })
+
+  describe('isStale', () => {
+    it('returns true for timestamps older than 2 hours', () => {
+      const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+      expect(isStale(threeHoursAgo)).toBe(true)
+    })
+
+    it('returns false for recent timestamps', () => {
+      const oneHourAgo = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString()
+      expect(isStale(oneHourAgo)).toBe(false)
     })
   })
 })

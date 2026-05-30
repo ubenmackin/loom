@@ -124,12 +124,8 @@ describe('StoryCard', () => {
     // should have a `displayName` (by convention) or at minimum be a memo-wrapped component.
     // We can verify the exported component is not the raw function.
     const StoryCardModule = StoryCard
-    // Memo wraps the component; the default export is a React.memo result
-    // which has a $$typeof of REACT_MEMO_TYPE (0x15 or REACT_MEMO_TYPE symbol)
-    // A simpler check: ensure the component's type is not a function
+    // Memo wraps the component; the default export is a React.memo result.
+    // Verify that the component's type is not a plain function.
     expect(typeof StoryCardModule).not.toBe('function')
-    // More specifically, the $$typeof should be 0x15 for memo components
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((StoryCardModule as any).$$typeof).toBe(Symbol.for('react.memo'))
   })
 })

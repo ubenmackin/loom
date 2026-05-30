@@ -69,6 +69,21 @@ describe('EditableTitle', () => {
     expect(screen.getByRole('button', { name: 'Original' })).toBeInTheDocument()
   })
 
+  it('trims whitespace from value before calling onSave', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn()
+    render(<EditableTitle value="Original" onSave={onSave} />)
+
+    await user.click(screen.getByRole('button', { name: 'Original' }))
+
+    const input = screen.getByRole('textbox')
+    await user.clear(input)
+    await user.type(input, '  Hello World  {Enter}')
+
+    expect(onSave).toHaveBeenCalledWith('Hello World')
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  })
+
   it('empty trimmed value does not call onSave', async () => {
     const user = userEvent.setup()
     const onSave = vi.fn()

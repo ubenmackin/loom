@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { X } from 'lucide-react'
 import SharpTag from './SharpTag'
+import FieldLabel from './FieldLabel'
 
 export interface CreateStoryData {
   title: string
@@ -13,9 +14,10 @@ interface CreateStoryFormProps {
   open: boolean
   onSubmit: (data: CreateStoryData) => void
   onCancel: () => void
+  isPending?: boolean
 }
 
-export default function CreateStoryForm({ open, onSubmit, onCancel }: CreateStoryFormProps) {
+export default function CreateStoryForm({ open, onSubmit, onCancel, isPending = false }: CreateStoryFormProps) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [requiresBuild, setRequiresBuild] = useState(false)
@@ -81,9 +83,9 @@ export default function CreateStoryForm({ open, onSubmit, onCancel }: CreateStor
         <form onSubmit={handleSubmit} className="px-4 py-4 space-y-4">
           {/* Title */}
           <div>
-            <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
+            <FieldLabel>
               Title <span className="text-red-500">*</span>
-            </label>
+            </FieldLabel>
             <input
               type="text"
               value={title}
@@ -102,9 +104,7 @@ export default function CreateStoryForm({ open, onSubmit, onCancel }: CreateStor
 
           {/* Description */}
           <div>
-            <label className="text-[10px] uppercase tracking-widest dark:text-amber-primary text-neutral-500 block mb-1">
-              Description
-            </label>
+            <FieldLabel>Description</FieldLabel>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -154,8 +154,9 @@ export default function CreateStoryForm({ open, onSubmit, onCancel }: CreateStor
             <button
               type="submit"
               className="glow-button"
+              disabled={isPending}
             >
-              Create Story
+              {isPending ? 'Creating...' : 'Create Story'}
             </button>
           </div>
         </form>

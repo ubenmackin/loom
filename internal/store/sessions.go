@@ -3,10 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/ubenmackin/loom/internal/models"
@@ -84,23 +82,13 @@ func (s *SessionStore) GetByID(ctx context.Context, id string) (*models.Session,
 
 // UpdateLastSeen sets last_seen_at to the current time.
 func (s *SessionStore) UpdateLastSeen(ctx context.Context, id string) error {
-	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET last_seen_at = ? WHERE id = ?`, now, id,
+		`UPDATE sessions SET last_seen_at = ? WHERE id = ?`, time.Now().UTC(), id,
 	)
 	if err != nil {
 		return fmt.Errorf("update last seen for session %q: %w", id, err)
 	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected session %q: %w", id, err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("session %q: %w", id, ErrNotFound)
-	}
-
-	return nil
+	return requireOneRow(result, nil, "session", id)
 }
 
 // Disconnect sets a session's status to "disconnected".
@@ -111,16 +99,7 @@ func (s *SessionStore) Disconnect(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("disconnect session %q: %w", id, err)
 	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected disconnect session %q: %w", id, err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("session %q: %w", id, ErrNotFound)
-	}
-
-	return nil
+	return requireOneRow(result, nil, "session", id)
 }
 
 // GetStaleSessions returns active sessions whose last_seen_at is older than
@@ -136,13 +115,9 @@ func (s *SessionStore) GetStaleSessions(ctx context.Context, threshold time.Dura
 	if err != nil {
 		return nil, fmt.Errorf("get stale sessions: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	return scanSessions(rows)
+	return collectRows(rows, scanSessionRow)
 }
 
 // GetByCapabilities returns sessions whose capabilities JSON array contains
@@ -156,24 +131,23 @@ func (s *SessionStore) GetByCapabilities(ctx context.Context, capability string)
 	if err != nil {
 		return nil, fmt.Errorf("get sessions by capability: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	all, err := scanSessions(rows)
+	all, err := collectRows(rows, scanSessionRow)
 	if err != nil {
 		return nil, err
 	}
 
+	return filterByCapability(all, capability), nil
+}
+
+// filterByCapability filters a session slice to only those whose capabilities
+// JSON array contains the given capability string.
+func filterByCapability(sessions []*models.Session, capability string) []*models.Session {
 	var filtered []*models.Session
-	for _, session := range all {
-		if session.Capabilities == "" {
-			continue
-		}
-		var caps []string
-		if err := json.Unmarshal([]byte(session.Capabilities), &caps); err != nil {
+	for _, session := range sessions {
+		caps, err := session.CapabilitiesSlice()
+		if err != nil || len(caps) == 0 {
 			continue
 		}
 		for _, c := range caps {
@@ -183,8 +157,7 @@ func (s *SessionStore) GetByCapabilities(ctx context.Context, capability string)
 			}
 		}
 	}
-
-	return filtered, nil
+	return filtered
 }
 
 // SessionWithTaskCount pairs a session with its current number of assigned tasks.
@@ -211,11 +184,7 @@ func (s *SessionStore) GetByCapabilitiesWithTaskCount(ctx context.Context, capab
 	if err != nil {
 		return nil, fmt.Errorf("get sessions by capability with task count: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
 	var results []SessionWithTaskCount
 	for rows.Next() {
@@ -237,24 +206,6 @@ func (s *SessionStore) GetByCapabilitiesWithTaskCount(ctx context.Context, capab
 		session.LastSeenAt = timeOrZero(lastSeenAt)
 		session.CreatedAt = timeOrZero(createdAt)
 
-		if session.Capabilities == "" {
-			continue
-		}
-		var caps []string
-		if err := json.Unmarshal([]byte(session.Capabilities), &caps); err != nil {
-			continue
-		}
-		matched := false
-		for _, c := range caps {
-			if c == capability {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			continue
-		}
-
 		results = append(results, SessionWithTaskCount{
 			Session:   session,
 			TaskCount: taskCount,
@@ -264,7 +215,29 @@ func (s *SessionStore) GetByCapabilitiesWithTaskCount(ctx context.Context, capab
 		return nil, fmt.Errorf("iterate sessions with task count: %w", err)
 	}
 
-	return results, nil
+	// Apply in-memory capability filter.
+	matched := make([]SessionWithTaskCount, 0, len(results))
+	filtered := filterByCapability(sessionsFromResults(results), capability)
+	filteredSet := make(map[string]bool, len(filtered))
+	for _, s := range filtered {
+		filteredSet[s.ID] = true
+	}
+	for _, r := range results {
+		if filteredSet[r.Session.ID] {
+			matched = append(matched, r)
+		}
+	}
+
+	return matched, nil
+}
+
+// sessionsFromResults extracts the session pointers from a SessionWithTaskCount slice.
+func sessionsFromResults(results []SessionWithTaskCount) []*models.Session {
+	sessions := make([]*models.Session, len(results))
+	for i, r := range results {
+		sessions[i] = r.Session
+	}
+	return sessions
 }
 
 // GetTasksForSession returns all tasks assigned to the given session.
@@ -281,16 +254,7 @@ func (s *SessionStore) FlagStale(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("flag stale session %q: %w", id, err)
 	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected flag stale session %q: %w", id, err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("session %q: %w", id, ErrNotFound)
-	}
-
-	return nil
+	return requireOneRow(result, nil, "session", id)
 }
 
 // ListActive returns all sessions with status "active".
@@ -303,13 +267,9 @@ func (s *SessionStore) ListActive(ctx context.Context) ([]*models.Session, error
 	if err != nil {
 		return nil, fmt.Errorf("list active sessions: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	return scanSessions(rows)
+	return collectRows(rows, scanSessionRow)
 }
 
 // ListAll returns all sessions regardless of status, ordered by created_at descending.
@@ -320,29 +280,7 @@ func (s *SessionStore) ListAll(ctx context.Context) ([]*models.Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list all sessions: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	return scanSessions(rows)
-}
-
-// scanSessions is a helper to scan multiple session rows.
-func scanSessions(rows *sql.Rows) ([]*models.Session, error) {
-	var sessions []*models.Session
-	for rows.Next() {
-		session, err := scanSessionRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan session: %w", err)
-		}
-
-		sessions = append(sessions, session)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate sessions: %w", err)
-	}
-
-	return sessions, nil
+	return collectRows(rows, scanSessionRow)
 }

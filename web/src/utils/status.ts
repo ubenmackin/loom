@@ -10,6 +10,17 @@ export const STATUS_ORDER: StatusType[] = [
   Status.Archived,
 ]
 
+/** Module-level constant for status display labels */
+export const STATUS_LABELS: Record<string, string> = {
+  [Status.New]: 'New',
+  [Status.Ready]: 'Ready',
+  [Status.InProgress]: 'In Progress',
+  [Status.Blocked]: 'Blocked',
+  [Status.Done]: 'Done',
+  [Status.Canceled]: 'Canceled',
+  [Status.Archived]: 'Archived',
+}
+
 export const VALID_TRANSITIONS: Record<StatusType, StatusType[]> = {
   [Status.New]: [Status.Ready, Status.InProgress, Status.Canceled],
   [Status.Ready]: [Status.InProgress, Status.Blocked, Status.Canceled],
@@ -48,4 +59,10 @@ export function statusDotClass(status: StatusType): string {
     default:
       return 'status-dot status-dot-info'
   }
+}
+
+/** Shared staleness check — consistent threshold for both Story and Task */
+export function isStale(updatedAt: string): boolean {
+  const hours = (Date.now() - new Date(updatedAt).getTime()) / (1000 * 60 * 60)
+  return hours > 2
 }

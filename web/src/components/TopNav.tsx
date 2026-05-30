@@ -14,7 +14,10 @@ function navLinkClass(isActive: boolean): string {
 
 export default function TopNav() {
   const { isDark, toggle } = useTheme()
-  const { user, isAuthenticated, isAdmin, logout } = useAuthStore()
+  const user = useAuthStore((s) => s.user)
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  const isAdmin = useAuthStore((s) => s.user?.role === 'admin')
+  const logout = useAuthStore((s) => s.logout)
   const navigate = useNavigate()
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -60,7 +59,7 @@ func (s *TemplateStore) Create(ctx context.Context, t *models.PromptTemplate) er
 }
 
 // GetByTaskType retrieves a prompt template by its task type.
-func (s *TemplateStore) GetByTaskType(ctx context.Context, taskType string) (*models.PromptTemplate, error) {
+func (s *TemplateStore) GetByTaskType(ctx context.Context, taskType models.TaskType) (*models.PromptTemplate, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, task_type, template, created_at, updated_at
 		 FROM prompt_templates WHERE task_type = ?`, taskType)
@@ -84,25 +83,12 @@ func (s *TemplateStore) List(ctx context.Context) ([]*models.PromptTemplate, err
 	if err != nil {
 		return nil, fmt.Errorf("list prompt templates: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	var templates []*models.PromptTemplate
-	for rows.Next() {
-		t, err := scanTemplateRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan prompt template: %w", err)
-		}
-
-		templates = append(templates, t)
+	templates, err := collectRows(rows, scanTemplateRow)
+	if err != nil {
+		return nil, fmt.Errorf("scan prompt templates: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate prompt templates: %w", err)
-	}
-
 	return templates, nil
 }
 
@@ -110,49 +96,33 @@ func (s *TemplateStore) List(ctx context.Context) ([]*models.PromptTemplate, err
 func (s *TemplateStore) Upsert(ctx context.Context, t *models.PromptTemplate) error {
 	now := time.Now().UTC()
 
-	var existingID string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id FROM prompt_templates WHERE task_type = ?`, t.TaskType,
-	).Scan(&existingID)
-
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("check existing template for task_type %q: %w", t.TaskType, err)
-	}
-
-	if existingID != "" {
-		t.ID = existingID
-		t.UpdatedAt = now
-
-		result, err := s.db.ExecContext(ctx,
-			`UPDATE prompt_templates SET template=?, updated_at=? WHERE id=?`,
-			t.Template, t.UpdatedAt, t.ID,
-		)
-		if err != nil {
-			return fmt.Errorf("upsert update template for task_type %q: %w", t.TaskType, err)
+	if t.ID == "" {
+		// Check if a template already exists for this task type and use its ID.
+		var existingID string
+		err := s.db.QueryRowContext(ctx,
+			`SELECT id FROM prompt_templates WHERE task_type = ?`, t.TaskType,
+		).Scan(&existingID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("check existing template for task_type %q: %w", t.TaskType, err)
 		}
-
-		rows, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("rows affected upsert template: %w", err)
-		}
-		if rows == 0 {
-			return fmt.Errorf("template %q: %w", t.ID, ErrNotFound)
-		}
-	} else {
-		if t.ID == "" {
+		if existingID != "" {
+			t.ID = existingID
+		} else {
 			t.ID = uuid.New().String()
 		}
-		t.CreatedAt = now
-		t.UpdatedAt = now
+	}
 
-		_, err := s.db.ExecContext(ctx,
-			`INSERT INTO prompt_templates (id, task_type, template, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?)`,
-			t.ID, t.TaskType, t.Template, t.CreatedAt, t.UpdatedAt,
-		)
-		if err != nil {
-			return fmt.Errorf("upsert insert template for task_type %q: %w", t.TaskType, err)
-		}
+	t.CreatedAt = now
+	t.UpdatedAt = now
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO prompt_templates (id, task_type, template, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(task_type) DO UPDATE SET template=excluded.template, updated_at=excluded.updated_at`,
+		t.ID, t.TaskType, t.Template, t.CreatedAt, t.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert template for task_type %q: %w", t.TaskType, err)
 	}
 
 	return nil
@@ -166,14 +136,5 @@ func (s *TemplateStore) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("delete template %q: %w", id, err)
 	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected delete template %q: %w", id, err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("template %q: %w", id, ErrNotFound)
-	}
-
-	return nil
+	return requireOneRow(result, nil, "template", id)
 }

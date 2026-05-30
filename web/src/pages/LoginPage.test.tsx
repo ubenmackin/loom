@@ -21,7 +21,6 @@ type AuthState = {
   login: typeof mockLogin
   user: null
   token: null
-  isAdmin: boolean
   logout: ReturnType<typeof vi.fn>
   updateUser: ReturnType<typeof vi.fn>
 }
@@ -31,7 +30,6 @@ const defaultAuthState: AuthState = {
   login: mockLogin,
   user: null,
   token: null,
-  isAdmin: false,
   logout: vi.fn(),
   updateUser: vi.fn(),
 }
@@ -42,7 +40,7 @@ vi.mock('../stores/auth', () => ({
 
 // ── Imports (after mocks) ─────────────────────────────────────────────────
 
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import LoginPage from './LoginPage'
 import { useAuthStore } from '../stores/auth'
 import { login as apiLogin } from '../api/client'
@@ -67,10 +65,17 @@ const authResponse: AuthResponse = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
+function HomePage() {
+  return <div data-testid="home-page">Home Page</div>
+}
+
 function renderLoginPage() {
   return render(
-    <MemoryRouter>
-      <LoginPage />
+    <MemoryRouter initialEntries={['/login']}>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/" element={<HomePage />} />
+      </Routes>
     </MemoryRouter>,
   )
 }
@@ -94,7 +99,7 @@ describe('LoginPage', () => {
     })
 
     renderLoginPage()
-    expect(mockNavigate).toHaveBeenCalledWith('/')
+    expect(screen.getByTestId('home-page')).toBeInTheDocument()
   })
 
   it('renders the login form with username, password fields and SIGN IN button', () => {

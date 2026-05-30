@@ -1,4 +1,4 @@
-import { memo, useState, useEffect, useRef } from 'react'
+import { memo, useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, ChevronDown, Trash2 } from 'lucide-react'
 import SharpTag from './SharpTag'
@@ -7,6 +7,7 @@ import ConfirmModal from './ConfirmModal'
 import SlideInPanel, { PanelLoading, PanelNotFound } from './SlideInPanel'
 import EditableTitle from './EditableTitle'
 import FieldLabel from './FieldLabel'
+import AssigneeSelector from './AssigneeSelector'
 import {
   fetchTask,
   fetchStory,
@@ -21,9 +22,10 @@ import {
   fetchSessions,
 } from '../api/client'
 import type { Task, TaskTypeType, User, Session, StoryWithTasks, StatusType, AssigneeTypeType, TaskDetailResponse } from '../types'
-import { TaskType, AssigneeType } from '../types'
-import { STATUS_ORDER } from '../utils/status'
+import { TaskType } from '../types'
+import { STATUS_ORDER, STATUS_LABELS } from '../utils/status'
 import { taskTypeLabel, taskTypeVariant } from '../utils/taskType'
+import { useWorkItemDraft } from '../hooks/useWorkItemDraft'
 
 interface TaskDetailProps {
   taskId: string | null
@@ -35,16 +37,13 @@ interface TaskDraft {
   description: string
   status: StatusType
   assigned_to: string
-  assignee_type: string
+  assignee_type: AssigneeTypeType | ''
 }
 
 function TaskDetail({ taskId, onClose }: TaskDetailProps) {
   const queryClient = useQueryClient()
-  const [draft, setDraft] = useState<TaskDraft | null>(null)
   const [createTitle, setCreateTitle] = useState('')
   const [createType, setCreateType] = useState<TaskTypeType>(TaskType.Code)
-  const [searchTerm, setSearchTerm] = useState('')
-  const [showDropdown, setShowDropdown] = useState(false)
   const [showSaveDropdown, setShowSaveDropdown] = useState(false)
   const [showDepDropdown, setShowDepDropdown] = useState(false)
   const saveDropdownRef = useRef<HTMLDivElement>(null)
@@ -136,7 +135,7 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
   })
 
   const statusMutation = useMutation({
-    mutationFn: (status: string) => updateTaskStatus(taskId!, status),
+    mutationFn: (status: StatusType) => updateTaskStatus(taskId!, status),
     onMutate: async (newStatus) => {
       await queryClient.cancelQueries({ queryKey: ['task', taskId] })
       const previous = queryClient.getQueryData<TaskDetailResponse>(['task', taskId])
@@ -190,18 +189,27 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     },
   })
 
-  // Sync draft from task whenever task changes
-  useEffect(() => {
-    if (task) {
-      setDraft({
-        title: task.title,
-        description: task.description ?? '',
-        status: task.status,
-        assigned_to: task.assigned_to ?? '',
-        assignee_type: task.assignee_type ?? '',
-      })
-    }
-  }, [task])
+  const serverData = useMemo(
+    () =>
+      task
+        ? ({
+            title: task.title,
+            description: task.description ?? '',
+            status: task.status,
+            assigned_to: task.assigned_to ?? '',
+            assignee_type: task.assignee_type ?? '',
+          } as TaskDraft)
+        : null,
+    [task],
+  )
+
+  const { draft, setDraft, isDirty, computeChanges, reset } = useWorkItemDraft(serverData, [
+    'title',
+    'description',
+    'status',
+    'assigned_to',
+    'assignee_type',
+  ])
 
   // Click-outside handler for save dropdown
   useEffect(() => {
@@ -227,6 +235,18 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
       onClose()
     },
   })
+
+  const handleCancel = useCallback(() => {
+    reset()
+    onClose()
+  }, [reset, onClose])
+
+  const handleAssigneeChange = useCallback(
+    (assigned_to: string, assignee_type: string) => {
+      setDraft((prev) => (prev ? { ...prev, assigned_to, assignee_type: assignee_type as AssigneeTypeType | '' } : null))
+    },
+    [setDraft],
+  )
 
   if (!taskId) return null
 
@@ -316,39 +336,23 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
 
   // ── Derived state ──────────────────────────────────────────────────────────
 
-  const isDirty = Boolean(
-    draft &&
-      task &&
-      (draft.title !== task.title ||
-        draft.description !== (task.description ?? '') ||
-        draft.status !== task.status ||
-        draft.assigned_to !== (task.assigned_to ?? '') ||
-        draft.assignee_type !== (task.assignee_type ?? ''))
-  )
-
-  const computeChanges = (): Partial<Task> | null => {
-    if (!draft || !task || !isDirty) return null
-    const changes: Partial<Task> = {}
-    if (draft.title !== task.title) changes.title = draft.title
-    if (draft.description !== (task.description ?? '')) changes.description = draft.description
-    if (draft.status !== task.status) changes.status = draft.status
-    if (draft.assigned_to !== (task.assigned_to ?? '')) changes.assigned_to = draft.assigned_to
-    if (draft.assignee_type !== (task.assignee_type ?? ''))
-      changes.assignee_type = draft.assignee_type as AssigneeTypeType | undefined
-    return changes
-  }
-
   const handleSave = () => {
     const changes = computeChanges()
     if (!changes) return
     setShowSaveDropdown(false)
 
-    // Extract status change for the dedicated status endpoint
-    const statusChange = changes.status
-    delete changes.status
+    // Convert draft types to API types
+    const apiChanges = { ...changes } as Record<string, unknown>
+    if (apiChanges.assignee_type === '') {
+      apiChanges.assignee_type = undefined
+    }
 
-    if (Object.keys(changes).length > 0) {
-      updateMutation.mutate(changes)
+    // Extract status change for the dedicated status endpoint
+    const statusChange = apiChanges.status as StatusType | undefined
+    delete apiChanges.status
+
+    if (Object.keys(apiChanges).length > 0) {
+      updateMutation.mutate(apiChanges as Partial<Task>)
     }
     if (statusChange) {
       statusMutation.mutate(statusChange)
@@ -360,15 +364,20 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     if (!changes) return
     setShowSaveDropdown(false)
 
+    // Convert draft types to API types
+    const apiChanges = { ...changes } as Record<string, unknown>
+    if (apiChanges.assignee_type === '') {
+      apiChanges.assignee_type = undefined
+    }
+
     // Extract status change for the dedicated status endpoint
-    const statusChange = changes.status
-    delete changes.status
+    const statusChange = apiChanges.status as StatusType | undefined
+    delete apiChanges.status
 
     const onCloseFn = () => onClose()
 
-    if (Object.keys(changes).length > 0 && statusChange) {
-      // Both non-status changes and status change: update first, then status
-      updateMutation.mutate(changes, {
+    if (Object.keys(apiChanges).length > 0 && statusChange) {
+      updateMutation.mutate(apiChanges as Partial<Task>, {
         onSuccess: () => {
           statusMutation.mutate(statusChange, {
             onSuccess: onCloseFn,
@@ -376,8 +385,8 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
         },
         onError: onCloseFn,
       })
-    } else if (Object.keys(changes).length > 0) {
-      updateMutation.mutate(changes, {
+    } else if (Object.keys(apiChanges).length > 0) {
+      updateMutation.mutate(apiChanges as Partial<Task>, {
         onSuccess: onCloseFn,
       })
     } else if (statusChange) {
@@ -389,35 +398,6 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
     }
   }
 
-  const handleCancel = () => {
-    if (task) {
-      setDraft({
-        title: task.title,
-        description: task.description ?? '',
-        status: task.status,
-        assigned_to: task.assigned_to ?? '',
-        assignee_type: task.assignee_type ?? '',
-      })
-    }
-    onClose()
-  }
-
-  // ── Assignee helpers ───────────────────────────────────────────────────────
-
-  const assigneeOptions = [
-    ...users.map((u) => ({ id: u.id, name: u.display_name || u.username, type: AssigneeType.Human })),
-    ...sessions.map((s) => ({ id: s.id, name: s.id, type: AssigneeType.Session })),
-  ]
-
-  const getAssigneeName = (id: string): string => {
-    const option = assigneeOptions.find((o) => o.id === id)
-    return option?.name ?? id
-  }
-
-  const filteredOptions = searchTerm
-    ? assigneeOptions.filter((o) => o.name.toLowerCase().includes(searchTerm.toLowerCase()))
-    : assigneeOptions
-
   // ── Dependency helpers ─────────────────────────────────────────────────────
 
   const availableDepTasks = storyTasks.filter(
@@ -425,18 +405,6 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
   )
 
   const dependents = data?.dependents ?? []
-
-  // ── Status label mapping ───────────────────────────────────────────────────
-
-  const statusLabels: Record<string, string> = {
-    new: 'New',
-    ready: 'Ready',
-    in_progress: 'In Progress',
-    blocked: 'Blocked',
-    done: 'Done',
-    canceled: 'Canceled',
-    archived: 'Archived',
-  }
 
 // ── RENDER ─────────────────────────────────────────────────────────────────
 
@@ -509,7 +477,7 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
           >
             {STATUS_ORDER.map((s) => (
               <option key={s} value={s}>
-                {statusLabels[s] ?? s}
+                {STATUS_LABELS[s] ?? s}
               </option>
             ))}
           </select>
@@ -623,77 +591,13 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
         {/* 6. Assigned To */}
         <div>
           <FieldLabel>Assigned To</FieldLabel>
-          <div className="relative">
-            {draft?.assigned_to ? (
-              <div className="flex items-center gap-2 mb-1">
-                <span className="font-mono text-sm text-neutral-800 dark:text-light-neutral">
-                  {getAssigneeName(draft.assigned_to)}
-                </span>
-                <SharpTag
-                  label={draft.assignee_type === AssigneeType.Session ? 'AGENT' : 'USER'}
-                  variant={draft.assignee_type === AssigneeType.Session ? 'amber' : 'primary'}
-                />
-                <button
-                  onClick={() =>
-                    setDraft((prev) =>
-                      prev ? { ...prev, assigned_to: '', assignee_type: '' } : null
-                    )
-                  }
-                  className="text-[10px] uppercase tracking-wider text-red-500 hover:text-red-400 transition-colors"
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            ) : (
-              <>
-                <input
-                  type="text"
-                  value={searchTerm}
-                  onChange={(e) => {
-                    setSearchTerm(e.target.value)
-                    setShowDropdown(true)
-                  }}
-                  onFocus={() => setShowDropdown(true)}
-                  onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
-                  placeholder="Search users or agents..."
-                  className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-transparent p-2 font-mono text-sm text-neutral-800 dark:text-light-neutral"
-                />
-                {showDropdown && (
-                  <div className="absolute z-20 w-full mt-1 border border-gray-200 dark:border-gray-border bg-white dark:bg-charcoal-dark max-h-48 overflow-y-auto">
-                    {filteredOptions.length > 0 ? (
-                      filteredOptions.map((opt) => (
-                        <button
-                          key={opt.id}
-                          onMouseDown={() => {
-                            setDraft((prev) =>
-                              prev
-                                ? { ...prev, assigned_to: opt.id, assignee_type: opt.type }
-                                : null
-                            )
-                            setSearchTerm('')
-                            setShowDropdown(false)
-                          }}
-                          className="w-full text-left px-3 py-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center gap-2"
-                        >
-                          <span className="font-mono text-sm text-neutral-800 dark:text-light-neutral">
-                            {opt.name}
-                          </span>
-                          <SharpTag
-                            label={opt.type === AssigneeType.Session ? 'AGENT' : 'USER'}
-                            variant={opt.type === AssigneeType.Session ? 'amber' : 'primary'}
-                          />
-                        </button>
-                      ))
-                    ) : (
-                      <div className="px-3 py-2 font-mono text-xs text-neutral-400 dark:text-neutral-500">
-                        No matches
-                      </div>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+          <AssigneeSelector
+            value={draft?.assigned_to ?? ''}
+            assigneeType={draft?.assignee_type ?? ''}
+            users={users}
+            sessions={sessions}
+            onChange={handleAssigneeChange}
+          />
         </div>
 
         {/* 7. CommentThread (moved inside scrollable area) */}
@@ -763,4 +667,8 @@ function TaskDetail({ taskId, onClose }: TaskDetailProps) {
   )
 }
 
+// memo is intentionally applied even though taskId changes on every click,
+// because the component still benefits from referential stability on the
+// onClose prop, and the outer SlideInPanel transition animation
+// relies on consistent function references during the mount/unmount lifecycle.
 export default memo(TaskDetail)

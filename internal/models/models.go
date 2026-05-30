@@ -1,7 +1,10 @@
 // Package models defines the domain types for the Loom Kanban board.
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // UserRole represents the access level of a human user.
 type UserRole string
@@ -27,6 +30,11 @@ const (
 )
 
 func (s Status) String() string { return string(s) }
+
+// AllStatuses returns all known status values in a canonical order.
+func AllStatuses() []Status {
+	return []Status{StatusNew, StatusReady, StatusInProgress, StatusBlocked, StatusDone, StatusCancelled, StatusArchived}
+}
 
 // SessionStatus represents the connection state of an agent session.
 type SessionStatus string
@@ -92,6 +100,17 @@ type Session struct {
 	CreatedAt    time.Time     `json:"created_at"`
 }
 
+// CapabilitiesSlice parses the JSON-encoded Capabilities string into a slice.
+// Returns an empty slice if Capabilities is empty or if parsing fails.
+func (s *Session) CapabilitiesSlice() ([]string, error) {
+	var caps []string
+	if s.Capabilities == "" {
+		return caps, nil
+	}
+	err := json.Unmarshal([]byte(s.Capabilities), &caps)
+	return caps, err
+}
+
 // Story represents a user story on the Kanban board.
 type Story struct {
 	ID             string       `json:"id"`
@@ -132,13 +151,23 @@ type TaskDependency struct {
 	DependsOnTaskID string `json:"depends_on_task_id"`
 }
 
+// AuthorType identifies whether a comment author is a human user or an agent session.
+type AuthorType string
+
+const (
+	AuthorTypeHuman   AuthorType = "human"
+	AuthorTypeSession AuthorType = "session"
+)
+
+func (a AuthorType) String() string { return string(a) }
+
 // Comment represents a comment by a human or agent on a work item.
 type Comment struct {
 	ID           string       `json:"id"`
 	WorkItemID   string       `json:"work_item_id"`
 	WorkItemType WorkItemType `json:"work_item_type"`
 	AuthorID     string       `json:"author_id"`
-	AuthorType   string       `json:"author_type"`
+	AuthorType   AuthorType   `json:"author_type"`
 	Body         string       `json:"body,omitempty"`
 	CreatedAt    time.Time    `json:"created_at"`
 	UpdatedAt    time.Time    `json:"updated_at"`
@@ -158,7 +187,7 @@ type ActivityLogEntry struct {
 type PromptTemplate struct {
 	ID        string    `json:"id"`
 	TaskType  TaskType  `json:"task_type"`
-	Template  string    `json:"template"`
+	Template  string    `json:"template,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

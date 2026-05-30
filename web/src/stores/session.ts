@@ -1,24 +1,30 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 
 interface SessionStore {
   sessionId: string
   setSessionId: (id: string) => void
 }
 
-function getInitialSessionId(): string {
+function generateSessionId(): string {
   if (typeof window === 'undefined') return ''
-  const stored = localStorage.getItem('loom_session_id')
-  if (stored) return stored
-  // Generate a default session id if none exists
-  const defaultId = `session-${Date.now().toString(36)}`
-  localStorage.setItem('loom_session_id', defaultId)
-  return defaultId
+  const random = typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID().slice(0, 8)
+    : Math.random().toString(36).slice(2, 10)
+  return `session-${Date.now().toString(36)}-${random}`
 }
 
-export const useSessionStore = create<SessionStore>((set) => ({
-  sessionId: getInitialSessionId(),
-  setSessionId: (id: string) => {
-    localStorage.setItem('loom_session_id', id)
-    set({ sessionId: id })
-  },
-}))
+export const useSessionStore = create<SessionStore>()(
+  persist(
+    (set) => ({
+      sessionId: generateSessionId(),
+      setSessionId: (id: string) => {
+        set({ sessionId: id })
+      },
+    }),
+    {
+      name: 'loom_session',
+      partialize: (state) => ({ sessionId: state.sessionId }),
+    },
+  ),
+)

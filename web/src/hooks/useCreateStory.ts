@@ -9,5 +9,8 @@ export function useCreateStory() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['board'] })
     },
+    onError: (error) => {
+      console.error('Failed to create story:', error)
+    },
   })
 }

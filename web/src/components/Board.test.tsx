@@ -3,33 +3,25 @@ import { render, screen, waitFor } from '@testing-library/react'
 import { act } from 'react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import Board from './Board'
 import type { BoardState } from '../types'
 
-// Mock the useBoard hook
+// Mock the useBoard hook — provides a controllable mock that can be overridden per test
 vi.mock('../hooks/useBoard', () => ({
-  useBoard: vi.fn(),
+  useBoard: vi.fn(() => ({
+    data: {} as unknown as BoardState,
+    isLoading: false,
+    error: null,
+    isSuccess: true,
+    isError: false,
+  })),
 }))
 
 // Mock the useCreateStory hook
 vi.mock('../hooks/useCreateStory', () => ({
   useCreateStory: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
-
-// Mock @tanstack/react-query
-vi.mock('@tanstack/react-query', async () => {
-  const actual = await vi.importActual('@tanstack/react-query')
-  return {
-    ...actual,
-    useQuery: vi.fn().mockReturnValue({ data: [], isLoading: false }),
-    useQueryClient: vi.fn(() => ({
-      invalidateQueries: vi.fn().mockResolvedValue(undefined),
-      cancelQueries: vi.fn().mockResolvedValue(undefined),
-      getQueryData: vi.fn(),
-      setQueryData: vi.fn(),
-    })),
-  }
-})
 
 // ---------------------------------------------------------------------------
 // Drag-and-drop testing approach
@@ -53,7 +45,7 @@ const dndContextSpy = vi.fn()
 
 // Mock @dnd-kit/core
 vi.mock('@dnd-kit/core', () => ({
-  DndContext: ({ children, onDragEnd, ...props }: { children: React.ReactNode; onDragEnd?: (event: DnDEvent) => void } & Record<string, unknown>) => {
+  DndContext: ({ children, onDragEnd }: { children: React.ReactNode; onDragEnd?: (event: DnDEvent) => void }) => {
     capturedOnDragEnd = onDragEnd ?? null
     dndContextSpy({ onDragEnd: !!onDragEnd, onDragEndType: typeof onDragEnd })
     return <div data-testid="dnd-context-wrapper">{children}</div>
@@ -157,11 +149,22 @@ vi.mock('./TaskDetail', () => ({
 }))
 
 vi.mock('./CreateStoryForm', () => ({
-  default: ({ open, onCancel }: { open: boolean; onCancel: () => void }) =>
+  default: ({ open, onCancel, isPending }: { open: boolean; onCancel: () => void; isPending?: boolean }) =>
     open ? (
       <div data-testid="create-story-form">
         <span>Create Story</span>
-        <button data-testid="cancel-create-story" onClick={onCancel}>Cancel</button>
+        <button
+          data-testid="cancel-create-story"
+          onClick={onCancel}
+        >
+          Cancel
+        </button>
+        <button
+          data-testid="submit-create-story"
+          disabled={isPending}
+        >
+          {isPending ? 'Creating...' : 'Create Story'}
+        </button>
       </div>
     ) : null,
 }))
@@ -253,6 +256,19 @@ const dragBoardState: BoardState = {
   stats: { total_stories: 2, total_tasks: 4, ready_tasks: 0, in_progress_tasks: 1, blocked_tasks: 0, done_tasks: 0, canceled_tasks: 0, archived_tasks: 0, stale_tasks: 0 },
 }
 
+// QueryClient instance shared across tests — used to seed cache data
+// and spy on invalidation for drag-and-drop tests
+let testQueryClient: QueryClient
+
+function createTestQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  })
+}
+
 function setupPopulatedBoard() {
   mockedUseBoard.mockReturnValue({
     data: populatedBoardState,
@@ -264,6 +280,9 @@ function setupPopulatedBoard() {
 }
 
 function setupDragBoard() {
+  // Seed board data into the real QueryClient cache
+  testQueryClient.setQueryData(['board'], dragBoardState)
+
   mockedUseBoard.mockReturnValue({
     data: dragBoardState,
     isLoading: false,
@@ -275,9 +294,11 @@ function setupDragBoard() {
 
 function renderBoard() {
   return render(
-    <MemoryRouter>
-      <Board />
-    </MemoryRouter>,
+    <QueryClientProvider client={testQueryClient}>
+      <MemoryRouter>
+        <Board />
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
@@ -285,6 +306,7 @@ describe('Board', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetDragCaptures()
+    testQueryClient = createTestQueryClient()
     mockedUseCreateStory.mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
@@ -400,6 +422,31 @@ describe('Board', () => {
       expect(screen.getByTestId('create-story-form')).toBeInTheDocument()
     })
 
+    it('disables Create button when createStoryMutation isPending is true', async () => {
+      const user = userEvent.setup()
+      setupPopulatedBoard()
+
+      // Override useCreateStory mock for this test to return isPending: true
+      mockedUseCreateStory.mockReturnValue({
+        mutate: vi.fn(),
+        isPending: true,
+        isSuccess: false,
+        isError: false,
+      })
+
+      renderBoard()
+
+      // Open the form
+      const addButton = screen.getByText('Add Story')
+      await user.click(addButton)
+      expect(screen.getByTestId('create-story-form')).toBeInTheDocument()
+
+      // The submit button should be disabled
+      const submitButton = screen.getByTestId('submit-create-story')
+      expect(submitButton).toBeDisabled()
+      expect(submitButton).toHaveTextContent('Creating...')
+    })
+
     it('CreateStoryForm cancel closes it', async () => {
       const user = userEvent.setup()
       setupPopulatedBoard()
@@ -446,7 +493,7 @@ describe('Board', () => {
   })
 
   describe('drag-and-drop interactions', () => {
-    it('story row reorder swaps display order', async () => {
+    it('story row reorder updates the query cache', async () => {
       setupDragBoard()
       renderBoard()
 
@@ -455,17 +502,6 @@ describe('Board', () => {
         expect(screen.getByText('Alpha')).toBeInTheDocument()
         expect(screen.getByText('Beta')).toBeInTheDocument()
       })
-
-      // Get story card elements — rendered inside SortableStoryRow
-      const storyCards = screen.getAllByText(/Alpha|Beta/)
-      // There are 2 story cards (Alpha, Beta) plus column header count showing [2]
-      // Filter to just the story title elements by checking there's no bracket
-      const storyTitles = storyCards.filter(
-        (el) => !el.textContent?.includes('['),
-      )
-      expect(storyTitles).toHaveLength(2)
-      expect(storyTitles[0]).toHaveTextContent('Alpha')
-      expect(storyTitles[1]).toHaveTextContent('Beta')
 
       // Simulate drag-end: move story-1 (Alpha) after story-2 (Beta)
       act(() => {
@@ -479,14 +515,14 @@ describe('Board', () => {
         )
       })
 
-      // After reorder, Alpha should now be after Beta in displayStories
-      // Re-query the DOM to get updated rendering
-      const storyCardsAfter = screen
-        .getAllByText(/Alpha|Beta/)
-        .filter((el) => !el.textContent?.includes('['))
-      expect(storyCardsAfter).toHaveLength(2)
-      expect(storyCardsAfter[0]).toHaveTextContent('Beta')
-      expect(storyCardsAfter[1]).toHaveTextContent('Alpha')
+      // After reorder, the query cache should have the stories in the new order.
+      // Alpha (story-1) should have sort_order=1 and Beta (story-2) should have sort_order=0.
+      const cachedBoard = testQueryClient.getQueryData<BoardState>(['board'])
+      expect(cachedBoard).toBeDefined()
+      expect(cachedBoard!.stories[0].id).toBe('story-2')
+      expect(cachedBoard!.stories[0].sort_order).toBe(0)
+      expect(cachedBoard!.stories[1].id).toBe('story-1')
+      expect(cachedBoard!.stories[1].sort_order).toBe(1)
     })
 
     it('story reorder API failure triggers queryClient.invalidateQueries', async () => {

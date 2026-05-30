@@ -77,15 +77,15 @@ func run() error {
 	}
 
 	ctx := context.Background()
-	if err := db.SeedDefaults(ctx, database); err != nil {
+	stores := NewStores(database)
+
+	if err := db.SeedDefaults(ctx, stores.Template); err != nil {
 		return fmt.Errorf("seed default templates: %w", err)
 	}
 
 	if err := db.BackfillNumericIDs(database); err != nil {
 		return fmt.Errorf("backfill numeric IDs: %w", err)
 	}
-
-	stores := NewStores(database)
 
 	if cfg.runMCP {
 		return runMCP(cfg, database, stores)
@@ -112,7 +112,7 @@ func parseFlags() serverConfig {
 // runMCP starts the MCP server on stdio.
 func runMCP(cfg serverConfig, database *sql.DB, stores *Stores) error {
 	// Initialize dispatcher with a no-op broadcaster (MCP mode has no WebSocket clients).
-	noOpHub := &noOpBroadcaster{}
+	noOpHub := &noopBroadcaster{}
 	d := dispatcher.NewDispatcher(dispatcher.DispatcherDeps{
 		StoryStore:    stores.Story,
 		TaskStore:     stores.Task,
@@ -295,10 +295,10 @@ func spaHandler(webDir string) http.Handler {
 	})
 }
 
-// noOpBroadcaster is a no-op implementation of dispatcher.EventBroadcaster
+// noopBroadcaster is a no-op implementation of dispatcher.EventBroadcaster
 // used in MCP mode where there are no WebSocket clients.
-type noOpBroadcaster struct{}
+type noopBroadcaster struct{}
 
-func (n *noOpBroadcaster) Broadcast(eventType string, payload any) {
+func (n *noopBroadcaster) Broadcast(eventType string, payload any) {
 	// No-op — MCP mode has no WebSocket clients.
 }

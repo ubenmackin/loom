@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useState } from 'react'
+import { useNavigate, Navigate, Link } from 'react-router-dom'
 import { useAuthStore } from '../stores/auth'
 import { login as apiLogin } from '../api/client'
+import FieldLabel from '../components/FieldLabel'
 
 export default function LoginPage() {
   const navigate = useNavigate()
@@ -13,11 +14,9 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null)
 
   // Redirect if already authenticated
-  useEffect(() => {
-    if (isAuthenticated) {
-      navigate('/')
-    }
-  }, [isAuthenticated, navigate])
+  if (isAuthenticated) {
+    return <Navigate to="/" replace />
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -53,9 +52,7 @@ export default function LoginPage() {
         <form onSubmit={handleSubmit} className="border-2 border-gray-border bg-charcoal-dark p-6">
           {/* Username Field */}
           <div className="mb-4">
-            <label htmlFor="username" className="block font-mono text-[10px] uppercase tracking-widest text-neutral-400 mb-2">
-              Username
-            </label>
+            <FieldLabel htmlFor="username" margin="mb-2">Username</FieldLabel>
             <input
               type="text"
               id="username"
@@ -69,9 +66,7 @@ export default function LoginPage() {
 
           {/* Password Field */}
           <div className="mb-6">
-            <label htmlFor="password" className="block font-mono text-[10px] uppercase tracking-widest text-neutral-400 mb-2">
-              Password
-            </label>
+            <FieldLabel htmlFor="password" margin="mb-2">Password</FieldLabel>
             <input
               type="password"
               id="password"

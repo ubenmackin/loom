@@ -8,18 +8,21 @@ import type {
   PromptTemplate,
   StoryFilter,
   TaskFilter,
-  WorkComplete,
-  WorkBlock,
   BoardState,
   DispatcherStatus,
   User,
   AuthResponse,
   TaskDetailResponse,
+  StatusType,
+  WorkItemTypeType,
+  TaskTypeType,
+  UserRoleType,
 } from '../types'
 import { useAuthStore } from '../stores/auth'
 
 const BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
+/** Shared request helper with auth header, error handling, and AbortSignal support. */
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const token = localStorage.getItem('loom_auth_token')
   const headers: Record<string, string> = {
@@ -56,6 +59,20 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json()
 }
 
+// ── DRY Helpers ─────────────────────────────────────────────────────────
+
+async function updateResource<T>(path: string, data: Partial<T>): Promise<T> {
+  return request<T>(path, { method: 'PUT', body: JSON.stringify(data) })
+}
+
+async function deleteResource(path: string): Promise<void> {
+  await request(path, { method: 'DELETE' })
+}
+
+async function patchResourceStatus<T>(path: string, status: StatusType): Promise<T> {
+  return request<T>(path, { method: 'PATCH', body: JSON.stringify({ status }) })
+}
+
 // ── Board ───────────────────────────────────────────────────────────────
 
 export async function fetchBoard(): Promise<BoardState> {
@@ -82,19 +99,19 @@ export async function createStory(data: Partial<Story>): Promise<Story> {
 }
 
 export async function updateStory(id: string, data: Partial<Story>): Promise<Story> {
-  return request(`/stories/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+  return updateResource<Story>(`/stories/${id}`, data)
 }
 
 export async function batchReorderStories(stories: { id: string; sort_order: number }[]): Promise<{ updated: number }> {
   return request('/stories/reorder', { method: 'PATCH', body: JSON.stringify({ stories }) })
 }
 
-export async function updateStoryStatus(id: string, status: string): Promise<Story> {
-  return request(`/stories/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) })
+export async function updateStoryStatus(id: string, status: StatusType): Promise<Story> {
+  return patchResourceStatus<Story>(`/stories/${id}/status`, status)
 }
 
 export async function deleteStory(id: string): Promise<void> {
-  await request(`/stories/${id}`, { method: 'DELETE' })
+  await deleteResource(`/stories/${id}`)
 }
 
 // ── Tasks ───────────────────────────────────────────────────────────────
@@ -109,7 +126,9 @@ export async function fetchTasks(filter?: TaskFilter): Promise<Task[]> {
   return request(`/tasks${qs ? `?${qs}` : ''}`)
 }
 
-/** Response shape of GET /api/tasks/{id} */
+/**
+ * Response shape of GET /api/tasks/{id}
+ */
 export async function fetchTask(id: string): Promise<TaskDetailResponse> {
   return request(`/tasks/${id}`)
 }
@@ -119,11 +138,11 @@ export async function createTask(storyId: string, data: Partial<Task>): Promise<
 }
 
 export async function updateTask(id: string, data: Partial<Task>): Promise<Task> {
-  return request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+  return updateResource<Task>(`/tasks/${id}`, data)
 }
 
-export async function updateTaskStatus(id: string, status: string): Promise<Task> {
-  return request(`/tasks/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) })
+export async function updateTaskStatus(id: string, status: StatusType): Promise<Task> {
+  return patchResourceStatus<Task>(`/tasks/${id}/status`, status)
 }
 
 export async function batchReorderTasks(tasks: { id: string; sort_order: number }[]): Promise<{ updated: number }> {
@@ -146,10 +165,24 @@ export async function removeDependency(id: string, depId: string): Promise<void>
 }
 
 export async function deleteTask(id: string): Promise<void> {
-  await request(`/tasks/${id}`, { method: 'DELETE' })
+  await deleteResource(`/tasks/${id}`)
 }
 
-export async function fetchActivity(id: string, workItemType: string = 'task'): Promise<ActivityLogEntry[]> {
+export interface GenerateTaskItem {
+  title: string
+  description?: string
+  task_type?: string
+  depends_on?: string[]
+}
+
+export async function generateTasks(storyId: string, tasks: GenerateTaskItem[]): Promise<{ tasks: Task[] }> {
+  return request(`/stories/${storyId}/generate-tasks`, {
+    method: 'POST',
+    body: JSON.stringify({ tasks }),
+  })
+}
+
+export async function fetchActivity(id: string, workItemType: WorkItemTypeType = 'task'): Promise<ActivityLogEntry[]> {
   const endpoint = workItemType === 'story' ? `/stories/${id}/activity` : `/tasks/${id}/activity`
   return request(endpoint)
 }
@@ -188,22 +221,22 @@ export async function startWork(sessionId: string, taskId: string): Promise<Task
 export async function completeWork(
   sessionId: string,
   taskId: string,
-  result: WorkComplete,
+  result: string,
 ): Promise<void> {
   await request('/work/complete', {
     method: 'POST',
-    body: JSON.stringify({ session_id: sessionId, task_id: taskId, result: result.result }),
+    body: JSON.stringify({ session_id: sessionId, task_id: taskId, result }),
   })
 }
 
 export async function blockWork(
   sessionId: string,
   taskId: string,
-  reason: WorkBlock,
+  reason: string,
 ): Promise<void> {
   await request('/work/block', {
     method: 'POST',
-    body: JSON.stringify({ session_id: sessionId, task_id: taskId, reason: reason.reason }),
+    body: JSON.stringify({ session_id: sessionId, task_id: taskId, reason }),
   })
 }
 
@@ -249,14 +282,14 @@ export async function fetchSessions(): Promise<Session[]> {
 
 export async function fetchComments(
   workItemId: string,
-  type: string,
+  type: WorkItemTypeType,
 ): Promise<Comment[]> {
   return request(`/work-items/${workItemId}/comments?type=${type}`)
 }
 
 export async function addComment(
   workItemId: string,
-  type: string,
+  type: WorkItemTypeType,
   data: { body: string; author_id: string; author_type: string },
 ): Promise<Comment> {
   return request(`/work-items/${workItemId}/comments`, {
@@ -282,12 +315,12 @@ export async function fetchTemplates(): Promise<PromptTemplate[]> {
   return request('/templates')
 }
 
-export async function fetchTemplate(taskType: string): Promise<PromptTemplate> {
+export async function fetchTemplate(taskType: TaskTypeType): Promise<PromptTemplate> {
   return request(`/templates/${taskType}`)
 }
 
 export async function upsertTemplate(
-  taskType: string,
+  taskType: TaskTypeType,
   data: { template: string },
 ): Promise<PromptTemplate> {
   return request(`/templates/${taskType}`, { method: 'PUT', body: JSON.stringify(data) })
@@ -322,10 +355,10 @@ export async function getUsers(): Promise<User[]> {
   return request<User[]>('/users')
 }
 
-export async function postUser(data: { username: string; email: string; display_name: string; password: string; role: 'admin' | 'normal' }): Promise<User> {
+export async function postUser(data: { username: string; email: string; display_name: string; password: string; role: UserRoleType }): Promise<User> {
   return request<User>('/users', { method: 'POST', body: JSON.stringify(data) })
 }
 
 export async function deleteUser(id: string): Promise<void> {
-  await request(`/users/${id}`, { method: 'DELETE' })
+  await deleteResource(`/users/${id}`)
 }

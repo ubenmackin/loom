@@ -50,7 +50,7 @@ func (h *handlers) getTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	template, err := h.templates.GetByTaskType(r.Context(), taskType)
+	template, err := h.templates.GetByTaskType(r.Context(), models.TaskType(taskType))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "template not found for task type: "+taskType)
@@ -84,7 +84,7 @@ func (h *handlers) upsertTemplate(w http.ResponseWriter, r *http.Request) {
 
 	// Check if template exists to determine correct status code.
 	created := false
-	existing, err := h.templates.GetByTaskType(r.Context(), taskType)
+	existing, err := h.templates.GetByTaskType(r.Context(), models.TaskType(taskType))
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusInternalServerError, "failed to check existing template: "+err.Error())

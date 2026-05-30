@@ -47,6 +47,7 @@ export default function CommentThread({ workItemId, workItemType }: CommentThrea
     queryKey: ['comments', workItemId, workItemType],
     queryFn: () => fetchComments(workItemId, workItemType),
     enabled: !!workItemId,
+    refetchInterval: 15_000,
   })
 
   const { data: activities = [] } = useQuery<ActivityLogEntry[]>({
@@ -100,6 +101,7 @@ export default function CommentThread({ workItemId, workItemType }: CommentThrea
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['comments', workItemId, workItemType] })
+      setOptimisticIds(new Set())
     },
   })
 
@@ -113,6 +115,22 @@ export default function CommentThread({ workItemId, workItemType }: CommentThrea
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteComment(id),
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: ['comments', workItemId, workItemType] })
+      const previous = queryClient.getQueryData<Comment[]>(['comments', workItemId, workItemType])
+      if (previous) {
+        queryClient.setQueryData(
+          ['comments', workItemId, workItemType],
+          previous.filter((c) => c.id !== id)
+        )
+      }
+      return { previous }
+    },
+    onError: (_err, id, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['comments', workItemId, workItemType], context.previous)
+      }
+    },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['comments', workItemId, workItemType] })
     },

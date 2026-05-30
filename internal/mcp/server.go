@@ -116,30 +116,41 @@ func (s *Server) RunWith(ctx context.Context, in io.Reader, out io.Writer) error
 
 	slog.Info("MCP server starting, reading from stdin")
 
+	type decodedReq struct {
+		req Request
+		err error
+	}
+
 	for {
+		// Launch a goroutine to decode so we can detect context cancellation
+		// even when Decode is blocking.
+		reqCh := make(chan decodedReq, 1)
+		go func() {
+			var req Request
+			err := s.decoder.Decode(&req)
+			reqCh <- decodedReq{req, err}
+		}()
+
 		select {
 		case <-ctx.Done():
 			slog.Info("MCP server shutting down", "reason", ctx.Err())
-			return nil
-		default:
-		}
-
-		var req Request
-		if err := s.decoder.Decode(&req); err != nil {
-			if err == io.EOF {
-				slog.Info("MCP server: stdin closed")
-				return nil
+			return ctx.Err()
+		case d := <-reqCh:
+			if d.err != nil {
+				if d.err == io.EOF {
+					slog.Info("MCP server: stdin closed")
+					return nil
+				}
+				slog.Error("MCP server: decode error", "error", d.err)
+				s.writeResponse(Response{
+					JSONRPC: "2.0",
+					ID:      nil,
+					Error:   &Error{Code: -32700, Message: "Parse error"},
+				})
+				continue
 			}
-			slog.Error("MCP server: decode error", "error", err)
-			s.writeResponse(Response{
-				JSONRPC: "2.0",
-				ID:      nil,
-				Error:   &Error{Code: -32700, Message: "Parse error"},
-			})
-			continue
+			s.handleRequest(ctx, d.req)
 		}
-
-		s.handleRequest(ctx, req)
 	}
 }
 
@@ -255,13 +266,12 @@ func (s *Server) writeResponse(resp Response) {
 }
 
 // submitEvent is a helper that submits an event to the dispatcher if one
-// is configured. Errors are logged but not propagated — dispatcher events
-// are advisory and non-blocking.
-func (s *Server) submitEvent(event dispatcher.Event) {
+// is configured. It uses the provided context for cancellation.
+func (s *Server) submitEvent(ctx context.Context, event dispatcher.Event) {
 	if s.dispatcher == nil {
 		return
 	}
-	s.dispatcher.Submit(event)
+	s.dispatcher.Submit(ctx, event)
 }
 
 // textResult creates a ToolResult with a single text content block.
@@ -296,6 +306,25 @@ func getRequiredString(params map[string]any, key string) (string, error) {
 		return "", fmt.Errorf("parameter %s must not be empty", key)
 	}
 	return s, nil
+}
+
+// getOptionalStringSlice extracts an optional string slice parameter from the params map.
+func getOptionalStringSlice(params map[string]any, key string) []string {
+	v, ok := params[key]
+	if !ok {
+		return nil
+	}
+	slice, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(slice))
+	for _, item := range slice {
+		if s, ok := item.(string); ok {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // getOptionalString extracts an optional string parameter from the params map.

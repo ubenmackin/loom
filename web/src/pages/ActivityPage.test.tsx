@@ -62,7 +62,7 @@ describe('ActivityPage', () => {
 
       render(<ActivityPage />)
 
-      expect(screen.getByText('Loading activity...')).toBeInTheDocument()
+      expect(screen.getByText('Loading...')).toBeInTheDocument()
     })
   })
 
@@ -78,7 +78,8 @@ describe('ActivityPage', () => {
 
       render(<ActivityPage />)
 
-      expect(screen.getByText('Error loading activity: Network failure')).toBeInTheDocument()
+      expect(screen.getByText(/Error:/)).toBeInTheDocument()
+      expect(screen.getByText((content) => content.includes('Network failure'))).toBeInTheDocument()
 
       const retryButton = screen.getByText('Retry')
       expect(retryButton).toBeInTheDocument()

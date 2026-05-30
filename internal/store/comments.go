@@ -11,6 +11,11 @@ import (
 	"github.com/ubenmackin/loom/internal/models"
 )
 
+// CommentStore provides CRUD operations for comments.
+type CommentStore struct {
+	db *sql.DB
+}
+
 // nextCommentID generates the next comment ID in the format COMMENT-NNNNNN.
 func (s *CommentStore) nextCommentID(ctx context.Context) (string, error) {
 	res, err := s.db.ExecContext(ctx, "INSERT INTO work_item_sequence (type) VALUES ('comment')")
@@ -22,11 +27,6 @@ func (s *CommentStore) nextCommentID(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("get last insert id for comment: %w", err)
 	}
 	return fmt.Sprintf("COMMENT-%06d", seqID), nil
-}
-
-// CommentStore provides CRUD operations for comments.
-type CommentStore struct {
-	db *sql.DB
 }
 
 // NewCommentStore creates a new CommentStore.
@@ -109,13 +109,9 @@ func (s *CommentStore) GetByWorkItem(ctx context.Context, workItemID string, wor
 	if err != nil {
 		return nil, fmt.Errorf("get comments for %s %q: %w", workItemType, workItemID, err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	return scanComments(rows)
+	return collectRows(rows, scanCommentRow)
 }
 
 // Update modifies a comment. Only the original author may update.
@@ -137,15 +133,7 @@ func (s *CommentStore) Update(ctx context.Context, c *models.Comment) error {
 		return fmt.Errorf("update comment %q: %w", c.ID, err)
 	}
 
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected comment %q: %w", c.ID, err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("comment %q: %w", c.ID, ErrNotFound)
-	}
-
-	return nil
+	return requireOneRow(result, nil, "comment", c.ID)
 }
 
 // Delete removes a comment. Only the original author may delete.
@@ -165,27 +153,28 @@ func (s *CommentStore) Delete(ctx context.Context, id, authorID string) error {
 		return fmt.Errorf("delete comment %q: %w", id, err)
 	}
 
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected delete comment %q: %w", id, err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("comment %q: %w", id, ErrNotFound)
+	if err := requireOneRow(result, nil, "comment", id); err != nil {
+		return err
 	}
 
-	_, _ = s.db.ExecContext(ctx, `DELETE FROM unread_comments WHERE comment_id = ?`, id)
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM unread_comments WHERE comment_id = ?`, id); err != nil {
+		log.Printf("cleanup unread for comment %q: %v", id, err)
+	}
 
 	return nil
 }
 
 // MarkAsRead removes an unread entry for a session+comment pair.
 func (s *CommentStore) MarkAsRead(ctx context.Context, sessionID, commentID string) error {
-	_, err := s.db.ExecContext(ctx,
+	result, err := s.db.ExecContext(ctx,
 		`DELETE FROM unread_comments WHERE session_id = ? AND comment_id = ?`,
 		sessionID, commentID,
 	)
 	if err != nil {
 		return fmt.Errorf("mark comment %q as read for session %q: %w", commentID, sessionID, err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		log.Printf("MarkAsRead: no unread entry for session %q comment %q", sessionID, commentID)
 	}
 	return nil
 }
@@ -196,35 +185,28 @@ func (s *CommentStore) GetUnreadForSession(ctx context.Context, sessionID string
 		`SELECT c.id, c.work_item_id, c.work_item_type, c.author_id, c.author_type, c.body, c.created_at, c.updated_at
 		 FROM comments c
 		 JOIN unread_comments uc ON uc.comment_id = c.id
-		 JOIN tasks t ON t.id = c.work_item_id AND c.work_item_type = 'task'
+		 JOIN tasks t ON t.id = c.work_item_id AND c.work_item_type = ?
 		 WHERE uc.session_id = ? AND t.assigned_to = ?`,
-		sessionID, sessionID)
+		models.WorkItemTypeTask, sessionID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("get unread comments for session %q: %w", sessionID, err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	return scanComments(rows)
+	return collectRows(rows, scanCommentRow)
 }
 
-// scanComments is a helper to scan multiple comment rows.
-func scanComments(rows *sql.Rows) ([]*models.Comment, error) {
-	var comments []*models.Comment
-	for rows.Next() {
-		c, err := scanCommentRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan comment: %w", err)
-		}
-
-		comments = append(comments, c)
+// GetUnreadForSessionByWorkItem returns unread comments for a session on a specific work item.
+func (s *CommentStore) GetUnreadForSessionByWorkItem(ctx context.Context, sessionID, workItemID string, workItemType models.WorkItemType) ([]*models.Comment, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT c.id, c.work_item_id, c.work_item_type, c.author_id, c.author_type, c.body, c.created_at, c.updated_at
+		 FROM comments c
+		 JOIN unread_comments uc ON uc.comment_id = c.id
+		 WHERE uc.session_id = ? AND c.work_item_id = ? AND c.work_item_type = ?`,
+		sessionID, workItemID, workItemType)
+	if err != nil {
+		return nil, fmt.Errorf("get unread comments for session %q on %s %q: %w", sessionID, workItemType, workItemID, err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate comments: %w", err)
-	}
-
-	return comments, nil
+	defer closeRows(rows)
+	return collectRows(rows, scanCommentRow)
 }

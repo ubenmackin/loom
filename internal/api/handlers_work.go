@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -44,8 +43,10 @@ type workKeepaliveReq struct {
 }
 
 type workAssignmentResponse struct {
-	Task         *models.Task `json:"task"`
-	Instructions string       `json:"instructions,omitempty"`
+	Task              *models.Task `json:"task"`
+	Instructions      string       `json:"instructions,omitempty"`
+	HasUnreadComments bool         `json:"has_unread_comments"`
+	UnreadComments    []string     `json:"unread_comments,omitempty"`
 }
 
 // --- Route registration ---
@@ -61,30 +62,18 @@ func (h *handlers) registerWorkRoutes(r chi.Router) {
 // --- Helper functions ---
 
 // verifyTaskAssignment retrieves a task and verifies it is assigned to the given session.
-func (h *handlers) verifyTaskAssignment(ctx context.Context, taskID, sessionID string) (*models.Task, error) {
+func (h *handlers) verifyTaskAssignment(ctx context.Context, taskID, sessionID string) error {
 	task, err := h.tasks.GetByID(ctx, taskID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, fmt.Errorf("task not found")
+			return fmt.Errorf("task not found: %w", store.ErrNotFound)
 		}
-		return nil, fmt.Errorf("failed to get task: %w", err)
+		return fmt.Errorf("failed to get task: %w", err)
 	}
 	if task.AssignedTo != sessionID {
-		return nil, fmt.Errorf("task %q is not assigned to session %q", taskID, sessionID)
+		return fmt.Errorf("task %q is not assigned to session %q", taskID, sessionID)
 	}
-	return task, nil
-}
-
-// logWorkActivity safely logs an activity entry for a work action.
-func (h *handlers) logWorkActivity(ctx context.Context, taskID, action string, details string) {
-	if err := h.activity.Log(ctx, &models.ActivityLogEntry{
-		WorkItemID:   taskID,
-		WorkItemType: models.WorkItemTypeTask,
-		Action:       action,
-		Details:      details,
-	}); err != nil {
-		slog.Error("failed to log activity", "action", action, "error", err)
-	}
+	return nil
 }
 
 // updateSessionSeen safely updates the last_seen timestamp for a session.
@@ -133,13 +122,13 @@ func (h *handlers) workRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.dispatch.Submit(dispatcher.Event{
+	h.dispatch.Submit(r.Context(), dispatcher.Event{
 		Type:      dispatcher.EventWorkRequested,
 		SessionID: req.SessionID,
 	})
 
 	instructions := task.Instructions
-	template, terr := h.templates.GetByTaskType(r.Context(), string(task.TaskType))
+	template, terr := h.templates.GetByTaskType(r.Context(), task.TaskType)
 	if terr == nil && template != nil {
 		instructions = template.Template
 		if task.Description != "" {
@@ -150,9 +139,42 @@ func (h *handlers) workRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Fetch unread comments and filter to human-authored only.
+	var unreadBodies []string
+
+	// 1. Get unread comments on tasks assigned to this session.
+	unreads, uErr := h.comments.GetUnreadForSession(r.Context(), req.SessionID)
+	if uErr == nil {
+		for _, c := range unreads {
+			if c.AuthorType == models.AuthorTypeHuman {
+				unreadBodies = append(unreadBodies, c.Body)
+			}
+		}
+	} else {
+		slog.Error("failed to get unread comments for session", "session_id", req.SessionID, "error", uErr)
+	}
+
+	// 2. Get unread comments on the parent story as well.
+	if task != nil && task.StoryID != "" {
+		storyUnreads, sErr := h.comments.GetUnreadForSessionByWorkItem(r.Context(), req.SessionID, task.StoryID, models.WorkItemTypeStory)
+		if sErr == nil {
+			for _, c := range storyUnreads {
+				if c.AuthorType == models.AuthorTypeHuman {
+					unreadBodies = append(unreadBodies, c.Body)
+				}
+			}
+		} else {
+			slog.Error("failed to get unread story comments for session", "session_id", req.SessionID, "story_id", task.StoryID, "error", sErr)
+		}
+	}
+
+	hasUnread := len(unreadBodies) > 0
+
 	respondJSON(w, http.StatusOK, workAssignmentResponse{
-		Task:         task,
-		Instructions: instructions,
+		Task:              task,
+		Instructions:      instructions,
+		HasUnreadComments: hasUnread,
+		UnreadComments:    unreadBodies,
 	})
 }
 
@@ -173,24 +195,31 @@ func (h *handlers) workStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := h.verifyTaskAssignment(r.Context(), req.TaskID, req.SessionID)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+	if err := h.verifyTaskAssignment(r.Context(), req.TaskID, req.SessionID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, err.Error())
 		} else {
 			respondError(w, http.StatusForbidden, err.Error())
 		}
 		return
 	}
-	_ = task // task is verified; proceed with status update
 
 	if err := h.tasks.UpdateStatus(r.Context(), req.TaskID, models.StatusInProgress); err != nil {
 		respondError(w, http.StatusBadRequest, "failed to start task: "+err.Error())
 		return
 	}
 
-	details, _ := json.Marshal(map[string]string{"session_id": req.SessionID})
-	h.logWorkActivity(r.Context(), req.TaskID, "work_started", string(details))
+	details, err := json.Marshal(map[string]string{"session_id": req.SessionID})
+	if err != nil {
+		slog.Error("failed to marshal activity details", "error", err)
+		details = []byte(`{"session_id":"` + req.SessionID + `"}`)
+	}
+	h.logActivity(r.Context(), &models.ActivityLogEntry{
+		WorkItemID:   req.TaskID,
+		WorkItemType: models.WorkItemTypeTask,
+		Action:       "work_started",
+		Details:      string(details),
+	})
 	h.updateSessionSeen(r.Context(), req.SessionID)
 
 	updated, err := h.tasks.GetByID(r.Context(), req.TaskID)
@@ -218,16 +247,14 @@ func (h *handlers) workComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := h.verifyTaskAssignment(r.Context(), req.TaskID, req.SessionID)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+	if err := h.verifyTaskAssignment(r.Context(), req.TaskID, req.SessionID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, err.Error())
 		} else {
 			respondError(w, http.StatusForbidden, err.Error())
 		}
 		return
 	}
-	_ = task // task is verified; proceed with status update
 
 	if err := h.tasks.UpdateStatus(r.Context(), req.TaskID, models.StatusDone); err != nil {
 		respondError(w, http.StatusBadRequest, "failed to complete task: "+err.Error())
@@ -239,7 +266,7 @@ func (h *handlers) workComplete(w http.ResponseWriter, r *http.Request) {
 			WorkItemID:   req.TaskID,
 			WorkItemType: models.WorkItemTypeTask,
 			AuthorID:     req.SessionID,
-			AuthorType:   string(models.AssigneeTypeSession),
+			AuthorType:   models.AuthorType(models.AssigneeTypeSession),
 			Body:         req.Result,
 		}
 		if err := h.comments.Create(r.Context(), comment); err != nil {
@@ -247,11 +274,20 @@ func (h *handlers) workComplete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	details, _ := json.Marshal(map[string]string{"session_id": req.SessionID})
-	h.logWorkActivity(r.Context(), req.TaskID, "work_completed", string(details))
+	details, err := json.Marshal(map[string]string{"session_id": req.SessionID})
+	if err != nil {
+		slog.Error("failed to marshal activity details", "error", err)
+		details = []byte(`{"session_id":"` + req.SessionID + `"}`)
+	}
+	h.logActivity(r.Context(), &models.ActivityLogEntry{
+		WorkItemID:   req.TaskID,
+		WorkItemType: models.WorkItemTypeTask,
+		Action:       "work_completed",
+		Details:      string(details),
+	})
 	h.updateSessionSeen(r.Context(), req.SessionID)
 
-	h.dispatch.Submit(dispatcher.Event{
+	h.dispatch.Submit(r.Context(), dispatcher.Event{
 		Type:   dispatcher.EventTaskCompleted,
 		TaskID: req.TaskID,
 	})
@@ -281,16 +317,14 @@ func (h *handlers) workBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := h.verifyTaskAssignment(r.Context(), req.TaskID, req.SessionID)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+	if err := h.verifyTaskAssignment(r.Context(), req.TaskID, req.SessionID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
 			respondError(w, http.StatusNotFound, err.Error())
 		} else {
 			respondError(w, http.StatusForbidden, err.Error())
 		}
 		return
 	}
-	_ = task // task is verified; proceed with status update
 
 	if err := h.tasks.UpdateStatus(r.Context(), req.TaskID, models.StatusBlocked); err != nil {
 		respondError(w, http.StatusBadRequest, "failed to block task: "+err.Error())
@@ -302,7 +336,7 @@ func (h *handlers) workBlock(w http.ResponseWriter, r *http.Request) {
 			WorkItemID:   req.TaskID,
 			WorkItemType: models.WorkItemTypeTask,
 			AuthorID:     req.SessionID,
-			AuthorType:   string(models.AssigneeTypeSession),
+			AuthorType:   models.AuthorType(models.AssigneeTypeSession),
 			Body:         "Blocked: " + req.Reason,
 		}
 		if err := h.comments.Create(r.Context(), comment); err != nil {
@@ -310,11 +344,20 @@ func (h *handlers) workBlock(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	details, _ := json.Marshal(map[string]string{"session_id": req.SessionID, "reason": req.Reason})
-	h.logWorkActivity(r.Context(), req.TaskID, "work_blocked", string(details))
+	details, err := json.Marshal(map[string]string{"session_id": req.SessionID, "reason": req.Reason})
+	if err != nil {
+		slog.Error("failed to marshal activity details", "error", err)
+		details = []byte(`{"session_id":"` + req.SessionID + `","reason":"` + req.Reason + `"}`)
+	}
+	h.logActivity(r.Context(), &models.ActivityLogEntry{
+		WorkItemID:   req.TaskID,
+		WorkItemType: models.WorkItemTypeTask,
+		Action:       "work_blocked",
+		Details:      string(details),
+	})
 	h.updateSessionSeen(r.Context(), req.SessionID)
 
-	h.dispatch.Submit(dispatcher.Event{
+	h.dispatch.Submit(r.Context(), dispatcher.Event{
 		Type:   dispatcher.EventTaskBlocked,
 		TaskID: req.TaskID,
 	})

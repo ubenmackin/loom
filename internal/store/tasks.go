@@ -5,12 +5,25 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"github.com/ubenmackin/loom/internal/models"
 )
+
+// Context transaction support.
+type txKey struct{}
+
+// withTx stores a *sql.Tx in the context for use by store methods.
+func withTx(ctx context.Context, tx *sql.Tx) context.Context {
+	return context.WithValue(ctx, txKey{}, tx)
+}
+
+// getTx retrieves a *sql.Tx from the context, or nil.
+func getTx(ctx context.Context) *sql.Tx {
+	tx, _ := ctx.Value(txKey{}).(*sql.Tx)
+	return tx
+}
 
 // TaskFilter holds optional criteria for listing tasks.
 type TaskFilter struct {
@@ -28,6 +41,22 @@ type TaskStore struct {
 // NewTaskStore creates a new TaskStore.
 func NewTaskStore(db *sql.DB) *TaskStore {
 	return &TaskStore{db: db}
+}
+
+// Transact wraps the given function in a database transaction. If fn returns
+// an error, the transaction is rolled back; otherwise it is committed.
+func (s *TaskStore) Transact(ctx context.Context, fn func(context.Context) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := fn(withTx(ctx, tx)); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 // scanTask is a helper to scan a task row from a *sql.Row or *sql.Rows.
@@ -60,9 +89,26 @@ func scanTask(scanner interface{ Scan(...any) error }) (*models.Task, error) {
 	return t, nil
 }
 
+// nextTaskIDTx generates a new sequential task ID within a transaction.
+func (s *TaskStore) nextTaskIDTx(ctx context.Context, tx *sql.Tx) (string, error) {
+	res, err := tx.ExecContext(ctx, "INSERT INTO work_item_sequence (type) VALUES ('task')")
+	if err != nil {
+		return "", fmt.Errorf("generate task id: %w", err)
+	}
+	seqID, err := res.LastInsertId()
+	if err != nil {
+		return "", fmt.Errorf("get last insert id for task: %w", err)
+	}
+	return fmt.Sprintf("TASK-%06d", seqID), nil
+}
+
 // Create inserts a new task. If the ID is empty, it is auto-generated.
 // It mutates the pointer to set ID, NumericID, CreatedAt, and UpdatedAt.
 func (s *TaskStore) Create(ctx context.Context, t *models.Task) error {
+	if tx := getTx(ctx); tx != nil {
+		return s.createTx(ctx, tx, t)
+	}
+
 	res, err := s.db.ExecContext(ctx, "INSERT INTO work_item_sequence (type) VALUES ('task')")
 	if err != nil {
 		return fmt.Errorf("generate task id: %w", err)
@@ -84,6 +130,42 @@ func (s *TaskStore) Create(ctx context.Context, t *models.Task) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO tasks (id, numeric_id, story_id, title, description, status, task_type,
+		 assigned_to, assignee_type, sort_order, instructions, is_stale, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.NumericID, t.StoryID, t.Title, t.Description, t.Status, t.TaskType,
+		t.AssignedTo, t.AssigneeType, t.SortOrder,
+		t.Instructions, t.IsStale, t.CreatedAt, t.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert task: %w", err)
+	}
+	return nil
+}
+
+// createTx is the transaction-aware variant of Create.
+func (s *TaskStore) createTx(ctx context.Context, tx *sql.Tx, t *models.Task) error {
+	id, err := s.nextTaskIDTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if t.ID == "" {
+		t.ID = id
+	}
+
+	// Derive numeric ID from the formatted ID.
+	var numericID int
+	_, _ = fmt.Sscanf(t.ID, "TASK-%d", &numericID)
+	t.NumericID = numericID
+
+	now := time.Now().UTC()
+	t.CreatedAt = now
+	t.UpdatedAt = now
+	if t.Status == "" {
+		t.Status = models.StatusNew
+	}
+
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO tasks (id, numeric_id, story_id, title, description, status, task_type,
 		 assigned_to, assignee_type, sort_order, instructions, is_stale, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -165,25 +247,12 @@ func (s *TaskStore) List(ctx context.Context, filter TaskFilter) ([]*models.Task
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	var tasks []*models.Task
-	for rows.Next() {
-		t, err := scanTask(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan task: %w", err)
-		}
-
-		tasks = append(tasks, t)
+	tasks, err := collectRows(rows, scanTask)
+	if err != nil {
+		return nil, fmt.Errorf("scan tasks: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate tasks: %w", err)
-	}
-
 	return tasks, nil
 }
 
@@ -204,33 +273,14 @@ func (s *TaskStore) Update(ctx context.Context, t *models.Task) error {
 		return fmt.Errorf("update task %q: %w", t.ID, err)
 	}
 
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected task %q: %w", t.ID, err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("task %q: %w", t.ID, ErrNotFound)
-	}
-
-	return nil
+	return requireOneRow(result, nil, "task", t.ID)
 }
 
 // BatchUpdate applies updates to multiple tasks in a single transaction.
 func (s *TaskStore) BatchUpdate(ctx context.Context, tasks []*models.Task) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	for _, t := range tasks {
+	return batchExecTx(ctx, s.db, tasks, func(tx *sql.Tx, t *models.Task) error {
 		t.UpdatedAt = time.Now().UTC()
-
-		result, execErr := tx.ExecContext(ctx,
+		result, err := tx.ExecContext(ctx,
 			`UPDATE tasks SET story_id=?, title=?, description=?, status=?, task_type=?,
 			 assigned_to=?, assignee_type=?, sort_order=?, instructions=?,
 			 is_stale=?, updated_at=?
@@ -239,27 +289,11 @@ func (s *TaskStore) BatchUpdate(ctx context.Context, tasks []*models.Task) error
 			t.AssignedTo, t.AssigneeType, t.SortOrder, t.Instructions,
 			t.IsStale, t.UpdatedAt, t.ID,
 		)
-		if execErr != nil {
-			err = fmt.Errorf("update task %q in batch: %w", t.ID, execErr)
-			return err
+		if err != nil {
+			return fmt.Errorf("update task %q in batch: %w", t.ID, err)
 		}
-
-		rows, rowsErr := result.RowsAffected()
-		if rowsErr != nil {
-			err = fmt.Errorf("rows affected task %q in batch: %w", t.ID, rowsErr)
-			return err
-		}
-		if rows == 0 {
-			err = fmt.Errorf("task %q: %w", t.ID, ErrNotFound)
-			return err
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-
-	return nil
+		return requireOneRow(result, nil, "task", t.ID)
+	})
 }
 
 // UpdateStatus changes a task's status, validating against the state machine.
@@ -297,8 +331,13 @@ func (s *TaskStore) UpdateStatus(ctx context.Context, id string, next models.Sta
 }
 
 // AddDependency creates a finish-to-start dependency between two tasks.
-// It checks for cycles before inserting.
+// It checks for cycles before inserting. If the context carries an active
+// transaction, the operation uses that transaction.
 func (s *TaskStore) AddDependency(ctx context.Context, taskID, dependsOnID string) error {
+	if tx := getTx(ctx); tx != nil {
+		return s.addDependencyTx(ctx, tx, taskID, dependsOnID)
+	}
+
 	if taskID == dependsOnID {
 		return fmt.Errorf("%w: %q", ErrSelfDependency, taskID)
 	}
@@ -321,6 +360,30 @@ func (s *TaskStore) AddDependency(ctx context.Context, taskID, dependsOnID strin
 	return nil
 }
 
+// addDependencyTx is the transaction-aware variant of AddDependency.
+func (s *TaskStore) addDependencyTx(ctx context.Context, tx *sql.Tx, taskID, dependsOnID string) error {
+	if taskID == dependsOnID {
+		return fmt.Errorf("%w: %q", ErrSelfDependency, taskID)
+	}
+
+	hasCycle, err := s.detectCycleTx(ctx, tx, taskID, dependsOnID)
+	if err != nil {
+		return fmt.Errorf("check cycle before add dependency: %w", err)
+	}
+	if hasCycle {
+		return fmt.Errorf("%w: adding dependency %q -> %q", ErrCycleDetected, taskID, dependsOnID)
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)`,
+		taskID, dependsOnID,
+	)
+	if err != nil {
+		return fmt.Errorf("add dependency %q -> %q: %w", taskID, dependsOnID, err)
+	}
+	return nil
+}
+
 // RemoveDependency removes a dependency between two tasks.
 func (s *TaskStore) RemoveDependency(ctx context.Context, taskID, dependsOnID string) error {
 	result, err := s.db.ExecContext(ctx,
@@ -331,15 +394,7 @@ func (s *TaskStore) RemoveDependency(ctx context.Context, taskID, dependsOnID st
 		return fmt.Errorf("remove dependency %q -> %q: %w", taskID, dependsOnID, err)
 	}
 
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected remove dependency: %w", err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("dependency %q -> %q: %w", taskID, dependsOnID, ErrNotFound)
-	}
-
-	return nil
+	return requireOneRow(result, nil, "dependency", taskID+"->"+dependsOnID)
 }
 
 // GetDependencies returns all task IDs that the given task depends on.
@@ -349,11 +404,7 @@ func (s *TaskStore) GetDependencies(ctx context.Context, taskID string) ([]strin
 	if err != nil {
 		return nil, fmt.Errorf("get dependencies for task %q: %w", taskID, err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
 	var deps []string
 	for rows.Next() {
@@ -381,24 +432,12 @@ func (s *TaskStore) GetBlockers(ctx context.Context, taskID string) ([]*models.T
 	if err != nil {
 		return nil, fmt.Errorf("get blockers for task %q: %w", taskID, err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	var blockers []*models.Task
-	for rows.Next() {
-		t, err := scanTask(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan blocker task: %w", err)
-		}
-		blockers = append(blockers, t)
+	blockers, err := collectRows(rows, scanTask)
+	if err != nil {
+		return nil, fmt.Errorf("scan blockers: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate blockers: %w", err)
-	}
-
 	return blockers, nil
 }
 
@@ -415,11 +454,7 @@ func (s *TaskStore) loadDependencyGraph(ctx context.Context) (map[string][]strin
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
 	adj := make(map[string][]string)
 	for rows.Next() {
@@ -428,6 +463,26 @@ func (s *TaskStore) loadDependencyGraph(ctx context.Context) (map[string][]strin
 			return nil, err
 		}
 		// Forward: from depends_on_task_id -> task_id
+		adj[depID] = append(adj[depID], taskID)
+	}
+	return adj, rows.Err()
+}
+
+// loadDependencyGraphTx is the transaction-aware variant of loadDependencyGraph.
+func (s *TaskStore) loadDependencyGraphTx(ctx context.Context, tx *sql.Tx) (map[string][]string, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT task_id, depends_on_task_id FROM task_dependencies`)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(rows)
+
+	adj := make(map[string][]string)
+	for rows.Next() {
+		var taskID, depID string
+		if err := rows.Scan(&taskID, &depID); err != nil {
+			return nil, err
+		}
 		adj[depID] = append(adj[depID], taskID)
 	}
 	return adj, rows.Err()
@@ -443,12 +498,23 @@ func (s *TaskStore) DetectCycle(ctx context.Context, taskID, dependsOnID string)
 	}
 
 	visited := make(map[string]bool)
-	return s.dfsInMemory(taskID, dependsOnID, adj, visited), nil
+	return dfsInMemory(taskID, dependsOnID, adj, visited), nil
+}
+
+// detectCycleTx is the transaction-aware variant of DetectCycle.
+func (s *TaskStore) detectCycleTx(ctx context.Context, tx *sql.Tx, taskID, dependsOnID string) (bool, error) {
+	adj, err := s.loadDependencyGraphTx(ctx, tx)
+	if err != nil {
+		return false, fmt.Errorf("load dependency graph: %w", err)
+	}
+
+	visited := make(map[string]bool)
+	return dfsInMemory(taskID, dependsOnID, adj, visited), nil
 }
 
 // dfsInMemory performs a depth-first search from currentID following
 // forward dependencies in the preloaded graph. If we reach targetID, a cycle exists.
-func (s *TaskStore) dfsInMemory(currentID, targetID string, adj map[string][]string, visited map[string]bool) bool {
+func dfsInMemory(currentID, targetID string, adj map[string][]string, visited map[string]bool) bool {
 	if currentID == targetID {
 		return true
 	}
@@ -458,7 +524,7 @@ func (s *TaskStore) dfsInMemory(currentID, targetID string, adj map[string][]str
 	visited[currentID] = true
 
 	for _, next := range adj[currentID] {
-		if s.dfsInMemory(next, targetID, adj, visited) {
+		if dfsInMemory(next, targetID, adj, visited) {
 			return true
 		}
 	}
@@ -476,24 +542,12 @@ func (s *TaskStore) GetDependents(ctx context.Context, taskID string) ([]*models
 	if err != nil {
 		return nil, fmt.Errorf("get dependents for task %q: %w", taskID, err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	var dependents []*models.Task
-	for rows.Next() {
-		t, err := scanTask(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan dependent task: %w", err)
-		}
-		dependents = append(dependents, t)
+	dependents, err := collectRows(rows, scanTask)
+	if err != nil {
+		return nil, fmt.Errorf("scan dependents: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate dependents: %w", err)
-	}
-
 	return dependents, nil
 }
 
@@ -505,15 +559,7 @@ func (s *TaskStore) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("delete task %q: %w", id, err)
 	}
 
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("delete task %q: %w", id, ErrNotFound)
-	}
-
-	return nil
+	return requireOneRow(result, nil, "task", id)
 }
 
 // GetBlockersForTasks batch-fetches blockers for a set of tasks. Returns a
@@ -544,11 +590,7 @@ func (s *TaskStore) GetBlockersForTasks(ctx context.Context, taskIDs []string) (
 	if err != nil {
 		return nil, fmt.Errorf("batch get blockers: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
 	for rows.Next() {
 		var taskID, blockerID string

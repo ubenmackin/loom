@@ -1,5 +1,4 @@
-import { useEffect } from 'react'
-import { Outlet, useNavigate } from 'react-router-dom'
+import { Navigate, Outlet } from 'react-router-dom'
 import { useAuthStore } from '../stores/auth'
 
 interface ProtectedRouteProps {
@@ -7,19 +6,15 @@ interface ProtectedRouteProps {
 }
 
 const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ requireAdmin = false }) => {
-  const navigate = useNavigate()
-  const { isAuthenticated, isAdmin } = useAuthStore()
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  const isAdmin = useAuthStore((s) => s.user?.role === 'admin')
 
-  useEffect(() => {
-    if (!isAuthenticated) {
-      navigate('/login')
-    } else if (requireAdmin && !isAdmin) {
-      navigate('/')
-    }
-  }, [isAuthenticated, isAdmin, requireAdmin, navigate])
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />
+  }
 
-  if (!isAuthenticated || (requireAdmin && !isAdmin)) {
-    return null
+  if (requireAdmin && !isAdmin) {
+    return <Navigate to="/" replace />
   }
 
   return <Outlet />

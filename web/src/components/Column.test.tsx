@@ -64,7 +64,7 @@ describe('CellDropZone', () => {
     )
   })
 
-  it('renders wrapper div with min-h-[40px] class', () => {
+  it('renders wrapper div with ref for droppable', () => {
     render(
       <CellDropZone id="cell-1" storyId="story-1" status="new">
         <span>test</span>
@@ -72,7 +72,7 @@ describe('CellDropZone', () => {
     )
     const child = screen.getByText('test')
     const parentDiv = child.closest('div')
-    expect(parentDiv).toHaveClass('min-h-[40px]')
+    expect(parentDiv).toBeInTheDocument()
   })
 
   it('renders without crashing when children is empty', () => {
@@ -82,9 +82,8 @@ describe('CellDropZone', () => {
       </CellDropZone>,
     )
     // Should not throw — the wrapper div should be present
-    expect(
-      document.querySelector('.min-h-\\[40px\\]'),
-    ).toBeInTheDocument()
+    expect(mockSetNodeRef).toHaveBeenCalledTimes(1)
+    expect(mockSetNodeRef.mock.calls[0][0]).toBeInstanceOf(HTMLElement)
   })
 
   it('passes setNodeRef to the wrapper div', () => {

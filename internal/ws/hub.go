@@ -48,6 +48,7 @@ type Hub struct {
 	upgrader       websocket.Upgrader
 	allowedOrigins []string
 	closed         atomic.Bool
+	started        atomic.Bool
 }
 
 // Compile-time interface guards.
@@ -96,7 +97,14 @@ func NewHub() *Hub {
 
 // Start runs the hub event loop. It handles client registration,
 // unregistration, and event broadcasting. This should be called as a goroutine.
+// Safe to call multiple times — subsequent calls are no-ops.
 func (h *Hub) Start() {
+	if h.started.Swap(true) {
+		return
+	}
+	if h.closed.Load() {
+		return
+	}
 	for {
 		select {
 		case client := <-h.register:
@@ -144,6 +152,11 @@ func (h *Hub) Start() {
 // ServeHTTP implements http.Handler for chi to mount. It upgrades the HTTP
 // connection to WebSocket, creates a client, and starts read/write loops.
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.closed.Load() {
+		http.Error(w, "server shutting down", http.StatusServiceUnavailable)
+		return
+	}
+
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Error("websocket upgrade failed", "error", err)
@@ -194,9 +207,9 @@ func (h *Hub) Broadcast(eventType string, payload any) {
 	}
 
 	select {
-	case h.broadcast <- event:
 	case <-h.done:
 		// Hub stopped while waiting to send — drop the event.
+	case h.broadcast <- event:
 	default:
 		// Broadcast channel full — drop event to avoid blocking.
 		slog.Warn("broadcast channel full, dropping event", "type", eventType)
@@ -237,11 +250,13 @@ func (h *Hub) Stop() {
 		_ = client.conn.Close()
 	}
 
-	// Drain the unregister channel in a goroutine so that any
-	// readLoop goroutines still trying to unregister don't block
-	// forever (goroutine leak).
+	// Close the unregister channel and drain any remaining entries
+	// so that readLoop goroutines still trying to unregister don't
+	// block forever.
+	close(h.unregister)
 	go func() {
 		for range h.unregister {
+			// Drain remaining unregister entries.
 		}
 	}()
 }

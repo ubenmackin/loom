@@ -46,6 +46,7 @@ type TaskStore interface {
 	GetByStory(ctx context.Context, storyID string) ([]*models.Task, error)
 	DetectCycle(ctx context.Context, taskID, dependsOnID string) (bool, error)
 	GetDependents(ctx context.Context, taskID string) ([]*models.Task, error)
+	Transact(ctx context.Context, fn func(context.Context) error) error
 	Delete(ctx context.Context, id string) error
 }
 
@@ -70,11 +71,12 @@ type CommentStore interface {
 	Delete(ctx context.Context, id, authorID string) error
 	MarkAsRead(ctx context.Context, sessionID, commentID string) error
 	GetUnreadForSession(ctx context.Context, sessionID string) ([]*models.Comment, error)
+	GetUnreadForSessionByWorkItem(ctx context.Context, sessionID, workItemID string, workItemType models.WorkItemType) ([]*models.Comment, error)
 }
 
 // TemplateStore defines the interface for interacting with the prompt templates storage.
 type TemplateStore interface {
-	GetByTaskType(ctx context.Context, taskType string) (*models.PromptTemplate, error)
+	GetByTaskType(ctx context.Context, taskType models.TaskType) (*models.PromptTemplate, error)
 	Upsert(ctx context.Context, t *models.PromptTemplate) error
 	List(ctx context.Context) ([]*models.PromptTemplate, error)
 	Delete(ctx context.Context, id string) error

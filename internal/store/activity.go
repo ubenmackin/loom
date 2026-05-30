@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -80,25 +79,12 @@ func (s *ActivityStore) GetByWorkItem(ctx context.Context, workItemID string, wo
 	if err != nil {
 		return nil, fmt.Errorf("get activity for %s %q: %w", workItemType, workItemID, err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	var entries []*models.ActivityLogEntry
-	for rows.Next() {
-		entry, err := scanActivityRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan activity log: %w", err)
-		}
-
-		entries = append(entries, entry)
+	entries, err := collectRows(rows, scanActivityRow)
+	if err != nil {
+		return nil, fmt.Errorf("scan activity log: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate activity log: %w", err)
-	}
-
 	return entries, nil
 }
 
@@ -129,7 +115,7 @@ func (s *ActivityStore) GetByAction(ctx context.Context, limit, offset int, acti
 
 	query := `SELECT id, work_item_id, work_item_type, action, details, created_at
 		 FROM activity_log`
-	args := make([]interface{}, 0)
+	args := make([]any, 0)
 
 	if len(actionPrefixes) > 0 {
 		conditions := make([]string, 0, len(actionPrefixes))
@@ -147,24 +133,12 @@ func (s *ActivityStore) GetByAction(ctx context.Context, limit, offset int, acti
 	if err != nil {
 		return nil, fmt.Errorf("get activity by action: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	var entries []*models.ActivityLogEntry
-	for rows.Next() {
-		entry, err := scanActivityRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan activity log: %w", err)
-		}
-		entries = append(entries, entry)
+	entries, err := collectRows(rows, scanActivityRow)
+	if err != nil {
+		return nil, fmt.Errorf("scan activity log: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate activity log: %w", err)
-	}
-
 	return entries, nil
 }
 
@@ -182,24 +156,11 @@ func (s *ActivityStore) GetRecent(ctx context.Context, limit int) ([]*models.Act
 	if err != nil {
 		return nil, fmt.Errorf("get recent activity: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("rows close error: %v", err)
-		}
-	}()
+	defer closeRows(rows)
 
-	var entries []*models.ActivityLogEntry
-	for rows.Next() {
-		entry, err := scanActivityRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan activity log: %w", err)
-		}
-
-		entries = append(entries, entry)
+	entries, err := collectRows(rows, scanActivityRow)
+	if err != nil {
+		return nil, fmt.Errorf("scan activity log: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate activity log: %w", err)
-	}
-
 	return entries, nil
 }

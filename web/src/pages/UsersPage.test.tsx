@@ -91,7 +91,7 @@ describe('UsersPage', () => {
     mockUseMutation.mockReturnValue(createMockMutation())
 
     render(<UsersPage />)
-    expect(screen.getByText('Loading users...')).toBeInTheDocument()
+    expect(screen.getByText('Loading...')).toBeInTheDocument()
   })
 
   // ── 2. Error state ────────────────────────────────────────────────────
@@ -107,7 +107,7 @@ describe('UsersPage', () => {
 
     render(<UsersPage />)
 
-    expect(screen.getByText(/Error loading users:/)).toBeInTheDocument()
+    expect(screen.getByText(/Error:/)).toBeInTheDocument()
     // Error message text is split across child elements; use a matcher function
     expect(screen.getByText((content) => content.includes('Failed to fetch'))).toBeInTheDocument()
 
@@ -272,11 +272,8 @@ describe('UsersPage', () => {
     })
   })
 
-  // ── 9. Delete button calls deleteMutation ────────────────────────────
+  // ── 9. Delete button opens ConfirmModal ────────────────────────────
   it('calls delete mutation when delete is confirmed', async () => {
-    const originalConfirm = window.confirm
-    window.confirm = vi.fn(() => true)
-
     const deleteMutate = vi.fn()
     mockUseQuery.mockReturnValue({
       data: mockUsers,
@@ -292,9 +289,13 @@ describe('UsersPage', () => {
     const deleteButtons = screen.getAllByText('DELETE')
     await userEvent.click(deleteButtons[0])
 
-    expect(window.confirm).toHaveBeenCalledWith('Are you sure you want to delete this user?')
-    expect(deleteMutate).toHaveBeenCalledWith('user-1')
+    // ConfirmModal should appear
+    expect(screen.getByText('Delete User')).toBeInTheDocument()
+    expect(screen.getByText('Are you sure you want to delete this user? This action cannot be undone.')).toBeInTheDocument()
 
-    window.confirm = originalConfirm
+    // Click Confirm
+    await userEvent.click(screen.getByText('Confirm'))
+
+    expect(deleteMutate).toHaveBeenCalledWith('user-1')
   })
 })

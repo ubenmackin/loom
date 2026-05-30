@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"embed"
 	"fmt"
 	"log"
@@ -30,19 +29,24 @@ var defaultTemplateList = []defaultTemplate{
 	{taskType: models.TaskTypeReview, filename: "default-templates/review.md"},
 }
 
+// TemplateSeeder is the minimal interface needed by SeedDefaults.
+// It is satisfied by *store.TemplateStore.
+type TemplateSeeder interface {
+	Create(ctx context.Context, t *models.PromptTemplate) error
+	List(ctx context.Context) ([]*models.PromptTemplate, error)
+}
+
 // SeedDefaults populates the prompt_templates table with built-in templates
 // if the table is empty. This is called after migrations on server startup.
-func SeedDefaults(ctx context.Context, db *sql.DB) error {
+func SeedDefaults(ctx context.Context, templateStore TemplateSeeder) error {
 	// Check if any templates already exist.
-	var count int
-	err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM prompt_templates").Scan(&count)
+	templates, err := templateStore.List(ctx)
 	if err != nil {
-		return fmt.Errorf("check prompt_templates count: %w", err)
+		return fmt.Errorf("list existing templates: %w", err)
 	}
 
-	if count > 0 {
-		log.Printf("Templates already exist (%d), skipping seed", count)
+	if len(templates) > 0 {
+		log.Printf("Templates already exist (%d), skipping seed", len(templates))
 		return nil
 	}
 
@@ -56,15 +60,15 @@ func SeedDefaults(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("read default template %s: %w", dt.filename, err)
 		}
 
-		id := uuid.New().String()
-		templateText := string(content)
+		t := &models.PromptTemplate{
+			ID:        uuid.New().String(),
+			TaskType:  dt.taskType,
+			Template:  string(content),
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
 
-		_, err = db.ExecContext(ctx,
-			`INSERT INTO prompt_templates (id, task_type, template, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?)`,
-			id, dt.taskType, templateText, now, now,
-		)
-		if err != nil {
+		if err := templateStore.Create(ctx, t); err != nil {
 			return fmt.Errorf("seed template %q: %w", dt.taskType, err)
 		}
 

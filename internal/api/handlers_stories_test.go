@@ -5,90 +5,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/go-chi/chi/v5"
-
-	"github.com/ubenmackin/loom/internal/dispatcher"
 	"github.com/ubenmackin/loom/internal/models"
-	"github.com/ubenmackin/loom/internal/store"
 	"github.com/ubenmackin/loom/internal/testhelpers"
 )
-
-func newTestRouterStories(t *testing.T) (chi.Router, *store.StoryStore, *store.TaskStore, *store.SessionStore, *store.CommentStore, *store.TemplateStore, *store.ActivityStore) {
-	t.Helper()
-
-	// Set agent secret so SessionAuthenticator allows /sessions and /work routes via X-Agent-Secret.
-	origAgentSecret := os.Getenv("LOOM_AGENT_SECRET")
-	os.Setenv("LOOM_AGENT_SECRET", "test-agent-secret")
-	t.Cleanup(func() {
-		if origAgentSecret == "" {
-			os.Unsetenv("LOOM_AGENT_SECRET")
-		} else {
-			os.Setenv("LOOM_AGENT_SECRET", origAgentSecret)
-		}
-	})
-
-	dbConn := testhelpers.SetupTestDB(t)
-
-	storyStore := store.NewStoryStore(dbConn)
-	taskStore := store.NewTaskStore(dbConn)
-	sessionStore := store.NewSessionStore(dbConn)
-	commentStore := store.NewCommentStore(dbConn)
-	templateStore := store.NewTemplateStore(dbConn)
-	activityStore := store.NewActivityStore(dbConn)
-	userStore := store.NewUserStore(dbConn)
-
-	// Create a test user and session token so protected routes work in tests.
-	testUser, err := userStore.CreateUser(context.Background(), "testuser", "test@example.com", "Test User", "password123", models.RoleNormal)
-	if err != nil {
-		t.Fatalf("create test user: %v", err)
-	}
-	testToken, err := userStore.CreateSession(context.Background(), testUser.ID)
-	if err != nil {
-		t.Fatalf("create test user session: %v", err)
-	}
-	testAuthTokens.Store(t.Name(), testToken)
-	t.Cleanup(func() { testAuthTokens.Delete(t.Name()) })
-
-	broadcaster := &testBroadcaster{}
-	d := dispatcher.NewDispatcher(dispatcher.DispatcherDeps{
-		StoryStore:         storyStore,
-		TaskStore:          taskStore,
-		SessionStore:       sessionStore,
-		TemplateStore:      templateStore,
-		CommentStore:       commentStore,
-		ActivityStore:      activityStore,
-		Broadcaster:        broadcaster,
-		StalenessThreshold: 30 * time.Minute,
-	})
-
-	apiRouter := NewRouter(
-		storyStore,
-		taskStore,
-		sessionStore,
-		commentStore,
-		templateStore,
-		activityStore,
-		userStore,
-		d,
-		&mockHub{},
-	)
-
-	// Mount under /api — same as production (cmd/server/main.go).
-	mux := chi.NewRouter()
-	mux.Mount("/api", apiRouter)
-
-	return mux, storyStore, taskStore, sessionStore, commentStore, templateStore, activityStore
-}
 
 func TestCreateStory(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "POST", "/api/stories", map[string]any{
 		"title":          "Test Story",
@@ -126,7 +53,7 @@ func TestCreateStory(t *testing.T) {
 func TestCreateStory_MissingTitle(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "POST", "/api/stories", map[string]any{
 		"description": "No title",
@@ -140,7 +67,7 @@ func TestCreateStory_MissingTitle(t *testing.T) {
 func TestGetStory(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, taskStore, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, taskStore, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Get Story"; s.Status = models.StatusReady })
 	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
@@ -182,7 +109,7 @@ func TestGetStory(t *testing.T) {
 func TestGetStory_NotFound(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "GET", "/api/stories/STORY-999", nil)
 
@@ -194,7 +121,7 @@ func TestGetStory_NotFound(t *testing.T) {
 func TestListStories(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Story A"; s.Status = models.StatusNew })
 	testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Story B"; s.Status = models.StatusReady })
@@ -249,7 +176,7 @@ func TestListStories(t *testing.T) {
 func TestUpdateStory(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Original Title"; s.Status = models.StatusNew })
 
@@ -273,7 +200,7 @@ func TestUpdateStory(t *testing.T) {
 func TestUpdateStory_NotFound(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "PUT", "/api/stories/STORY-999", map[string]any{
 		"title": "Updated",
@@ -287,7 +214,7 @@ func TestUpdateStory_NotFound(t *testing.T) {
 func TestUpdateStory_PartialUpdate(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Partial Update"; s.Status = models.StatusNew })
 
@@ -311,7 +238,7 @@ func TestUpdateStory_PartialUpdate(t *testing.T) {
 func TestDeleteStory(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Delete Story"; s.Status = models.StatusNew })
 
@@ -321,16 +248,17 @@ func TestDeleteStory(t *testing.T) {
 		t.Fatalf("deleteStory status = %d, want %d", rr.Code, http.StatusNoContent)
 	}
 
-	_, err := storyStore.GetByID(context.Background(), story.ID)
-	if err == nil {
-		t.Fatal("deleteStory: story still exists after deletion")
+	// Verify story is gone through the API, not the store.
+	rr = doRequest(t, mux, "GET", "/api/stories/"+story.ID, nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("getStory after delete status = %d, want %d", rr.Code, http.StatusNotFound)
 	}
 }
 
 func TestDeleteStory_NotNew(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Delete Not New"; s.Status = models.StatusReady })
 
@@ -351,7 +279,7 @@ func TestDeleteStory_NotNew(t *testing.T) {
 func TestDeleteStory_NotFound(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "DELETE", "/api/stories/STORY-999", nil)
 
@@ -363,7 +291,7 @@ func TestDeleteStory_NotFound(t *testing.T) {
 func TestCreateStory_WithAllFields(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "POST", "/api/stories", map[string]any{
 		"title":           "Full Story",
@@ -400,7 +328,7 @@ func TestCreateStory_WithAllFields(t *testing.T) {
 func TestListStories_Empty(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "GET", "/api/stories", nil)
 
@@ -419,7 +347,7 @@ func TestListStories_Empty(t *testing.T) {
 func TestGetStory_EmptyTasks(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "No Tasks Story"; s.Status = models.StatusNew })
 
@@ -445,7 +373,7 @@ func TestGetStory_EmptyTasks(t *testing.T) {
 func TestUpdateStoryStatus(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Status Update Story"; s.Status = models.StatusNew })
 
@@ -469,7 +397,7 @@ func TestUpdateStoryStatus(t *testing.T) {
 func TestUpdateStoryStatus_Invalid(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Invalid Status Story"; s.Status = models.StatusNew })
 
@@ -485,7 +413,7 @@ func TestUpdateStoryStatus_Invalid(t *testing.T) {
 func TestCreateStory_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "POST", "/api/stories", nil)
 
@@ -497,7 +425,7 @@ func TestCreateStory_InvalidJSON(t *testing.T) {
 func TestUpdateStory_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Invalid JSON Story"; s.Status = models.StatusNew })
 
@@ -511,7 +439,7 @@ func TestUpdateStory_InvalidJSON(t *testing.T) {
 func TestCreateTaskUnderStory(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Task Under Story"; s.Status = models.StatusReady })
 
@@ -547,7 +475,7 @@ func TestCreateTaskUnderStory(t *testing.T) {
 func TestCreateTaskUnderStory_InvalidStory(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "POST", "/api/stories/STORY-999/tasks", map[string]any{
 		"title": "New Task",
@@ -561,7 +489,7 @@ func TestCreateTaskUnderStory_InvalidStory(t *testing.T) {
 func TestGetBoard(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, taskStore, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, taskStore, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Board Story"; s.Status = models.StatusReady })
 	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
@@ -593,7 +521,7 @@ func TestGetBoard(t *testing.T) {
 func TestCORSHeaders(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	req := httptest.NewRequest("OPTIONS", "/api/stories", nil)
 	req.Header.Set("Origin", "http://localhost:5173")
@@ -612,7 +540,7 @@ func TestCORSHeaders(t *testing.T) {
 func TestSessionRegister(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "POST", "/api/sessions/register", map[string]any{
 		"harness_type": "opencode",
@@ -640,7 +568,7 @@ func TestSessionRegister(t *testing.T) {
 func TestSessionRegister_MissingHarnessType(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "POST", "/api/sessions/register", map[string]any{})
 
@@ -652,7 +580,7 @@ func TestSessionRegister_MissingHarnessType(t *testing.T) {
 func TestSessionGet(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, sessionStore, _, _, _ := newTestRouterStories(t)
+	mux, _, _, sessionStore, _, _, _ := newTestRouter(t)
 
 	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
 		s.HarnessType = "opencode"
@@ -678,7 +606,7 @@ func TestSessionGet(t *testing.T) {
 func TestSessionDisconnect(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, sessionStore, _, _, _ := newTestRouterStories(t)
+	mux, _, _, sessionStore, _, _, _ := newTestRouter(t)
 
 	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
 		s.HarnessType = "opencode"
@@ -690,20 +618,23 @@ func TestSessionDisconnect(t *testing.T) {
 		t.Fatalf("disconnectSession status = %d, want %d", rr.Code, http.StatusNoContent)
 	}
 
-	got, err := sessionStore.GetByID(context.Background(), session.ID)
-	if err != nil {
-		t.Fatalf("GetByID() error = %v", err)
+	// Verify session status through the API, not the store.
+	rr = doRequest(t, mux, "GET", "/api/sessions/"+session.ID, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("getSession after disconnect status = %d, want %d", rr.Code, http.StatusOK)
 	}
-
-	if got.Status != models.SessionStatusDisconnected {
-		t.Errorf("disconnectSession status = %q, want %q", got.Status, models.SessionStatusDisconnected)
+	var resp map[string]any
+	decodeRespJSON(t, rr, &resp)
+	status, _ := resp["status"].(string)
+	if status != string(models.SessionStatusDisconnected) {
+		t.Errorf("disconnectSession status = %q, want %q", status, models.SessionStatusDisconnected)
 	}
 }
 
 func TestSessionGet_NotFound(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "GET", "/api/sessions/nonexistent", nil)
 
@@ -715,7 +646,7 @@ func TestSessionGet_NotFound(t *testing.T) {
 func TestSessionGetTasks(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, taskStore, sessionStore, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, taskStore, sessionStore, _, _, _ := newTestRouter(t)
 
 	session := testhelpers.CreateTestSession(t, sessionStore, func(s *models.Session) {
 		s.HarnessType = "opencode"
@@ -753,7 +684,7 @@ func TestSessionGetTasks(t *testing.T) {
 func TestCreateTemplate(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, templateStore, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	// Use upsert (PUT) to create a template.
 	rr := doRequest(t, mux, "PUT", "/api/templates/code", map[string]any{
@@ -771,14 +702,12 @@ func TestCreateTemplate(t *testing.T) {
 	if template != "Implement {{task.title}} for {{story.title}}" {
 		t.Errorf("createTemplate template = %q, want %q", template, "Implement {{task.title}} for {{story.title}}")
 	}
-
-	_ = templateStore
 }
 
 func TestGetTemplate(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, templateStore, _ := newTestRouterStories(t)
+	mux, _, _, _, _, templateStore, _ := newTestRouter(t)
 
 	testhelpers.CreateTestTemplate(t, templateStore, func(tmpl *models.PromptTemplate) {
 		tmpl.TaskType = "code"
@@ -803,7 +732,7 @@ func TestGetTemplate(t *testing.T) {
 func TestListTemplates(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, templateStore, _ := newTestRouterStories(t)
+	mux, _, _, _, _, templateStore, _ := newTestRouter(t)
 
 	testhelpers.CreateTestTemplate(t, templateStore, func(tmpl *models.PromptTemplate) {
 		tmpl.TaskType = "code"
@@ -831,7 +760,7 @@ func TestListTemplates(t *testing.T) {
 func TestUpsertTemplate(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, templateStore, _ := newTestRouterStories(t)
+	mux, _, _, _, _, templateStore, _ := newTestRouter(t)
 
 	// Create initial template.
 	testhelpers.CreateTestTemplate(t, templateStore, func(tmpl *models.PromptTemplate) {
@@ -867,15 +796,14 @@ func TestUpsertTemplate(t *testing.T) {
 func TestCreateComment(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, commentStore, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Comment Story"; s.Status = models.StatusNew })
 
-	rr := doRequest(t, mux, "POST", "/api/work-items/"+story.ID+"/comments", map[string]any{
-		"work_item_type": "story",
-		"author_id":      "user-1",
-		"author_type":    "human",
-		"body":           "This is a comment",
+	rr := doRequest(t, mux, "POST", "/api/work-items/"+story.ID+"/comments?type=story", map[string]any{
+		"author_id":   "user-1",
+		"author_type": "human",
+		"body":        "This is a comment",
 	})
 
 	if rr.Code != http.StatusCreated {
@@ -889,14 +817,12 @@ func TestCreateComment(t *testing.T) {
 	if body != "This is a comment" {
 		t.Errorf("createComment body = %q, want %q", body, "This is a comment")
 	}
-
-	_ = commentStore
 }
 
 func TestGetComments(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, commentStore, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, commentStore, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Get Comments Story"; s.Status = models.StatusNew })
 	createTestComment(t, commentStore, story.ID, "story", "user-1", "human", "Comment 1")
@@ -919,7 +845,7 @@ func TestGetComments(t *testing.T) {
 func TestUpdateStory_RequiresBuild(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Requires Build Story"; s.Status = models.StatusNew })
 
@@ -943,7 +869,7 @@ func TestUpdateStory_RequiresBuild(t *testing.T) {
 func TestUpdateStory_RequiresReview(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Requires Review Story"; s.Status = models.StatusNew })
 
@@ -967,7 +893,7 @@ func TestUpdateStory_RequiresReview(t *testing.T) {
 func TestBatchReorderStories(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	// Create 3 stories with distinct sort orders.
 	storyA := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
@@ -1004,36 +930,33 @@ func TestBatchReorderStories(t *testing.T) {
 		t.Errorf("batchReorderStories updated = %d, want %d", int(updated), 3)
 	}
 
-	// Verify new sort orders by fetching stories directly.
-	gotA, err := storyStore.GetByID(context.Background(), storyA.ID)
-	if err != nil {
-		t.Fatalf("get storyA: %v", err)
-	}
-	if gotA.SortOrder != 3 {
-		t.Errorf("storyA sort_order = %d, want %d", gotA.SortOrder, 3)
-	}
-
-	gotB, err := storyStore.GetByID(context.Background(), storyB.ID)
-	if err != nil {
-		t.Fatalf("get storyB: %v", err)
-	}
-	if gotB.SortOrder != 2 {
-		t.Errorf("storyB sort_order = %d, want %d", gotB.SortOrder, 2)
-	}
-
-	gotC, err := storyStore.GetByID(context.Background(), storyC.ID)
-	if err != nil {
-		t.Fatalf("get storyC: %v", err)
-	}
-	if gotC.SortOrder != 1 {
-		t.Errorf("storyC sort_order = %d, want %d", gotC.SortOrder, 1)
+	// Verify new sort orders by fetching stories through the API.
+	for _, tc := range []struct {
+		id        string
+		sortOrder float64
+	}{
+		{storyA.ID, 3},
+		{storyB.ID, 2},
+		{storyC.ID, 1},
+	} {
+		rr := doRequest(t, mux, "GET", "/api/stories/"+tc.id, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("get story %s after reorder: status %d", tc.id, rr.Code)
+		}
+		var detail map[string]any
+		decodeRespJSON(t, rr, &detail)
+		storyData, _ := detail["story"].(map[string]any)
+		so, _ := storyData["sort_order"].(float64)
+		if so != tc.sortOrder {
+			t.Errorf("%s sort_order = %v, want %v", tc.id, so, tc.sortOrder)
+		}
 	}
 }
 
 func TestBatchReorderStories_EmptyList(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "PATCH", "/api/stories/reorder", map[string]any{
 		"stories": []map[string]any{},
@@ -1047,7 +970,7 @@ func TestBatchReorderStories_EmptyList(t *testing.T) {
 func TestBatchReorderStories_NotFound(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "PATCH", "/api/stories/reorder", map[string]any{
 		"stories": []map[string]any{
@@ -1063,7 +986,7 @@ func TestBatchReorderStories_NotFound(t *testing.T) {
 func TestBatchReorderStories_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	req := httptest.NewRequest("PATCH", "/api/stories/reorder", strings.NewReader("not json"))
 	req.Header.Set("Content-Type", "application/json")
@@ -1081,7 +1004,7 @@ func TestBatchReorderStories_InvalidJSON(t *testing.T) {
 func TestCreateStory_EmptyBody(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	rr := doRequest(t, mux, "POST", "/api/stories", nil)
 
@@ -1093,7 +1016,7 @@ func TestCreateStory_EmptyBody(t *testing.T) {
 func TestCreateStory_MalformedJSON(t *testing.T) {
 	t.Parallel()
 
-	mux, _, _, _, _, _, _ := newTestRouterStories(t)
+	mux, _, _, _, _, _, _ := newTestRouter(t)
 
 	// Send raw malformed JSON body (not valid JSON).
 	req := httptest.NewRequest("POST", "/api/stories", strings.NewReader("not json"))
@@ -1120,7 +1043,7 @@ func TestCreateStory_MalformedJSON(t *testing.T) {
 func TestListStories_AssignedToFilter(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	storyA := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Assigned Story A"; s.Status = models.StatusNew })
 	storyA.AssignedTo = "user-1"
@@ -1156,7 +1079,7 @@ func TestListStories_AssignedToFilter(t *testing.T) {
 func TestUpdateStoryStatus_MissingStatus(t *testing.T) {
 	t.Parallel()
 
-	mux, storyStore, _, _, _, _, _ := newTestRouterStories(t)
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
 
 	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) { s.Title = "Missing Status Story"; s.Status = models.StatusNew })
 

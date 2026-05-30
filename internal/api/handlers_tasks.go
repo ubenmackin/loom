@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ubenmackin/loom/internal/dispatcher"
 	"github.com/ubenmackin/loom/internal/models"
 	"github.com/ubenmackin/loom/internal/store"
 )
@@ -36,25 +39,19 @@ type updateTaskRequest struct {
 	IsStale      *bool   `json:"is_stale,omitempty"`
 }
 
-type reorderTaskRequest struct {
-	StoryID   *string `json:"story_id,omitempty"`
-	Status    *string `json:"status,omitempty"`
-	SortOrder *int    `json:"sort_order,omitempty"`
+type generateTaskItem struct {
+	Title       string   `json:"title"`
+	Description string   `json:"description,omitempty"`
+	TaskType    string   `json:"task_type,omitempty"`  // defaults to "code"
+	DependsOn   []string `json:"depends_on,omitempty"` // positional refs like "#1", or real task IDs
 }
 
-type batchReorderItem struct {
-	ID        string  `json:"id"`
-	SortOrder int     `json:"sort_order"`
-	Status    *string `json:"status,omitempty"`
-	StoryID   *string `json:"story_id,omitempty"`
+type generateTasksRequest struct {
+	Tasks []generateTaskItem `json:"tasks"`
 }
 
-type batchReorderRequest struct {
-	Tasks []batchReorderItem `json:"tasks"`
-}
-
-type addDependencyRequest struct {
-	DependsOnTaskID string `json:"depends_on_task_id"`
+type generateTasksResponse struct {
+	Tasks []*models.Task `json:"tasks"`
 }
 
 type taskDetailResponse struct {
@@ -106,23 +103,8 @@ func (h *handlers) listTasks(w http.ResponseWriter, r *http.Request) {
 
 // createTaskUnderStory handles POST /api/stories/{id}/tasks
 func (h *handlers) createTaskUnderStory(w http.ResponseWriter, r *http.Request) {
-	storyID, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeStory))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "story not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid story id: "+err.Error())
-		return
-	}
-
-	// Verify story exists (redundant after resolveIDParam for non-numeric IDs, but kept for clarity).
-	if _, err := h.stories.GetByID(r.Context(), storyID); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "story not found")
-			return
-		}
-		respondError(w, http.StatusInternalServerError, "failed to get story: "+err.Error())
+	storyID, ok := h.resolveAndRespond(w, r, "id", string(models.WorkItemTypeStory), "story")
+	if !ok {
 		return
 	}
 
@@ -170,13 +152,8 @@ func (h *handlers) createTaskUnderStory(w http.ResponseWriter, r *http.Request) 
 
 // getTask handles GET /api/tasks/{id}
 func (h *handlers) getTask(w http.ResponseWriter, r *http.Request) {
-	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "task not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
+	id, ok := h.resolveAndRespond(w, r, "id", string(models.WorkItemTypeTask), "task")
+	if !ok {
 		return
 	}
 
@@ -217,13 +194,8 @@ func (h *handlers) getTask(w http.ResponseWriter, r *http.Request) {
 
 // updateTask handles PUT /api/tasks/{id}
 func (h *handlers) updateTask(w http.ResponseWriter, r *http.Request) {
-	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "task not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
+	id, ok := h.resolveAndRespond(w, r, "id", string(models.WorkItemTypeTask), "task")
+	if !ok {
 		return
 	}
 
@@ -302,13 +274,8 @@ func (h *handlers) updateTask(w http.ResponseWriter, r *http.Request) {
 
 // updateTaskStatus handles PATCH /api/tasks/{id}/status
 func (h *handlers) updateTaskStatus(w http.ResponseWriter, r *http.Request) {
-	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "task not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
+	id, ok := h.resolveAndRespond(w, r, "id", string(models.WorkItemTypeTask), "task")
+	if !ok {
 		return
 	}
 
@@ -351,281 +318,154 @@ func (h *handlers) updateTaskStatus(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, task)
 }
 
-// updateTaskReorder handles PATCH /api/tasks/{id}/reorder
-func (h *handlers) updateTaskReorder(w http.ResponseWriter, r *http.Request) {
-	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "task not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
-		return
-	}
-
-	var req reorderTaskRequest
-	if err := decodeJSON(r, w, &req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return
-	}
-
-	// Get current task
-	task, err := h.tasks.GetByID(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "task not found")
-			return
-		}
-		respondError(w, http.StatusInternalServerError, "failed to get task: "+err.Error())
-		return
-	}
-
-	// Apply partial updates
-	if req.StoryID != nil {
-		task.StoryID = *req.StoryID
-	}
-	if req.Status != nil {
-		if !validStatus(*req.Status) {
-			respondError(w, http.StatusBadRequest, "invalid status value")
-			return
-		}
-		task.Status = models.Status(*req.Status)
-	}
-	if req.SortOrder != nil {
-		task.SortOrder = *req.SortOrder
-	}
-
-	if err := h.tasks.Update(r.Context(), task); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusConflict, "task was modified or deleted concurrently")
-			return
-		}
-		respondError(w, http.StatusInternalServerError, "failed to reorder task: "+err.Error())
-		return
-	}
-
-	respondJSON(w, http.StatusOK, task)
-}
-
-// batchReorderTasks handles PATCH /api/tasks/reorder
-func (h *handlers) batchReorderTasks(w http.ResponseWriter, r *http.Request) {
-	var req batchReorderRequest
-	if err := decodeJSON(r, w, &req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return
-	}
-
-	if len(req.Tasks) == 0 {
-		respondError(w, http.StatusBadRequest, "tasks array is required and must not be empty")
-		return
-	}
-
-	// Validate all task IDs exist first
-	taskIDs := make([]string, len(req.Tasks))
-	for i, item := range req.Tasks {
-		taskIDs[i] = item.ID
-	}
-
-	// Fetch all tasks in the batch
-	tasks := make([]*models.Task, len(req.Tasks))
-	for i, item := range req.Tasks {
-		task, err := h.tasks.GetByID(r.Context(), item.ID)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				respondError(w, http.StatusNotFound, "task "+item.ID+" not found")
-				return
-			}
-			respondError(w, http.StatusInternalServerError, "failed to get task: "+err.Error())
-			return
-		}
-		tasks[i] = task
-	}
-
-	// Apply updates to each task
-	for i, item := range req.Tasks {
-		task := tasks[i]
-		task.SortOrder = item.SortOrder
-		if item.Status != nil {
-			if !validStatus(*item.Status) {
-				respondError(w, http.StatusBadRequest, "invalid status for task "+item.ID)
-				return
-			}
-			task.Status = models.Status(*item.Status)
-		}
-		if item.StoryID != nil {
-			task.StoryID = *item.StoryID
-		}
-	}
-
-	// Apply all updates in a transaction
-	if err := h.tasks.BatchUpdate(r.Context(), tasks); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to batch update tasks: "+err.Error())
-		return
-	}
-
-	respondJSON(w, http.StatusOK, map[string]any{"updated": len(tasks)})
-}
-
-// getTaskBlockers handles GET /api/tasks/{id}/blockers
-func (h *handlers) getTaskBlockers(w http.ResponseWriter, r *http.Request) {
-	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "task not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
-		return
-	}
-
-	blockers, err := h.tasks.GetBlockers(r.Context(), id)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to get blockers: "+err.Error())
-		return
-	}
-
-	if blockers == nil {
-		blockers = []*models.Task{}
-	}
-	respondJSON(w, http.StatusOK, blockers)
-}
-
-// addDependency handles POST /api/tasks/{id}/dependencies
-func (h *handlers) addDependency(w http.ResponseWriter, r *http.Request) {
-	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "task not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
-		return
-	}
-
-	var req addDependencyRequest
-	if err := decodeJSON(r, w, &req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return
-	}
-
-	if req.DependsOnTaskID == "" {
-		respondError(w, http.StatusBadRequest, "depends_on_task_id is required")
-		return
-	}
-
-	if err := h.tasks.AddDependency(r.Context(), id, req.DependsOnTaskID); err != nil {
-		if errors.Is(err, store.ErrSelfDependency) || errors.Is(err, store.ErrCycleDetected) {
-			respondError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		respondError(w, http.StatusInternalServerError, "failed to add dependency: "+err.Error())
-		return
-	}
-
-	// Return updated dependencies list.
-	deps, err := h.tasks.GetDependencies(r.Context(), id)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to get dependencies: "+err.Error())
-		return
-	}
-	if deps == nil {
-		deps = []string{}
-	}
-
-	respondJSON(w, http.StatusOK, map[string]any{"task_id": id, "dependencies": deps})
-}
-
-// removeDependency handles DELETE /api/tasks/{id}/dependencies/{dependsOnId}
-func (h *handlers) removeDependency(w http.ResponseWriter, r *http.Request) {
-	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "task not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
-		return
-	}
-
-	dependsOnID := chi.URLParam(r, "dependsOnId")
-	if dependsOnID == "" {
-		respondError(w, http.StatusBadRequest, "missing depends_on id")
-		return
-	}
-
-	if err := h.tasks.RemoveDependency(r.Context(), id, dependsOnID); err != nil {
-		errMsg := err.Error()
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, errMsg)
-			return
-		}
-		respondError(w, http.StatusInternalServerError, "failed to remove dependency: "+errMsg)
-		return
-	}
-
-	// Return updated dependencies list.
-	deps, err := h.tasks.GetDependencies(r.Context(), id)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to get dependencies: "+err.Error())
-		return
-	}
-	if deps == nil {
-		deps = []string{}
-	}
-
-	respondJSON(w, http.StatusOK, map[string]any{"task_id": id, "dependencies": deps})
-}
-
 // getTaskActivity handles GET /api/tasks/{id}/activity
 func (h *handlers) getTaskActivity(w http.ResponseWriter, r *http.Request) {
-	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "task not found")
+	h.getWorkItemActivity(w, r, models.WorkItemTypeTask, "task")
+}
+
+// generateTasks handles POST /api/stories/{id}/generate-tasks
+func (h *handlers) generateTasks(w http.ResponseWriter, r *http.Request) {
+	storyID, ok := h.resolveAndRespond(w, r, "id", string(models.WorkItemTypeStory), "story")
+	if !ok {
+		return
+	}
+
+	var req generateTasksRequest
+	if err := decodeJSON(r, w, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	// Validate: at least one task provided.
+	if len(req.Tasks) == 0 {
+		respondError(w, http.StatusBadRequest, "at least one task is required")
+		return
+	}
+
+	// Validate all tasks have titles and valid task types.
+	for i, item := range req.Tasks {
+		if strings.TrimSpace(item.Title) == "" {
+			respondError(w, http.StatusBadRequest, fmt.Sprintf("task[%d]: title is required", i))
 			return
 		}
-		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
-		return
-	}
-
-	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > 500 {
-		limit = 500
-	}
-
-	offset := 0
-	if v := r.URL.Query().Get("offset"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			offset = n
+		tt := item.TaskType
+		if tt != "" && !validTaskType(tt) {
+			respondError(w, http.StatusBadRequest, fmt.Sprintf("task[%d]: invalid task_type %q", i, tt))
+			return
 		}
 	}
 
-	entries, err := h.activity.GetByWorkItem(r.Context(), id, models.WorkItemTypeTask, limit, offset)
+	// Phase 1 & 2 — wrapped in a database transaction for atomicity.
+	var created []*models.Task
+	err := h.tasks.Transact(r.Context(), func(txCtx context.Context) error {
+		created = make([]*models.Task, 0, len(req.Tasks))
+		posToID := make(map[int]string) // positional index → real task ID
+
+		// Phase 1: Create all tasks in order.
+		for i, item := range req.Tasks {
+			taskType := item.TaskType
+			if taskType == "" {
+				taskType = string(models.TaskTypeCode)
+			}
+
+			task := &models.Task{
+				StoryID:     storyID,
+				Title:       strings.TrimSpace(item.Title),
+				Description: item.Description,
+				TaskType:    models.TaskType(taskType),
+				Status:      models.StatusNew,
+			}
+
+			if err := h.tasks.Create(txCtx, task); err != nil {
+				return fmt.Errorf("failed to create task[%d]: %w", i, err)
+			}
+
+			posToID[i] = task.ID
+			created = append(created, task)
+		}
+
+		// Phase 2: Resolve and add dependencies.
+		for i, item := range req.Tasks {
+			if len(item.DependsOn) == 0 {
+				continue
+			}
+			taskID := posToID[i]
+			for _, ref := range item.DependsOn {
+				var depID string
+				if strings.HasPrefix(ref, "#") {
+					// Positional reference: "#1" means index 1 (0-based).
+					idxStr := strings.TrimPrefix(ref, "#")
+					idx, err := strconv.Atoi(idxStr)
+					if err != nil {
+						return fmt.Errorf("task[%d]: invalid positional dependency %q", i, ref)
+					}
+					var found bool
+					depID, found = posToID[idx]
+					if !found {
+						return fmt.Errorf("task[%d]: positional dependency %q references non-existent task index", i, ref)
+					}
+				} else {
+					// Treat as a real task ID (may reference existing tasks).
+					depID = ref
+				}
+
+				if err := h.tasks.AddDependency(txCtx, taskID, depID); err != nil {
+					return fmt.Errorf("task[%d]: failed to add dependency on %q: %w", i, depID, err)
+				}
+			}
+		}
+
+		return nil
+	})
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to get activity: "+err.Error())
+		respondError(w, http.StatusInternalServerError, "failed to generate tasks: "+err.Error())
 		return
 	}
 
-	if entries == nil {
-		entries = []*models.ActivityLogEntry{}
+	// Activity logging (outside transaction — separate store).
+	for _, task := range created {
+		currentUser := GetUser(r)
+		details := "Created via batch generation"
+		if currentUser != nil {
+			details = "Created by user " + currentUser.Username + " via batch generation"
+		}
+		h.logActivity(r.Context(), &models.ActivityLogEntry{
+			WorkItemID:   task.ID,
+			WorkItemType: models.WorkItemTypeTask,
+			Action:       "task_created",
+			Details:      details,
+		})
 	}
-	respondJSON(w, http.StatusOK, entries)
+
+	// Broadcast "tasks_generated" WebSocket event via the dispatcher.
+	h.dispatch.Submit(r.Context(), dispatcher.Event{
+		Type: dispatcher.EventTasksGenerated,
+		Payload: map[string]any{
+			"story_id": storyID,
+			"count":    len(created),
+		},
+	})
+
+	// Log a batch activity entry on the story.
+	currentUser := GetUser(r)
+	batchDetails := fmt.Sprintf("%d tasks generated", len(created))
+	if currentUser != nil {
+		batchDetails = "Batch of " + batchDetails + " by user " + currentUser.Username
+	}
+	h.logActivity(r.Context(), &models.ActivityLogEntry{
+		WorkItemID:   storyID,
+		WorkItemType: models.WorkItemTypeStory,
+		Action:       "tasks_generated",
+		Details:      batchDetails,
+	})
+
+	respondJSON(w, http.StatusCreated, generateTasksResponse{Tasks: created})
 }
 
 // deleteTask handles DELETE /api/tasks/{id}
 func (h *handlers) deleteTask(w http.ResponseWriter, r *http.Request) {
-	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeTask))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "task not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
+	id, ok := h.resolveAndRespond(w, r, "id", string(models.WorkItemTypeTask), "task")
+	if !ok {
 		return
 	}
 

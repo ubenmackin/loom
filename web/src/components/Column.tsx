@@ -23,7 +23,7 @@ export function CellDropZone({
   })
 
   return (
-    <div ref={setNodeRef} className="min-h-[40px]">
+    <div ref={setNodeRef}>
       {children}
     </div>
   )

@@ -12,8 +12,8 @@ import (
 // checkStaleness identifies sessions that have not been seen within the
 // staleness threshold and flags them along with their assigned tasks.
 func (d *Dispatcher) checkStaleness(ctx context.Context) {
-	d.hub.Broadcast("dispatcher_event", map[string]string{
-		"type":      "staleness_check",
+	d.hub.Broadcast(EventDispatcherAction, map[string]string{
+		"type":      EventStalenessCheck,
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 
@@ -37,7 +37,7 @@ func (d *Dispatcher) checkStaleness(ctx context.Context) {
 			continue
 		}
 
-		d.hub.Broadcast("session_stale", map[string]string{
+		d.hub.Broadcast(EventSessionStale, map[string]string{
 			"session_id": session.ID,
 			"status":     string(models.SessionStatusStale),
 		})
@@ -62,13 +62,17 @@ func (d *Dispatcher) checkStaleness(ctx context.Context) {
 				continue
 			}
 
-			taskDetails, _ := json.Marshal(map[string]string{
+			taskDetails, err := json.Marshal(map[string]string{
 				"session_id": session.ID,
 				"reason":     "session_stale",
 			})
-			d.logActivity(ctx, task.ID, string(models.WorkItemTypeTask), "marked_stale", string(taskDetails))
+			if err != nil {
+				slog.Error("dispatcher: failed to marshal staleness details", "error", err)
+			} else {
+				d.logActivity(ctx, task.ID, string(models.WorkItemTypeTask), "marked_stale", string(taskDetails))
+			}
 
-			d.hub.Broadcast("task_stale", map[string]string{
+			d.hub.Broadcast(EventTaskStale, map[string]string{
 				"task_id":    task.ID,
 				"session_id": session.ID,
 				"is_stale":   "true",

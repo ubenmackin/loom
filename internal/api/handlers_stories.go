@@ -3,7 +3,6 @@ package api
 import (
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -39,15 +38,6 @@ type updateStatusRequest struct {
 	Status string `json:"status"`
 }
 
-type batchStoryReorderItem struct {
-	ID        string `json:"id"`
-	SortOrder int    `json:"sort_order"`
-}
-
-type batchStoryReorderRequest struct {
-	Stories []batchStoryReorderItem `json:"stories"`
-}
-
 type storyWithTasksResponse struct {
 	Story *models.Story  `json:"story"`
 	Tasks []*models.Task `json:"tasks"`
@@ -65,6 +55,7 @@ func (h *handlers) registerStoryRoutes(r chi.Router) {
 		r.Patch("/status", h.updateStoryStatus)
 		r.Delete("/", h.deleteStory)
 		r.Get("/activity", h.getStoryActivity)
+		r.Post("/generate-tasks", h.generateTasks)
 	})
 }
 
@@ -140,13 +131,8 @@ func (h *handlers) createStory(w http.ResponseWriter, r *http.Request) {
 
 // getStory handles GET /api/stories/{id}
 func (h *handlers) getStory(w http.ResponseWriter, r *http.Request) {
-	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeStory))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "story not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid story id: "+err.Error())
+	id, ok := h.resolveAndRespond(w, r, "id", string(models.WorkItemTypeStory), "story")
+	if !ok {
 		return
 	}
 
@@ -172,13 +158,8 @@ func (h *handlers) getStory(w http.ResponseWriter, r *http.Request) {
 
 // updateStory handles PUT /api/stories/{id}
 func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
-	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeStory))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "story not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid story id: "+err.Error())
+	id, ok := h.resolveAndRespond(w, r, "id", string(models.WorkItemTypeStory), "story")
+	if !ok {
 		return
 	}
 
@@ -298,13 +279,8 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 
 // updateStoryStatus handles PATCH /api/stories/{id}/status
 func (h *handlers) updateStoryStatus(w http.ResponseWriter, r *http.Request) {
-	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeStory))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "story not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid story id: "+err.Error())
+	id, ok := h.resolveAndRespond(w, r, "id", string(models.WorkItemTypeStory), "story")
+	if !ok {
 		return
 	}
 
@@ -373,13 +349,8 @@ func (h *handlers) updateStoryStatus(w http.ResponseWriter, r *http.Request) {
 
 // deleteStory handles DELETE /api/stories/{id}
 func (h *handlers) deleteStory(w http.ResponseWriter, r *http.Request) {
-	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeStory))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "story not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid story id: "+err.Error())
+	id, ok := h.resolveAndRespond(w, r, "id", string(models.WorkItemTypeStory), "story")
+	if !ok {
 		return
 	}
 
@@ -399,85 +370,7 @@ func (h *handlers) deleteStory(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// batchReorderStories handles PATCH /api/stories/reorder
-func (h *handlers) batchReorderStories(w http.ResponseWriter, r *http.Request) {
-	var req batchStoryReorderRequest
-	if err := decodeJSON(r, w, &req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return
-	}
-
-	if len(req.Stories) == 0 {
-		respondError(w, http.StatusBadRequest, "stories array is required and must not be empty")
-		return
-	}
-
-	// Fetch all stories in the batch
-	stories := make([]*models.Story, len(req.Stories))
-	for i, item := range req.Stories {
-		story, err := h.stories.GetByID(r.Context(), item.ID)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				respondError(w, http.StatusNotFound, "story "+item.ID+" not found")
-				return
-			}
-			respondError(w, http.StatusInternalServerError, "failed to get story: "+err.Error())
-			return
-		}
-		stories[i] = story
-	}
-
-	// Apply sort_order updates
-	for i, item := range req.Stories {
-		stories[i].SortOrder = item.SortOrder
-	}
-
-	// Apply all updates in a transaction
-	if err := h.stories.BatchUpdate(r.Context(), stories); err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to batch update stories: "+err.Error())
-		return
-	}
-
-	respondJSON(w, http.StatusOK, map[string]any{"updated": len(stories)})
-}
-
 // getStoryActivity handles GET /api/stories/{id}/activity
 func (h *handlers) getStoryActivity(w http.ResponseWriter, r *http.Request) {
-	id, err := h.resolveIDParam(r, "id", string(models.WorkItemTypeStory))
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "story not found")
-			return
-		}
-		respondError(w, http.StatusBadRequest, "invalid story id: "+err.Error())
-		return
-	}
-
-	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > 500 {
-		limit = 500
-	}
-
-	offset := 0
-	if v := r.URL.Query().Get("offset"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			offset = n
-		}
-	}
-
-	entries, err := h.activity.GetByWorkItem(r.Context(), id, models.WorkItemTypeStory, limit, offset)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to get activity: "+err.Error())
-		return
-	}
-
-	if entries == nil {
-		entries = []*models.ActivityLogEntry{}
-	}
-	respondJSON(w, http.StatusOK, entries)
+	h.getWorkItemActivity(w, r, models.WorkItemTypeStory, "story")
 }
