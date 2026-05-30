@@ -39,9 +39,7 @@ jobs:
         id: cache-dist
         uses: actions/cache@v4
         with:
-          path: internal/api/web/dist/
-          # This key creates a unique fingerprint of your frontend source code.
-          # Adjust the paths inside hashFiles() if your source code lives elsewhere!
+          path: web/dist/
           key: ${{ runner.os }}-frontend-dist-${{ hashFiles('web/src/**', 'web/index.html', 'web/package-lock.json', 'web/*.config.*') }}
 
       - name: Set up Node.js
@@ -63,7 +61,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: frontend-dist
-          path: internal/api/web/dist/
+          path: web/dist/
           retention-days: 1
 
   frontend-test:
@@ -131,7 +129,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: frontend-dist
-          path: internal/api/web/dist/
+          path: web/dist/
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -165,7 +163,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: frontend-dist
-          path: internal/api/web/dist/
+          path: web/dist/
 
       - name: Set up Go
         uses: actions/setup-go@v5
