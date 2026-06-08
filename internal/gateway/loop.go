@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/ubenmackin/loom/internal/acp"
@@ -104,11 +105,36 @@ func (g *Gateway) processEvent(ctx context.Context, event dispatcher.Event) {
 // resolveAgentType extracts the agent type from the event by inspecting the
 // referenced task (if available), the event payload, or the session.
 func (g *Gateway) resolveAgentType(ctx context.Context, event dispatcher.Event) string {
-	// If the event has a task ID, look up the task to get its agent_type.
+	// If the event has a task ID, look up the task.
 	if event.TaskID != "" {
 		task, err := g.taskStore.GetByID(ctx, event.TaskID)
-		if err == nil && task != nil && task.AgentType != "" {
-			return task.AgentType
+		if err == nil && task != nil {
+			// First, try capability-based matching using task_type.
+			if task.TaskType != "" {
+				g.mu.RLock()
+				// Collect matching profile names for deterministic iteration.
+				var candidates []string
+				for name, taskTypes := range g.profileTaskTypes {
+					for _, tt := range taskTypes {
+						if tt == string(task.TaskType) {
+							candidates = append(candidates, name)
+							break
+						}
+					}
+				}
+				g.mu.RUnlock()
+
+				if len(candidates) > 0 {
+					// Sort for deterministic behavior (first alphabetically).
+					sort.Strings(candidates)
+					return candidates[0]
+				}
+			}
+
+			// Fall back to the task's agent_type field.
+			if task.AgentType != "" {
+				return task.AgentType
+			}
 		}
 	}
 

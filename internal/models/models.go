@@ -51,9 +51,10 @@ func (s SessionStatus) String() string { return string(s) }
 type TaskType string
 
 const (
-	TaskTypeCode   TaskType = "code"
-	TaskTypeBuild  TaskType = "build"
-	TaskTypeReview TaskType = "review"
+	TaskTypeCode     TaskType = "code"
+	TaskTypeBuild    TaskType = "build"
+	TaskTypeReview   TaskType = "review"
+	TaskTypePlanning TaskType = "planning"
 )
 
 func (t TaskType) String() string { return string(t) }
@@ -222,6 +223,7 @@ type AgentProfile struct {
 	Description    string    `json:"description,omitempty"`
 	Capabilities   string    `json:"capabilities,omitempty"` // JSON string array
 	MaxConcurrency int       `json:"max_concurrency"`
+	TaskTypes      []string  `json:"task_types,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }

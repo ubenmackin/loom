@@ -264,4 +264,3 @@ func TestRules_DeleteNotFound(t *testing.T) {
 		t.Fatalf("DELETE non-existent rule status = %d, want %d", rr.Code, http.StatusNotFound)
 	}
 }
-

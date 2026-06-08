@@ -102,7 +102,8 @@ type Gateway struct {
 	eventsProcessed atomic.Int64
 	startedAt       time.Time
 
-	acpBaseURL string // e.g., "ws://localhost:8765"
+	acpBaseURL       string              // e.g., "ws://localhost:8765"
+	profileTaskTypes map[string][]string // profile name -> task types (protected by mu)
 }
 
 // NewGateway creates a new Gateway with the given dependencies. The acpBaseURL
@@ -121,22 +122,23 @@ func NewGateway(
 	ruleStore TriggerRuleStore,
 ) *Gateway {
 	return &Gateway{
-		dispatcher:    d,
-		tracker:       NewSessionTracker(),
-		rules:         NewRulesEngine(),
-		queue:         NewJobQueue(),
-		acpClients:    make(map[string]*acp.Client),
-		taskStore:     taskStore,
-		sessionStore:  sessionStore,
-		projectStore:  projectStore,
-		storyStore:    storyStore,
-		commentStore:  commentStore,
-		activityStore: activityStore,
-		profileStore:  profileStore,
-		ruleStore:     ruleStore,
-		eventCh:       make(chan dispatcher.Event, 256),
-		done:          make(chan struct{}),
-		acpBaseURL:    acpBaseURL,
+		dispatcher:       d,
+		tracker:          NewSessionTracker(),
+		rules:            NewRulesEngine(),
+		queue:            NewJobQueue(),
+		acpClients:       make(map[string]*acp.Client),
+		taskStore:        taskStore,
+		sessionStore:     sessionStore,
+		projectStore:     projectStore,
+		storyStore:       storyStore,
+		commentStore:     commentStore,
+		activityStore:    activityStore,
+		profileStore:     profileStore,
+		ruleStore:        ruleStore,
+		eventCh:          make(chan dispatcher.Event, 256),
+		done:             make(chan struct{}),
+		acpBaseURL:       acpBaseURL,
+		profileTaskTypes: make(map[string][]string),
 	}
 }
 
@@ -369,12 +371,19 @@ func (g *Gateway) loadProfiles(ctx context.Context) error {
 		return fmt.Errorf("load agent profiles: %w", err)
 	}
 
+	g.mu.Lock()
+	// Clear and rebuild the profile task types map.
+	g.profileTaskTypes = make(map[string][]string, len(profiles))
 	for _, p := range profiles {
 		g.queue.SetConcurrency(p.Name, p.MaxConcurrency)
+		g.profileTaskTypes[p.Name] = p.TaskTypes
 		slog.Info("gateway: configured concurrency from profile",
 			"agent_type", p.Name,
-			"max_concurrency", p.MaxConcurrency)
+			"max_concurrency", p.MaxConcurrency,
+			"task_types", p.TaskTypes)
 	}
+	g.mu.Unlock()
+
 	return nil
 }
 

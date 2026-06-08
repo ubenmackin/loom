@@ -24,6 +24,7 @@ export const TaskType = {
   Code: 'code',
   Build: 'build',
   Review: 'review',
+  Planning: 'planning',
 } as const
 
 export type TaskTypeType = (typeof TaskType)[keyof typeof TaskType]

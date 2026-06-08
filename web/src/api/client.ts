@@ -282,6 +282,7 @@ export interface AgentProfile {
   description?: string
   capabilities?: string // JSON string array
   max_concurrency: number
+  task_types?: string[]
   created_at: string
   updated_at: string
 }
@@ -304,7 +305,7 @@ export async function fetchProfile(id: string): Promise<AgentProfile> {
   return request<AgentProfile>(`/profiles/${id}`)
 }
 
-export async function createProfile(data: { name: string; description?: string; capabilities?: string; max_concurrency?: number }): Promise<AgentProfile> {
+export async function createProfile(data: { name: string; description?: string; capabilities?: string; max_concurrency?: number; task_types?: string[] }): Promise<AgentProfile> {
   return request<AgentProfile>('/profiles', { method: 'POST', body: JSON.stringify(data) })
 }
 
@@ -314,6 +315,11 @@ export async function updateProfile(id: string, data: Partial<AgentProfile>): Pr
 
 export async function deleteProfile(id: string): Promise<void> {
   await request(`/profiles/${id}`, { method: 'DELETE' })
+}
+
+export async function importProfiles(projectId?: string): Promise<AgentProfile[]> {
+  const url = projectId ? `/profiles/import?project_id=${encodeURIComponent(projectId)}` : '/profiles/import'
+  return request<AgentProfile[]>(url, { method: 'POST' })
 }
 
 export async function fetchRulesByProfile(profileId: string): Promise<TriggerRule[]> {

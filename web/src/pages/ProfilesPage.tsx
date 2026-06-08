@@ -4,8 +4,11 @@ import {
   createProfile,
   updateProfile,
   deleteProfile,
+  importProfiles,
+  fetchProjects,
   type AgentProfile,
 } from '../api/client'
+import { TaskType, type Project } from '../types'
 import TriggerRulesEditor from '../components/TriggerRulesEditor'
 
 interface ProfileCreatePayload {
@@ -13,6 +16,7 @@ interface ProfileCreatePayload {
   description?: string
   capabilities?: string
   max_concurrency?: number
+  task_types?: string[]
 }
 
 export default function ProfilesPage() {
@@ -23,6 +27,10 @@ export default function ProfilesPage() {
   const [creating, setCreating] = useState(false)
   const [editForm, setEditForm] = useState<Partial<AgentProfile>>({})
   const [expandedRulesProfile, setExpandedRulesProfile] = useState<string | null>(null)
+  const [showImportModal, setShowImportModal] = useState(false)
+  const [projects, setProjects] = useState<Project[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState('')
+  const [importing, setImporting] = useState(false)
 
   useEffect(() => {
     loadProfiles()
@@ -43,7 +51,7 @@ export default function ProfilesPage() {
 
   function startCreate() {
     setCreating(true)
-    setEditForm({ name: '', description: '', capabilities: '[]', max_concurrency: 5 })
+    setEditForm({ name: '', description: '', capabilities: '[]', max_concurrency: 5, task_types: [] })
     setEditingId(null)
   }
 
@@ -75,6 +83,7 @@ export default function ProfilesPage() {
           description: editForm.description,
           capabilities: editForm.capabilities,
           max_concurrency: editForm.max_concurrency,
+          task_types: editForm.task_types,
         }
         await createProfile(payload)
       } else if (editingId) {
@@ -106,6 +115,35 @@ export default function ProfilesPage() {
     }
   }
 
+  async function openImportModal() {
+    try {
+      const allProjects = await fetchProjects()
+      setProjects(allProjects)
+      setSelectedProjectId(allProjects.length > 0 ? allProjects[0].id : '')
+      setShowImportModal(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load projects')
+    }
+  }
+
+  async function handleImport() {
+    if (!selectedProjectId) {
+      setError('Please select a project')
+      return
+    }
+    try {
+      setImporting(true)
+      await importProfiles(selectedProjectId)
+      setShowImportModal(false)
+      await loadProfiles()
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to import profiles')
+    } finally {
+      setImporting(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="p-6">
@@ -118,12 +156,20 @@ export default function ProfilesPage() {
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Agent Profiles</h1>
-        <button
-          onClick={startCreate}
-          className="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-none transition-colors"
-        >
-          + Create Profile
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={openImportModal}
+            className="px-4 py-2 text-sm font-medium text-purple-700 dark:text-purple-300 bg-transparent border border-purple-600 dark:border-purple-500 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-none transition-colors"
+          >
+            Import from opencode.json
+          </button>
+          <button
+            onClick={startCreate}
+            className="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-none transition-colors"
+          >
+            + Create Profile
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -191,6 +237,16 @@ export default function ProfilesPage() {
                   <p className="text-sm text-slate-600 dark:text-neutral-400 mb-3">{profile.description}</p>
                 )}
                 <div className="flex flex-wrap gap-1 mb-3">
+                  {/* Task type badges */}
+                  {(profile.task_types || []).map((tt) => (
+                    <span
+                      key={tt}
+                      className="px-2 py-0.5 text-xs font-mono bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
+                    >
+                      {tt}
+                    </span>
+                  ))}
+                  {/* Capabilities badges */}
                   {parseCapabilities(profile.capabilities).map((cap) => (
                     <span
                       key={cap}
@@ -226,6 +282,53 @@ export default function ProfilesPage() {
           No agent profiles found. Create one to get started.
         </div>
       )}
+
+      {/* Import confirmation modal */}
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white dark:bg-charcoal-dark border border-gray-200 dark:border-gray-border p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold mb-2 text-slate-800 dark:text-white">Import Profiles</h3>
+            <p className="text-sm text-slate-600 dark:text-neutral-400 mb-4">
+              This will read <code className="font-mono text-purple-600 dark:text-purple-400">opencode.json</code> from the selected project's repository and create or update agent profiles.
+            </p>
+
+            <label className="block text-sm font-medium text-slate-700 dark:text-neutral-300 mb-1">
+              Project
+            </label>
+            {projects.length === 0 ? (
+              <p className="text-sm text-slate-500 dark:text-neutral-400 mb-4">No projects available.</p>
+            ) : (
+              <select
+                value={selectedProjectId}
+                onChange={(e) => setSelectedProjectId(e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-border bg-white dark:bg-charcoal-darkest text-slate-800 dark:text-white rounded-none focus:outline-none focus:ring-1 focus:ring-purple-500 mb-4"
+              >
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setShowImportModal(false)}
+                className="px-4 py-2 text-sm font-medium text-slate-700 dark:text-neutral-300 bg-gray-100 dark:bg-charcoal-darkest hover:bg-gray-200 dark:hover:bg-gray-800 rounded-none transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleImport}
+                disabled={importing || projects.length === 0}
+                className="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-none transition-colors"
+              >
+                {importing ? 'Importing...' : 'Import'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -237,6 +340,22 @@ function ProfileForm({
   form: Partial<AgentProfile>
   onChange: (f: Partial<AgentProfile>) => void
 }) {
+  const taskTypeOptions = [
+    { label: 'Code', value: TaskType.Code },
+    { label: 'Build', value: TaskType.Build },
+    { label: 'Review', value: TaskType.Review },
+    { label: 'Planning', value: TaskType.Planning },
+  ]
+
+  function toggleTaskType(value: string) {
+    const current = form.task_types || []
+    if (current.includes(value)) {
+      onChange({ ...form, task_types: current.filter((t) => t !== value) })
+    } else {
+      onChange({ ...form, task_types: [...current, value] })
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div>
@@ -259,9 +378,34 @@ function ProfileForm({
           placeholder="Description of this agent type"
         />
       </div>
+
+      {/* Task Types Section */}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 dark:text-neutral-300 mb-2">
+          Task Types
+        </label>
+        <div className="space-y-2">
+          {taskTypeOptions.map((opt) => (
+            <label
+              key={opt.value}
+              className="flex items-center gap-2 cursor-pointer text-sm text-slate-700 dark:text-neutral-300"
+            >
+              <input
+                type="checkbox"
+                checked={(form.task_types || []).includes(opt.value)}
+                onChange={() => toggleTaskType(opt.value)}
+                className="rounded border-gray-300 dark:border-gray-border text-purple-600 focus:ring-purple-500"
+              />
+              {opt.label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* Keep existing capabilities input as "Additional Capabilities" */}
       <div>
         <label className="block text-sm font-medium text-slate-700 dark:text-neutral-300 mb-1">
-          Capabilities <span className="text-xs text-slate-400">(JSON array, e.g., ["code","build"])</span>
+          Additional Capabilities <span className="text-xs text-slate-400">(JSON array, for advanced metadata)</span>
         </label>
         <input
           type="text"
@@ -271,6 +415,8 @@ function ProfileForm({
           placeholder='["story_planning"]'
         />
       </div>
+
+      {/* Max Concurrency */}
       <div>
         <label className="block text-sm font-medium text-slate-700 dark:text-neutral-300 mb-1">
           Max Concurrency: <span className="font-semibold">{form.max_concurrency ?? 5}</span>

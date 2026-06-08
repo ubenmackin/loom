@@ -231,6 +231,22 @@ func TestProfiles_DeleteNotFound(t *testing.T) {
 	}
 }
 
+func TestProfiles_CreateInvalidTaskType(t *testing.T) {
+	t.Parallel()
+
+	mux, _, _, _, _, _, _, dbConn := newTestRouterWithDB(t)
+	makeTestUserAdmin(t, dbConn)
+
+	body := map[string]any{
+		"name":       "Bad Profile",
+		"task_types": []string{"invalid_type"},
+	}
+	rr := doRequest(t, mux, http.MethodPost, "/api/profiles", body)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("POST /api/profiles with invalid task_type status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
 func TestProfiles_CreateMissingName(t *testing.T) {
 	t.Parallel()
 
@@ -243,4 +259,3 @@ func TestProfiles_CreateMissingName(t *testing.T) {
 		t.Fatalf("POST /api/profiles with missing name status = %d, want %d", rr.Code, http.StatusBadRequest)
 	}
 }
-

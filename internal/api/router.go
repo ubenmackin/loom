@@ -255,6 +255,7 @@ func NewRouter(
 
 // registerProfileRoutes registers CRUD routes for agent profiles.
 func (h *handlers) registerProfileRoutes(r chi.Router) {
+	r.Post("/import", h.importProfiles) // MUST be before /{id} routes
 	r.Get("/", h.listProfiles)
 	r.Post("/", h.createProfile)
 	r.Get("/{id}", h.getProfile)
