@@ -51,6 +51,17 @@ export interface TaskDetailResponse {
 
 // ── Domain Models ───────────────────────────────────────────────────────
 
+export interface Project {
+  id: string
+  name: string
+  description?: string
+  repo_path?: string
+  language?: string
+  build_command?: string
+  created_at: string
+  updated_at: string
+}
+
 export interface Story {
   id: string
   numeric_id?: number
@@ -61,6 +72,9 @@ export interface Story {
   requires_review: boolean
   assigned_to?: string
   assignee_type?: AssigneeTypeType
+  project_id?: string
+  agent_session_id?: string
+  agent_type?: string
   sort_order: number
   created_at: string
   updated_at: string
@@ -76,6 +90,8 @@ export interface Task {
   task_type: TaskTypeType
   assigned_to?: string
   assignee_type?: AssigneeTypeType
+  agent_session_id?: string
+  agent_type?: string
   sort_order: number
   instructions?: string
   is_stale: boolean
@@ -191,6 +207,7 @@ export interface WorkBlock {
 export interface StoryFilter {
   status?: StatusType
   assigned_to?: string
+  project_id?: string
 }
 
 export interface TaskFilter {

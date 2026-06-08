@@ -51,7 +51,7 @@ test-go:
 # React frontend tests
 test-web:
 	@echo "$(GREEN)Running React tests...$(NC)"
-	cd web && npm ci && npm run test -- --run
+	cd web && npm run test -- --run
 
 # Clean build artifacts
 clean:

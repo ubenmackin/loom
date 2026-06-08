@@ -7,6 +7,10 @@ vi.mock('./TopNav', () => ({
   default: () => <nav data-testid="top-nav">Mock TopNav</nav>,
 }))
 
+vi.mock('./SubNav', () => ({
+  default: () => <div data-testid="sub-nav">Mock SubNav</div>,
+}))
+
 // ── Imports (after mocks) ─────────────────────────────────────────────────
 
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
@@ -40,6 +44,11 @@ describe('Layout', () => {
     expect(screen.getByTestId('top-nav')).toBeInTheDocument()
   })
 
+  it('renders the SubNav component', () => {
+    renderLayout()
+    expect(screen.getByTestId('sub-nav')).toBeInTheDocument()
+  })
+
   it('renders the TopNav text content', () => {
     renderLayout()
     expect(screen.getByText('Mock TopNav')).toBeInTheDocument()
@@ -57,12 +66,17 @@ describe('Layout', () => {
     expect(main).toBeInTheDocument()
   })
 
-  it('renders TopNav before Outlet content in the DOM', () => {
+  it('renders TopNav, SubNav, then Outlet content in DOM order', () => {
     renderLayout()
     const topNav = screen.getByTestId('top-nav')
+    const subNav = screen.getByTestId('sub-nav')
     const outlet = screen.getByTestId('outlet-child')
-    // TopNav should appear before the Outlet content
-    expect(topNav.compareDocumentPosition(outlet)).toBe(
+
+    // TopNav before SubNav before Outlet
+    expect(topNav.compareDocumentPosition(subNav)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    )
+    expect(subNav.compareDocumentPosition(outlet)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     )
   })

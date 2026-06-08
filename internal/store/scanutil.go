@@ -32,6 +32,16 @@ func stringOrZero(s sql.NullString) string {
 	return ""
 }
 
+// nullStr returns nil if s is empty; otherwise returns s.
+// Use this when binding string values to nullable columns to ensure SQL NULL
+// is used instead of an empty string, which would violate FK constraints.
+func nullStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // closeRows safely closes a sql.Rows result set and logs any error.
 func closeRows(rows *sql.Rows) {
 	if err := rows.Close(); err != nil {

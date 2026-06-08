@@ -5,7 +5,17 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import Board from './Board'
-import type { BoardState } from '../types'
+import type { BoardState, Project } from '../types'
+
+// Mock the project filter store — default returns a selected project, but per-test
+// overrides via vi.mocked(useProjectFilterStore).mockReturnValue(...) are supported.
+vi.mock('../stores/project', () => ({
+  useProjectFilterStore: vi.fn(() => ({
+    selectedProjectId: 'proj-1',
+    setSelectedProjectId: vi.fn(),
+    clearProjectFilter: vi.fn(),
+  })),
+}))
 
 // Mock the useBoard hook — provides a controllable mock that can be overridden per test
 vi.mock('../hooks/useBoard', () => ({
@@ -21,6 +31,14 @@ vi.mock('../hooks/useBoard', () => ({
 // Mock the useCreateStory hook
 vi.mock('../hooks/useCreateStory', () => ({
   useCreateStory: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+}))
+
+// Mock the useProjects hook
+vi.mock('../hooks/useProjects', () => ({
+  useProjects: vi.fn(() => ({
+    data: [{ id: 'proj-1', name: 'Test', created_at: '2026-01-01', updated_at: '2026-01-01' }],
+    isLoading: false,
+  })),
 }))
 
 // ---------------------------------------------------------------------------
@@ -173,6 +191,7 @@ vi.mock('./CreateStoryForm', () => ({
 vi.mock('../api/client', () => ({
   getUsers: vi.fn().mockResolvedValue([]),
   fetchSessions: vi.fn().mockResolvedValue([]),
+  fetchProjects: vi.fn().mockResolvedValue([{ id: 'proj-1', name: 'Test', created_at: '2026-01-01', updated_at: '2026-01-01' }] as Project[]),
   batchReorderStories: vi.fn().mockResolvedValue({}),
   batchReorderTasks: vi.fn().mockResolvedValue({}),
   updateTask: vi.fn().mockResolvedValue({}),
@@ -180,9 +199,13 @@ vi.mock('../api/client', () => ({
 
 import { useBoard } from '../hooks/useBoard'
 import { useCreateStory } from '../hooks/useCreateStory'
+import { useProjects } from '../hooks/useProjects'
+import { useProjectFilterStore } from '../stores/project'
 
 const mockedUseBoard = useBoard as ReturnType<typeof vi.fn>
 const mockedUseCreateStory = useCreateStory as ReturnType<typeof vi.fn>
+const mockedUseProjects = useProjects as ReturnType<typeof vi.fn>
+const mockedUseProjectFilterStore = useProjectFilterStore as unknown as ReturnType<typeof vi.fn>
 
 const emptyBoardState: BoardState = {
   stories: [],
@@ -313,6 +336,12 @@ describe('Board', () => {
       isSuccess: false,
       isError: false,
     })
+    // Reset project filter store to default (selected project = 'proj-1')
+    mockedUseProjectFilterStore.mockReturnValue({
+      selectedProjectId: 'proj-1',
+      setSelectedProjectId: vi.fn(),
+      clearProjectFilter: vi.fn(),
+    })
   })
 
   describe('loading state', () => {
@@ -361,6 +390,53 @@ describe('Board', () => {
       renderBoard()
 
       expect(screen.getByText('Empty')).toBeInTheDocument()
+    })
+
+    it('shows "Add Project" when no projects exist', async () => {
+      mockedUseProjects.mockReturnValue({
+        data: [] as Project[],
+        isLoading: false,
+      } as unknown as ReturnType<typeof useProjects>)
+
+      mockedUseProjectFilterStore.mockReturnValue({
+        selectedProjectId: null,
+        setSelectedProjectId: vi.fn(),
+        clearProjectFilter: vi.fn(),
+      })
+
+      mockedUseBoard.mockReturnValue({
+        data: emptyBoardState,
+        isLoading: false,
+        error: null,
+        isSuccess: true,
+        isError: false,
+      } as ReturnType<typeof useBoard>)
+
+      renderBoard()
+
+      expect(await screen.findByText('No projects found. Create one to get started.')).toBeInTheDocument()
+      expect(screen.getByText('Add Project')).toBeInTheDocument()
+    })
+
+    it('shows "Select a project" when projects exist but none selected', async () => {
+      mockedUseProjects.mockReturnValue({
+        data: [{ id: 'proj-1', name: 'Test', created_at: '2026-01-01', updated_at: '2026-01-01' }],
+        isLoading: false,
+      } as unknown as ReturnType<typeof useProjects>)
+
+      mockedUseProjectFilterStore.mockReturnValue(null)
+
+      mockedUseBoard.mockReturnValue({
+        data: emptyBoardState,
+        isLoading: false,
+        error: null,
+        isSuccess: true,
+        isError: false,
+      } as ReturnType<typeof useBoard>)
+
+      renderBoard()
+
+      expect(await screen.findByText('Select a project above to view its board')).toBeInTheDocument()
     })
   })
 

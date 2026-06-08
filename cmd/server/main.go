@@ -20,6 +20,7 @@ import (
 	"github.com/ubenmackin/loom/internal/api"
 	"github.com/ubenmackin/loom/internal/db"
 	"github.com/ubenmackin/loom/internal/dispatcher"
+	"github.com/ubenmackin/loom/internal/gateway"
 	"github.com/ubenmackin/loom/internal/mcp"
 	"github.com/ubenmackin/loom/internal/store"
 	"github.com/ubenmackin/loom/internal/ws"
@@ -37,11 +38,14 @@ type serverConfig struct {
 type Stores struct {
 	Story    *store.StoryStore
 	Task     *store.TaskStore
+	Project  *store.ProjectStore
 	Session  *store.SessionStore
 	Comment  *store.CommentStore
 	Template *store.TemplateStore
 	Activity *store.ActivityStore
 	User     *store.UserStore
+	Profile  *store.AgentProfileStore
+	Rule     *store.TriggerRuleStore
 }
 
 // NewStores creates all store instances from the given database connection.
@@ -49,11 +53,14 @@ func NewStores(db *sql.DB) *Stores {
 	return &Stores{
 		Story:    store.NewStoryStore(db),
 		Task:     store.NewTaskStore(db),
+		Project:  store.NewProjectStore(db),
 		Session:  store.NewSessionStore(db),
 		Comment:  store.NewCommentStore(db),
 		Template: store.NewTemplateStore(db),
 		Activity: store.NewActivityStore(db),
 		User:     store.NewUserStore(db),
+		Profile:  store.NewAgentProfileStore(db),
+		Rule:     store.NewTriggerRuleStore(db),
 	}
 }
 
@@ -79,8 +86,16 @@ func run() error {
 	ctx := context.Background()
 	stores := NewStores(database)
 
+	if err := db.SeedDefaultProjects(ctx, stores.Project); err != nil {
+		return fmt.Errorf("seed default projects: %w", err)
+	}
+
 	if err := db.SeedDefaults(ctx, stores.Template); err != nil {
 		return fmt.Errorf("seed default templates: %w", err)
+	}
+
+	if err := db.SeedDefaultAgentProfiles(ctx, stores.Profile); err != nil {
+		return fmt.Errorf("seed default agent profiles: %w", err)
 	}
 
 	if err := db.BackfillNumericIDs(database); err != nil {
@@ -169,6 +184,24 @@ func runHTTP(cfg serverConfig, database *sql.DB, stores *Stores) error {
 	d.Start()
 	defer d.Stop()
 
+	// Create and start the gateway engine (ACP/WebSocket push orchestration).
+	// The ACP base URL defaults to ws://localhost:8765. In Phase 3 this
+	// will become configurable.
+	gw := gateway.NewGateway(
+		d,
+		"ws://localhost:8765",
+		stores.Task,
+		stores.Session,
+		stores.Project,
+		stores.Story,
+		stores.Comment,
+		stores.Activity,
+		stores.Profile,
+		stores.Rule,
+	)
+	gw.Start()
+	defer gw.Stop()
+
 	// Create a lifecycle context for background tasks.
 	serverCtx, serverCancel := context.WithCancel(context.Background())
 	defer serverCancel()
@@ -178,8 +211,9 @@ func runHTTP(cfg serverConfig, database *sql.DB, stores *Stores) error {
 
 	// Create the API router.
 	apiRouter := api.NewRouter(
-		stores.Story, stores.Task, stores.Session, stores.Comment,
-		stores.Template, stores.Activity, stores.User, d, hub,
+		stores.Story, stores.Task, stores.Project, stores.Session, stores.Comment,
+		stores.Template, stores.Activity, stores.User, stores.Profile, stores.Rule,
+		d, gw, hub,
 	)
 
 	// Set up the top-level HTTP router.

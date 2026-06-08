@@ -62,13 +62,13 @@ describe('useBoard', () => {
     expect(result.current.data).toEqual(mockBoardData)
   })
 
-  it('has queryKey ["board"]', async () => {
+  it('has queryKey ["board", null] when no project is selected', async () => {
     vi.mocked(fetchBoard).mockResolvedValueOnce(mockBoardData)
     const { result } = renderHook(() => useBoard(), {
       wrapper: createWrapper(queryClient),
     })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    const cacheData = queryClient.getQueryData(['board'])
+    const cacheData = queryClient.getQueryData(['board', null])
     expect(cacheData).toEqual(mockBoardData)
   })
 

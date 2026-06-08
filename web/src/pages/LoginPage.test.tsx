@@ -49,6 +49,8 @@ import type { AuthResponse } from '../types'
 const mockUseAuthStore = vi.mocked(useAuthStore)
 const mockApiLogin = vi.mocked(apiLogin)
 
+type StoreState = ReturnType<typeof useAuthStore.getState>
+
 // ── Fixtures ──────────────────────────────────────────────────────────────
 
 const authResponse: AuthResponse = {
@@ -85,15 +87,16 @@ function renderLoginPage() {
 describe('LoginPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockUseAuthStore.mockImplementation((selector?: (state: AuthState) => unknown) => {
-      if (selector) return selector(defaultAuthState)
-      return defaultAuthState
+    mockUseAuthStore.mockImplementation((selector?: (state: StoreState) => unknown) => {
+      const state = defaultAuthState as unknown as StoreState
+      if (selector) return selector(state)
+      return state
     })
   })
 
   it('redirects to "/" when already authenticated', () => {
-    mockUseAuthStore.mockImplementation((selector?: (state: AuthState) => unknown) => {
-      const authedState = { ...defaultAuthState, isAuthenticated: true }
+    mockUseAuthStore.mockImplementation((selector?: (state: StoreState) => unknown) => {
+      const authedState = { ...defaultAuthState, isAuthenticated: true } as unknown as StoreState
       if (selector) return selector(authedState)
       return authedState
     })

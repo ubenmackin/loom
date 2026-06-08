@@ -2,6 +2,7 @@ import type {
   Story,
   StoryWithTasks,
   Task,
+  Project,
   Session,
   Comment,
   ActivityLogEntry,
@@ -24,7 +25,7 @@ const BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
 /** Shared request helper with auth header, error handling, and AbortSignal support. */
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = localStorage.getItem('loom_auth_token')
+  const token = useAuthStore.getState().token
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   }
@@ -75,9 +76,31 @@ async function patchResourceStatus<T>(path: string, status: StatusType): Promise
 
 // ── Board ───────────────────────────────────────────────────────────────
 
-export async function fetchBoard(): Promise<BoardState> {
-  const data = await request<BoardState>('/board')
-  return data
+export async function fetchBoard(projectId?: string): Promise<BoardState> {
+  const path = projectId ? `/board?project_id=${encodeURIComponent(projectId)}` : '/board'
+  return request<BoardState>(path)
+}
+
+// ── Projects ────────────────────────────────────────────────────────────
+
+export async function fetchProjects(): Promise<Project[]> {
+  return request<Project[]>('/projects')
+}
+
+export async function fetchProject(id: string): Promise<Project> {
+  return request<Project>(`/projects/${id}`)
+}
+
+export async function createProject(data: { name: string; description?: string; repo_path?: string; language?: string; build_command?: string }): Promise<Project> {
+  return request<Project>('/projects', { method: 'POST', body: JSON.stringify(data) })
+}
+
+export async function updateProject(id: string, data: Partial<Project>): Promise<Project> {
+  return updateResource<Project>(`/projects/${id}`, data)
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  await deleteResource(`/projects/${id}`)
 }
 
 // ── Stories ─────────────────────────────────────────────────────────────
@@ -86,6 +109,7 @@ export async function fetchStories(filter?: StoryFilter): Promise<Story[]> {
   const params = new URLSearchParams()
   if (filter?.status) params.set('status', filter.status)
   if (filter?.assigned_to) params.set('assigned_to', filter.assigned_to)
+  if (filter?.project_id) params.set('project_id', filter.project_id)
   const qs = params.toString()
   return request(`/stories${qs ? `?${qs}` : ''}`)
 }
@@ -200,6 +224,112 @@ export async function fetchActivityLog(limit?: number): Promise<ActivityLogEntry
 
 export async function fetchDispatcherStatus(): Promise<DispatcherStatus> {
   return request<DispatcherStatus>('/dispatcher/status')
+}
+
+// ── Gateway ────────────────────────────────────────────────────────────
+
+export interface GatewayStatus {
+  running: boolean
+  active_sessions: number
+  queue_depth: number
+  events_processed: number
+  uptime_seconds: number
+  sessions_by_project: Record<string, number>
+  sessions_by_agent: Record<string, number>
+}
+
+export interface GatewayJob {
+  id: string
+  project_id: string
+  agent_type: string
+  task_id: string
+  event_ref: string
+  created_at: string
+}
+
+export interface GatewayQueueResponse {
+  total: number
+  jobs: GatewayJob[]
+}
+
+export interface GatewayTriggerRequest {
+  event_type: string
+  project_id: string
+  agent_type: string
+  task_id: string
+}
+
+export async function fetchGatewayStatus(): Promise<GatewayStatus> {
+  return request<GatewayStatus>('/gateway/status')
+}
+
+export async function fetchGatewayQueue(): Promise<GatewayQueueResponse> {
+  return request<GatewayQueueResponse>('/gateway/queue')
+}
+
+export async function triggerGatewayAction(data: GatewayTriggerRequest): Promise<void> {
+  await request('/gateway/trigger', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}
+
+// ── Agent Profiles ─────────────────────────────────────────────────────────
+
+export interface AgentProfile {
+  id: string
+  name: string
+  description?: string
+  capabilities?: string // JSON string array
+  max_concurrency: number
+  created_at: string
+  updated_at: string
+}
+
+export interface TriggerRule {
+  id: string
+  agent_profile_id: string
+  event_type: string
+  action: string
+  priority: number
+  enabled: boolean
+  created_at: string
+}
+
+export async function fetchProfiles(): Promise<AgentProfile[]> {
+  return request<AgentProfile[]>('/profiles')
+}
+
+export async function fetchProfile(id: string): Promise<AgentProfile> {
+  return request<AgentProfile>(`/profiles/${id}`)
+}
+
+export async function createProfile(data: { name: string; description?: string; capabilities?: string; max_concurrency?: number }): Promise<AgentProfile> {
+  return request<AgentProfile>('/profiles', { method: 'POST', body: JSON.stringify(data) })
+}
+
+export async function updateProfile(id: string, data: Partial<AgentProfile>): Promise<AgentProfile> {
+  return request<AgentProfile>(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+}
+
+export async function deleteProfile(id: string): Promise<void> {
+  await request(`/profiles/${id}`, { method: 'DELETE' })
+}
+
+export async function fetchRulesByProfile(profileId: string): Promise<TriggerRule[]> {
+  return request<TriggerRule[]>(`/profiles/${profileId}/rules`)
+}
+
+export async function createRule(profileId: string, data: { event_type: string; action: string; priority?: number; enabled?: boolean }): Promise<TriggerRule> {
+  return request<TriggerRule>(`/profiles/${profileId}/rules`, { method: 'POST', body: JSON.stringify(data) })
+}
+
+export async function updateRule(profileId: string, ruleId: string, data: Partial<TriggerRule>): Promise<TriggerRule> {
+  return request<TriggerRule>(`/profiles/${profileId}/rules/${ruleId}`, { method: 'PUT', body: JSON.stringify(data) })
+}
+
+export async function deleteRule(profileId: string, ruleId: string): Promise<void> {
+  await request(`/profiles/${profileId}/rules/${ruleId}`, { method: 'DELETE' })
 }
 
 // ── Work Protocol ───────────────────────────────────────────────────────

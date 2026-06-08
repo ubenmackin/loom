@@ -152,11 +152,6 @@ func (d *Dispatcher) Status() DispatcherStatus {
 	return s
 }
 
-// Wait blocks until the dispatcher event loop exits.
-func (d *Dispatcher) Wait() {
-	d.wg.Wait()
-}
-
 // Submit sends an event to the dispatcher channel. It prefers delivering the
 // event, but if the channel is full it blocks until either the context is
 // canceled, the event can be delivered, or the dispatcher is shutting down.

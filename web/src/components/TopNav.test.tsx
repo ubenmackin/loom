@@ -24,12 +24,22 @@ vi.mock('../hooks/useTheme', () => ({
 import { MemoryRouter } from 'react-router-dom'
 import TopNav from './TopNav'
 import { useAuthStore } from '../stores/auth'
+import type { AuthResponse, User } from '../types'
 import { useTheme } from '../hooks/useTheme'
 
 const mockUseAuthStore = vi.mocked(useAuthStore)
 const mockUseTheme = vi.mocked(useTheme)
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
+
+type AuthState = {
+  user: User | null
+  token: string | null
+  isAuthenticated: boolean
+  login: (resp: AuthResponse) => void
+  logout: () => void
+  updateUser: (user: User) => void
+}
 
 const defaultUser = {
   id: '1',
@@ -47,11 +57,13 @@ const adminUser = {
   role: 'admin' as const,
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let authState: any = {
+let authState: AuthState = {
   user: null,
+  token: null,
   isAuthenticated: false,
+  login: vi.fn(),
   logout: mockLogout,
+  updateUser: vi.fn(),
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -72,12 +84,17 @@ describe('TopNav', () => {
     mockLogout.mockClear()
     authState = {
       user: null,
+      token: null,
       isAuthenticated: false,
+      login: vi.fn(),
       logout: mockLogout,
+      updateUser: vi.fn(),
     }
     mockUseAuthStore.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ((selector?: any) => (selector ? selector(authState) : authState)) as any,
+      (selector?: (state: AuthState) => unknown): unknown => {
+        if (selector) return selector(authState)
+        return authState
+      },
     )
     mockUseTheme.mockReturnValue({
       isDark: false,
@@ -140,8 +157,11 @@ describe('TopNav', () => {
     beforeEach(() => {
       authState = {
         user: defaultUser,
+        token: 'token',
         isAuthenticated: true,
+        login: vi.fn(),
         logout: mockLogout,
+        updateUser: vi.fn(),
       }
     })
 
@@ -163,8 +183,11 @@ describe('TopNav', () => {
     it('falls back to username when display_name is not set', () => {
       authState = {
         user: { ...defaultUser, display_name: undefined },
+        token: 'token',
         isAuthenticated: true,
+        login: vi.fn(),
         logout: mockLogout,
+        updateUser: vi.fn(),
       }
       renderTopNav()
       expect(screen.getByText('testuser')).toBeInTheDocument()
@@ -204,10 +227,13 @@ describe('TopNav', () => {
 
   describe('when admin', () => {
     beforeEach(() => {
-      authState = {
+authState = {
         user: adminUser,
+        token: 'token',
         isAuthenticated: true,
+        login: vi.fn(),
         logout: mockLogout,
+        updateUser: vi.fn(),
       }
     })
 
@@ -237,8 +263,11 @@ describe('TopNav', () => {
       const user = userEvent.setup()
       authState = {
         user: defaultUser,
+        token: 'token',
         isAuthenticated: true,
+        login: vi.fn(),
         logout: mockLogout,
+        updateUser: vi.fn(),
       }
       renderTopNav()
       await user.click(screen.getByLabelText('User menu'))

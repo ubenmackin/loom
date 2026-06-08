@@ -111,6 +111,18 @@ func (s *Session) CapabilitiesSlice() ([]string, error) {
 	return caps, err
 }
 
+// Project represents a project (repo) that stories and tasks are scoped to.
+type Project struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description,omitempty"`
+	RepoPath     string    `json:"repo_path,omitempty"`
+	Language     string    `json:"language,omitempty"`
+	BuildCommand string    `json:"build_command,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 // Story represents a user story on the Kanban board.
 type Story struct {
 	ID             string       `json:"id"`
@@ -122,6 +134,9 @@ type Story struct {
 	RequiresReview bool         `json:"requires_review"`
 	AssignedTo     string       `json:"assigned_to,omitempty"`
 	AssigneeType   AssigneeType `json:"assignee_type,omitempty"`
+	ProjectID      string       `json:"project_id,omitempty"`
+	AgentSessionID string       `json:"agent_session_id,omitempty"`
+	AgentType      string       `json:"agent_type,omitempty"`
 	SortOrder      int          `json:"sort_order"`
 	CreatedAt      time.Time    `json:"created_at"`
 	UpdatedAt      time.Time    `json:"updated_at"`
@@ -129,20 +144,22 @@ type Story struct {
 
 // Task represents a task (child of a story) on the Kanban board.
 type Task struct {
-	ID           string       `json:"id"`
-	NumericID    int          `json:"numeric_id"`
-	StoryID      string       `json:"story_id"`
-	Title        string       `json:"title"`
-	Description  string       `json:"description,omitempty"`
-	Status       Status       `json:"status"`
-	TaskType     TaskType     `json:"task_type"`
-	AssignedTo   string       `json:"assigned_to,omitempty"`
-	AssigneeType AssigneeType `json:"assignee_type,omitempty"`
-	SortOrder    int          `json:"sort_order"`
-	Instructions string       `json:"instructions,omitempty"`
-	IsStale      bool         `json:"is_stale"`
-	CreatedAt    time.Time    `json:"created_at"`
-	UpdatedAt    time.Time    `json:"updated_at"`
+	ID             string       `json:"id"`
+	NumericID      int          `json:"numeric_id"`
+	StoryID        string       `json:"story_id"`
+	Title          string       `json:"title"`
+	Description    string       `json:"description,omitempty"`
+	Status         Status       `json:"status"`
+	TaskType       TaskType     `json:"task_type"`
+	AssignedTo     string       `json:"assigned_to,omitempty"`
+	AssigneeType   AssigneeType `json:"assignee_type,omitempty"`
+	AgentSessionID string       `json:"agent_session_id,omitempty"`
+	AgentType      string       `json:"agent_type,omitempty"`
+	SortOrder      int          `json:"sort_order"`
+	Instructions   string       `json:"instructions,omitempty"`
+	IsStale        bool         `json:"is_stale"`
+	CreatedAt      time.Time    `json:"created_at"`
+	UpdatedAt      time.Time    `json:"updated_at"`
 }
 
 // TaskDependency represents a finish-to-start dependency between tasks.
@@ -196,4 +213,26 @@ type PromptTemplate struct {
 type UnreadComment struct {
 	SessionID string `json:"session_id"`
 	CommentID string `json:"comment_id"`
+}
+
+// AgentProfile defines the configuration for a type of agent (Planner, Executor, Reviewer, etc.).
+type AgentProfile struct {
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Description    string    `json:"description,omitempty"`
+	Capabilities   string    `json:"capabilities,omitempty"` // JSON string array
+	MaxConcurrency int       `json:"max_concurrency"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// TriggerRule maps a dispatcher event type to a gateway action for a given agent profile.
+type TriggerRule struct {
+	ID             string    `json:"id"`
+	AgentProfileID string    `json:"agent_profile_id"`
+	EventType      string    `json:"event_type"`
+	Action         string    `json:"action"`
+	Priority       int       `json:"priority"`
+	Enabled        bool      `json:"enabled"`
+	CreatedAt      time.Time `json:"created_at"`
 }

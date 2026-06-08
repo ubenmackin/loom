@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ubenmackin/loom/internal/dispatcher"
+	"github.com/ubenmackin/loom/internal/gateway"
 	"github.com/ubenmackin/loom/internal/models"
 	"github.com/ubenmackin/loom/internal/store"
 )
@@ -27,6 +28,15 @@ type StoryStore interface {
 	UpdateStatus(ctx context.Context, id string, status models.Status) error
 	Delete(ctx context.Context, id string) error
 	GetWithTasks(ctx context.Context, id string) (*models.Story, []*models.Task, error)
+}
+
+// ProjectStore defines the interface for interacting with the projects storage.
+type ProjectStore interface {
+	Create(ctx context.Context, project *models.Project) error
+	GetByID(ctx context.Context, id string) (*models.Project, error)
+	List(ctx context.Context) ([]*models.Project, error)
+	Update(ctx context.Context, project *models.Project) error
+	Delete(ctx context.Context, id string) error
 }
 
 // TaskStore defines the interface for interacting with the tasks storage.
@@ -103,16 +113,39 @@ type UserStore interface {
 	DeleteUser(ctx context.Context, id string) error
 }
 
+// AgentProfileStore defines the interface for interacting with agent profiles.
+type AgentProfileStore interface {
+	Create(ctx context.Context, profile *models.AgentProfile) error
+	GetByID(ctx context.Context, id string) (*models.AgentProfile, error)
+	List(ctx context.Context) ([]*models.AgentProfile, error)
+	Update(ctx context.Context, profile *models.AgentProfile) error
+	Delete(ctx context.Context, id string) error
+}
+
+// TriggerRuleStore defines the interface for interacting with trigger rules.
+type TriggerRuleStore interface {
+	Create(ctx context.Context, rule *models.TriggerRule) error
+	GetByID(ctx context.Context, id string) (*models.TriggerRule, error)
+	ListByProfile(ctx context.Context, profileID string) ([]*models.TriggerRule, error)
+	List(ctx context.Context) ([]*models.TriggerRule, error)
+	Update(ctx context.Context, rule *models.TriggerRule) error
+	Delete(ctx context.Context, id string) error
+}
+
 // handlers holds all store references and dependencies for the API handlers.
 type handlers struct {
 	stories   StoryStore
 	tasks     TaskStore
+	projects  ProjectStore
 	sessions  SessionStore
 	comments  CommentStore
 	templates TemplateStore
 	activity  ActivityStore
 	users     UserStore
+	profiles  AgentProfileStore
+	rules     TriggerRuleStore
 	dispatch  *dispatcher.Dispatcher
+	gateway   *gateway.Gateway
 	hub       HubInterface
 }
 
@@ -120,23 +153,31 @@ type handlers struct {
 func NewRouter(
 	storyStore StoryStore,
 	taskStore TaskStore,
+	projectStore ProjectStore,
 	sessionStore SessionStore,
 	commentStore CommentStore,
 	templateStore TemplateStore,
 	activityStore ActivityStore,
 	userStore UserStore,
+	profileStore AgentProfileStore,
+	ruleStore TriggerRuleStore,
 	d *dispatcher.Dispatcher,
+	gw *gateway.Gateway,
 	hub HubInterface,
 ) *chi.Mux {
 	h := &handlers{
 		stories:   storyStore,
 		tasks:     taskStore,
+		projects:  projectStore,
 		sessions:  sessionStore,
 		comments:  commentStore,
 		templates: templateStore,
 		activity:  activityStore,
 		users:     userStore,
+		profiles:  profileStore,
+		rules:     ruleStore,
 		dispatch:  d,
+		gateway:   gw,
 		hub:       hub,
 	}
 
@@ -185,14 +226,46 @@ func NewRouter(
 
 		// Dispatcher status endpoint.
 		r.Get("/dispatcher/status", h.handleDispatcherStatus)
+
+		// Project list for project picker (all logged-in users).
+		r.Get("/projects", h.listProjects)
 	})
 
-	// Admin-only user management endpoints
+	// Admin-only user management and project management endpoints
 	r.Group(func(r chi.Router) {
 		r.Use(h.UserAuthenticator)
 		r.Use(h.AdminOnly)
 		r.Route("/users", h.registerUserRoutes)
+		r.Post("/projects", h.createProject)
+		r.Get("/projects/{id}", h.getProject)
+		r.Put("/projects/{id}", h.updateProject)
+		r.Delete("/projects/{id}", h.deleteProject)
+
+		// Gateway admin endpoints.
+		r.Get("/gateway/status", h.handleGatewayStatus)
+		r.Get("/gateway/queue", h.handleGatewayQueue)
+		r.Post("/gateway/trigger", h.handleGatewayTrigger)
+
+		// Agent profile management.
+		r.Route("/profiles", h.registerProfileRoutes)
 	})
 
 	return r
+}
+
+// registerProfileRoutes registers CRUD routes for agent profiles.
+func (h *handlers) registerProfileRoutes(r chi.Router) {
+	r.Get("/", h.listProfiles)
+	r.Post("/", h.createProfile)
+	r.Get("/{id}", h.getProfile)
+	r.Put("/{id}", h.updateProfile)
+	r.Delete("/{id}", h.deleteProfile)
+
+	// Sub-resource: trigger rules for a profile.
+	r.Route("/{id}/rules", func(r chi.Router) {
+		r.Get("/", h.listRulesByProfile)
+		r.Post("/", h.createRule)
+		r.Put("/{ruleID}", h.updateRule) // ruleID path param
+		r.Delete("/{ruleID}", h.deleteRule)
+	})
 }

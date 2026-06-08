@@ -68,6 +68,9 @@ export default function TopNav() {
         <NavLink to="/dispatcher" className={({ isActive }) => navLinkClass(isActive)}>
           <span className="uppercase">Dispatcher</span>
         </NavLink>
+        <NavLink to="/gateway" className={({ isActive }) => navLinkClass(isActive)}>
+          <span className="uppercase">Gateway</span>
+        </NavLink>
         <NavLink to="/agents" className={({ isActive }) => navLinkClass(isActive)}>
           <span className="uppercase">Agents</span>
         </NavLink>
@@ -100,14 +103,32 @@ export default function TopNav() {
                     Profile
                   </button>
                   {isAdmin && (
-                    <NavLink
-                      to="/users"
-                      onClick={() => setDropdownOpen(false)}
-                      className="flex items-center gap-2 px-4 py-2 text-sm font-mono text-slate-700 dark:text-neutral-300 hover:bg-gray-100 dark:hover:bg-charcoal-darkest border-b border-gray-200 dark:border-gray-border transition-colors"
-                    >
-                      <Users size={14} />
-                      <span>Users</span>
-                    </NavLink>
+                    <>
+                      <NavLink
+                        to="/projects"
+                        onClick={() => setDropdownOpen(false)}
+                        className="flex items-center gap-2 px-4 py-2 text-sm font-mono text-slate-700 dark:text-neutral-300 hover:bg-gray-100 dark:hover:bg-charcoal-darkest border-b border-gray-200 dark:border-gray-border transition-colors"
+                      >
+                        <Layers size={14} />
+                        <span>Projects</span>
+                      </NavLink>
+                      <NavLink
+                        to="/users"
+                        onClick={() => setDropdownOpen(false)}
+                        className="flex items-center gap-2 px-4 py-2 text-sm font-mono text-slate-700 dark:text-neutral-300 hover:bg-gray-100 dark:hover:bg-charcoal-darkest border-b border-gray-200 dark:border-gray-border transition-colors"
+                      >
+                        <Users size={14} />
+                        <span>Users</span>
+                      </NavLink>
+                      <NavLink
+                        to="/profiles"
+                        onClick={() => setDropdownOpen(false)}
+                        className="flex items-center gap-2 px-4 py-2 text-sm font-mono text-slate-700 dark:text-neutral-300 hover:bg-gray-100 dark:hover:bg-charcoal-darkest border-b border-gray-200 dark:border-gray-border transition-colors"
+                      >
+                        <Layers size={14} />
+                        <span>Profiles</span>
+                      </NavLink>
+                    </>
                   )}
                   <button
                     onClick={handleLogout}

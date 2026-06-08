@@ -84,12 +84,13 @@ describe('useAuthStore', () => {
       expect(isAdmin()).toBe(false)
     })
 
-    it('stores token and user in localStorage via persist middleware', () => {
+    it('stores token, user, and isAuthenticated in localStorage via persist middleware', () => {
       useAuthStore.getState().login(normalAuthResponse)
 
       const stored = JSON.parse(localStorage.getItem('loom_auth')!)
       expect(stored.state.token).toBe('normal-token-xyz')
       expect(stored.state.user).toEqual(normalUser)
+      expect(stored.state.isAuthenticated).toBe(true)
     })
   })
 
@@ -107,7 +108,7 @@ describe('useAuthStore', () => {
       expect(isAdmin()).toBe(false)
     })
 
-    it('removes token and user from localStorage', () => {
+    it('removes token, user, and resets isAuthenticated in localStorage', () => {
       useAuthStore.getState().login(normalAuthResponse)
       expect(localStorage.getItem('loom_auth')).not.toBeNull()
 
@@ -116,6 +117,7 @@ describe('useAuthStore', () => {
       const stored = JSON.parse(localStorage.getItem('loom_auth')!)
       expect(stored.state.token).toBeNull()
       expect(stored.state.user).toBeNull()
+      expect(stored.state.isAuthenticated).toBe(false)
     })
   })
 

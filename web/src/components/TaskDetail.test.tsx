@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import TaskDetail from './TaskDetail'
@@ -78,7 +78,7 @@ vi.mock('../api/client', () => ({
 }))
 
 describe('TaskDetail create mode', () => {
-  let mockOnClose: ReturnType<typeof vi.fn>
+  let mockOnClose: Mock<() => void>
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -213,7 +213,7 @@ describe('TaskDetail create mode', () => {
 })
 
 describe('edit mode', () => {
-  let mockOnClose: ReturnType<typeof vi.fn>
+  let mockOnClose: Mock<() => void>
   let mutateMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {

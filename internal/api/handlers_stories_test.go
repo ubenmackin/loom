@@ -636,7 +636,13 @@ func TestSessionGet_NotFound(t *testing.T) {
 
 	mux, _, _, _, _, _, _ := newTestRouter(t)
 
-	rr := doRequest(t, mux, "GET", "/api/sessions/nonexistent", nil)
+	// The /sessions/{id} endpoint is behind SessionAuthenticator which requires
+	// either X-Session-ID or X-Agent-Secret. We provide X-Agent-Secret here so
+	// the middleware lets us through to test the 404 handler.
+	req := httptest.NewRequest("GET", "/api/sessions/nonexistent", nil)
+	req.Header.Set("X-Agent-Secret", "test-agent-secret")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("getSession status = %d, want %d", rr.Code, http.StatusNotFound)

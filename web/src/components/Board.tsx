@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo } from 'react'
-import { Plus } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Plus, FolderOpen } from 'lucide-react'
 import {
   DndContext,
   DragOverlay,
@@ -12,7 +13,9 @@ import {
   SortableContext,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
+import { useProjectFilterStore } from '../stores/project'
 import { useBoardState } from '../hooks/useBoardState'
+import { useProjects } from '../hooks/useProjects'
 import { useCreateStory } from '../hooks/useCreateStory'
 import { useBoardDnD } from '../hooks/useBoardDnD'
 import SortableStoryRow from './SortableStoryRow'
@@ -50,6 +53,11 @@ export default function Board() {
   )
 
   const { activeDragTask, handleDragStart, handleDragOver, handleDragEnd, syncRefs } = useBoardDnD()
+
+  const selectedProjectId = useProjectFilterStore((s) => s.selectedProjectId)
+  const navigate = useNavigate()
+
+  const { data: projects, isLoading: projectsLoading } = useProjects()
 
   // Keep DnD hook refs in sync with latest state — runs on every render
   syncRefs({
@@ -104,6 +112,43 @@ export default function Board() {
     return (
       <div className="flex items-center justify-center h-64">
         <span className="font-mono text-sm text-red-500">Error loading board: {error.message}</span>
+      </div>
+    )
+  }
+
+  // Projects query complete and no projects exist — show Add Project
+  if (!projectsLoading && Array.isArray(projects) && projects.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-4">
+        <FolderOpen size={48} className="text-neutral-300 dark:text-neutral-600" />
+        <div className="text-center">
+          <p className="font-mono text-sm text-neutral-500 dark:text-amber-muted mb-4">
+            No projects found. Create one to get started.
+          </p>
+          <button
+            onClick={() => navigate('/projects')}
+            className="glow-button flex items-center gap-1.5 text-sm px-6 py-2"
+          >
+            <Plus size={16} /> Add Project
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // Projects exist but none selected — prompt to pick
+  if (!projectsLoading && Array.isArray(projects) && projects.length > 0 && !selectedProjectId) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-4">
+        <FolderOpen size={48} className="text-neutral-300 dark:text-neutral-600" />
+        <div className="text-center">
+          <p className="font-mono text-sm text-neutral-500 dark:text-amber-muted">
+            Select a project above to view its board
+          </p>
+          <p className="font-mono text-xs text-neutral-400 dark:text-neutral-600 mt-1">
+            Use the project picker in the navigation bar
+          </p>
+        </div>
       </div>
     )
   }

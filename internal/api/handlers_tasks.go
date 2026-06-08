@@ -18,25 +18,29 @@ import (
 // --- Request/Response types ---
 
 type createTaskRequest struct {
-	Title        string `json:"title"`
-	Description  string `json:"description,omitempty"`
-	TaskType     string `json:"task_type,omitempty"`
-	AssignedTo   string `json:"assigned_to,omitempty"`
-	AssigneeType string `json:"assignee_type,omitempty"`
-	SortOrder    int    `json:"sort_order,omitempty"`
-	Instructions string `json:"instructions,omitempty"`
+	Title          string `json:"title"`
+	Description    string `json:"description,omitempty"`
+	TaskType       string `json:"task_type,omitempty"`
+	AssignedTo     string `json:"assigned_to,omitempty"`
+	AssigneeType   string `json:"assignee_type,omitempty"`
+	AgentSessionID string `json:"agent_session_id,omitempty"`
+	AgentType      string `json:"agent_type,omitempty"`
+	SortOrder      int    `json:"sort_order,omitempty"`
+	Instructions   string `json:"instructions,omitempty"`
 }
 
 type updateTaskRequest struct {
-	Title        *string `json:"title,omitempty"`
-	Description  *string `json:"description,omitempty"`
-	Status       *string `json:"status,omitempty"`
-	TaskType     *string `json:"task_type,omitempty"`
-	AssignedTo   *string `json:"assigned_to,omitempty"`
-	AssigneeType *string `json:"assignee_type,omitempty"`
-	SortOrder    *int    `json:"sort_order,omitempty"`
-	Instructions *string `json:"instructions,omitempty"`
-	IsStale      *bool   `json:"is_stale,omitempty"`
+	Title          *string `json:"title,omitempty"`
+	Description    *string `json:"description,omitempty"`
+	Status         *string `json:"status,omitempty"`
+	TaskType       *string `json:"task_type,omitempty"`
+	AssignedTo     *string `json:"assigned_to,omitempty"`
+	AssigneeType   *string `json:"assignee_type,omitempty"`
+	AgentSessionID *string `json:"agent_session_id,omitempty"`
+	AgentType      *string `json:"agent_type,omitempty"`
+	SortOrder      *int    `json:"sort_order,omitempty"`
+	Instructions   *string `json:"instructions,omitempty"`
+	IsStale        *bool   `json:"is_stale,omitempty"`
 }
 
 type generateTaskItem struct {
@@ -132,14 +136,16 @@ func (h *handlers) createTaskUnderStory(w http.ResponseWriter, r *http.Request) 
 	}
 
 	task := &models.Task{
-		StoryID:      storyID,
-		Title:        strings.TrimSpace(req.Title),
-		Description:  req.Description,
-		TaskType:     models.TaskType(req.TaskType),
-		AssignedTo:   req.AssignedTo,
-		AssigneeType: models.AssigneeType(req.AssigneeType),
-		SortOrder:    req.SortOrder,
-		Instructions: req.Instructions,
+		StoryID:        storyID,
+		Title:          strings.TrimSpace(req.Title),
+		Description:    req.Description,
+		TaskType:       models.TaskType(req.TaskType),
+		AssignedTo:     req.AssignedTo,
+		AssigneeType:   models.AssigneeType(req.AssigneeType),
+		AgentSessionID: req.AgentSessionID,
+		AgentType:      req.AgentType,
+		SortOrder:      req.SortOrder,
+		Instructions:   req.Instructions,
 	}
 
 	if err := h.tasks.Create(r.Context(), task); err != nil {
@@ -249,6 +255,12 @@ func (h *handlers) updateTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		task.AssigneeType = models.AssigneeType(*req.AssigneeType)
+	}
+	if req.AgentSessionID != nil {
+		task.AgentSessionID = *req.AgentSessionID
+	}
+	if req.AgentType != nil {
+		task.AgentType = *req.AgentType
 	}
 	if req.SortOrder != nil {
 		task.SortOrder = *req.SortOrder

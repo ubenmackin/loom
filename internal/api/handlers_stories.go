@@ -16,6 +16,7 @@ import (
 type createStoryRequest struct {
 	Title          string `json:"title"`
 	Description    string `json:"description,omitempty"`
+	ProjectID      string `json:"project_id,omitempty"`
 	RequiresBuild  bool   `json:"requires_build,omitempty"`
 	RequiresReview bool   `json:"requires_review,omitempty"`
 	AssignedTo     string `json:"assigned_to,omitempty"`
@@ -26,6 +27,7 @@ type createStoryRequest struct {
 type updateStoryRequest struct {
 	Title          *string `json:"title,omitempty"`
 	Description    *string `json:"description,omitempty"`
+	ProjectID      *string `json:"project_id,omitempty"`
 	RequiresBuild  *bool   `json:"requires_build,omitempty"`
 	RequiresReview *bool   `json:"requires_review,omitempty"`
 	AssignedTo     *string `json:"assigned_to,omitempty"`
@@ -66,6 +68,7 @@ func (h *handlers) listStories(w http.ResponseWriter, r *http.Request) {
 	filter := store.StoryFilter{
 		Status:     models.Status(r.URL.Query().Get("status")),
 		AssignedTo: r.URL.Query().Get("assigned_to"),
+		ProjectID:  r.URL.Query().Get("project_id"),
 	}
 
 	stories, err := h.stories.List(r.Context(), filter)
@@ -101,6 +104,7 @@ func (h *handlers) createStory(w http.ResponseWriter, r *http.Request) {
 	story := &models.Story{
 		Title:          strings.TrimSpace(req.Title),
 		Description:    req.Description,
+		ProjectID:      req.ProjectID,
 		RequiresBuild:  req.RequiresBuild,
 		RequiresReview: req.RequiresReview,
 		AssignedTo:     req.AssignedTo,
@@ -176,6 +180,7 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 	// Capture old values before applying updates.
 	oldTitle := story.Title
 	oldDescription := story.Description
+	oldProjectID := story.ProjectID
 	oldRequiresBuild := story.RequiresBuild
 	oldRequiresReview := story.RequiresReview
 	oldAssignedTo := story.AssignedTo
@@ -199,6 +204,9 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Description != nil {
 		story.Description = *req.Description
+	}
+	if req.ProjectID != nil {
+		story.ProjectID = *req.ProjectID
 	}
 	if req.RequiresBuild != nil {
 		story.RequiresBuild = *req.RequiresBuild
@@ -243,6 +251,9 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 	}
 	if story.Description != oldDescription {
 		changed = append(changed, "description")
+	}
+	if story.ProjectID != oldProjectID {
+		changed = append(changed, "project_id")
 	}
 	if story.RequiresBuild != oldRequiresBuild {
 		changed = append(changed, "requires_build")

@@ -37,7 +37,9 @@ func (h *handlers) GetBoard(w http.ResponseWriter, r *http.Request) {
 	limit := p.Limit
 
 	// Fetch stories with pagination.
-	stories, err := h.stories.List(ctx, store.StoryFilter{})
+	stories, err := h.stories.List(ctx, store.StoryFilter{
+		ProjectID: r.URL.Query().Get("project_id"),
+	})
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to fetch stories: "+err.Error())
 		return

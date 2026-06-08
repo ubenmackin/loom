@@ -17,8 +17,17 @@ vi.mock('../stores/auth', () => ({
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import ProtectedRoute from './ProtectedRoute'
 import { useAuthStore } from '../stores/auth'
+import type { User } from '../types'
 
 const mockUseAuthStore = vi.mocked(useAuthStore)
+
+// ── Types ───────────────────────────────────────────────────────────────────
+
+type AuthState = {
+  user: User | null
+  token: string | null
+  isAuthenticated: boolean
+}
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -50,9 +59,9 @@ function renderProtected(requireAdmin = false) {
   )
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let authState: any = {
+let authState: AuthState = {
   user: null,
+  token: null,
   isAuthenticated: false,
 }
 
@@ -61,11 +70,13 @@ let authState: any = {
 describe('ProtectedRoute', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    authState = { user: null, isAuthenticated: false }
-    mockUseAuthStore.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ((selector?: any) => (selector ? selector(authState) : authState)) as any,
-    )
+    authState = { user: null, token: null, isAuthenticated: false }
+    type MockSelectorFn = (selector?: (state: AuthState) => unknown) => unknown
+
+    ;(mockUseAuthStore as unknown as { mockImplementation: (fn: MockSelectorFn) => void }).mockImplementation((selector?) => {
+      if (selector) return selector(authState)
+      return authState
+    })
   })
 
   describe('when not authenticated', () => {
@@ -96,6 +107,7 @@ describe('ProtectedRoute', () => {
           role: 'normal',
           created_at: '2025-01-01T00:00:00Z',
         },
+        token: 'token',
         isAuthenticated: true,
       }
     })
@@ -122,6 +134,7 @@ describe('ProtectedRoute', () => {
           role: 'normal',
           created_at: '2025-01-01T00:00:00Z',
         },
+        token: 'token',
         isAuthenticated: true,
       }
     })
@@ -147,6 +160,7 @@ describe('ProtectedRoute', () => {
           role: 'admin',
           created_at: '2025-01-01T00:00:00Z',
         },
+        token: 'token',
         isAuthenticated: true,
       }
     })
@@ -173,6 +187,7 @@ describe('ProtectedRoute', () => {
           role: 'admin',
           created_at: '2025-01-01T00:00:00Z',
         },
+        token: 'token',
         isAuthenticated: true,
       }
     })

@@ -32,10 +32,6 @@ func (m *mockHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // along with all store references for test assertions. This is the single shared
 // helper for all API tests, eliminating the 88% duplication between the former
 // newTestRouter and newTestRouterStories.
-// newTestRouter creates a fully wired chi.Router backed by an isolated SQLite database,
-// along with all store references for test assertions. This is the single shared
-// helper for all API tests, eliminating the 88% duplication between the former
-// newTestRouter and newTestRouterStories.
 func newTestRouter(t *testing.T) (
 	chi.Router,
 	*store.StoryStore,
@@ -81,6 +77,7 @@ func newTestRouterWithDB(t *testing.T) (
 
 	storyStore := store.NewStoryStore(dbConn)
 	taskStore := store.NewTaskStore(dbConn)
+	projectStore := store.NewProjectStore(dbConn)
 	sessionStore := store.NewSessionStore(dbConn)
 	commentStore := store.NewCommentStore(dbConn)
 	templateStore := store.NewTemplateStore(dbConn)
@@ -111,15 +108,22 @@ func newTestRouterWithDB(t *testing.T) (
 		StalenessThreshold: 30 * time.Minute,
 	})
 
+	profileStore := store.NewAgentProfileStore(dbConn)
+	ruleStore := store.NewTriggerRuleStore(dbConn)
+
 	apiRouter := NewRouter(
 		storyStore,
 		taskStore,
+		projectStore,
 		sessionStore,
 		commentStore,
 		templateStore,
 		activityStore,
 		userStore,
+		profileStore,
+		ruleStore,
 		d,
+		nil,
 		&mockHub{},
 	)
 
@@ -128,4 +132,14 @@ func newTestRouterWithDB(t *testing.T) (
 	mux.Mount("/api", apiRouter)
 
 	return mux, storyStore, taskStore, sessionStore, commentStore, templateStore, activityStore, dbConn
+}
+
+// makeTestUserAdmin updates the default test user's role to admin so that
+// admin-only route tests can authenticate successfully.
+func makeTestUserAdmin(t *testing.T, db *sql.DB) {
+	t.Helper()
+	_, err := db.Exec("UPDATE users SET role = ? WHERE username = ?", models.RoleAdmin, "testuser")
+	if err != nil {
+		t.Fatalf("failed to update test user to admin: %v", err)
+	}
 }
