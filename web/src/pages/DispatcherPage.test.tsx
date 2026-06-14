@@ -83,13 +83,6 @@ describe('DispatcherPage', () => {
     vi.clearAllMocks()
   })
 
-  it('renders the "Dispatcher Dashboard" header', () => {
-    setupRunning()
-    render(<DispatcherPage />)
-
-    expect(screen.getByText('Dispatcher Dashboard')).toBeInTheDocument()
-  })
-
   describe('status bar', () => {
     it('shows Running status when dispatcher is running', () => {
       setupRunning()

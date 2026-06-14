@@ -109,7 +109,8 @@ func newTestRouterWithDB(t *testing.T) (
 	})
 
 	profileStore := store.NewAgentProfileStore(dbConn)
-	ruleStore := store.NewTriggerRuleStore(dbConn)
+
+	settingStore := store.NewSettingStore(dbConn)
 
 	apiRouter := NewRouter(
 		storyStore,
@@ -121,10 +122,10 @@ func newTestRouterWithDB(t *testing.T) (
 		activityStore,
 		userStore,
 		profileStore,
-		ruleStore,
 		d,
 		nil,
 		&mockHub{},
+		settingStore,
 	)
 
 	// Mount under /api — same as production (cmd/server/main.go).

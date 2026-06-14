@@ -221,20 +221,8 @@ type AgentProfile struct {
 	ID             string    `json:"id"`
 	Name           string    `json:"name"`
 	Description    string    `json:"description,omitempty"`
-	Capabilities   string    `json:"capabilities,omitempty"` // JSON string array
 	MaxConcurrency int       `json:"max_concurrency"`
 	TaskTypes      []string  `json:"task_types,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
-}
-
-// TriggerRule maps a dispatcher event type to a gateway action for a given agent profile.
-type TriggerRule struct {
-	ID             string    `json:"id"`
-	AgentProfileID string    `json:"agent_profile_id"`
-	EventType      string    `json:"event_type"`
-	Action         string    `json:"action"`
-	Priority       int       `json:"priority"`
-	Enabled        bool      `json:"enabled"`
-	CreatedAt      time.Time `json:"created_at"`
 }

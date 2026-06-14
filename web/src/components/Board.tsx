@@ -70,12 +70,18 @@ export default function Board() {
 
   const handleCreate = useCallback(
     (formData: CreateStoryData) => {
-      createStoryMutation.mutate(formData, {
-        onSuccess: () => setIsFormOpen(false),
-        onError: (err) => { /* mutation handles toast */ void err },
-      })
+      createStoryMutation.mutate(
+        {
+          ...formData,
+          project_id: selectedProjectId ?? undefined,
+        },
+        {
+          onSuccess: () => setIsFormOpen(false),
+          onError: (err) => { /* mutation handles toast */ void err },
+        },
+      )
     },
-    [createStoryMutation],
+    [createStoryMutation, selectedProjectId],
   )
 
   const handleStoryClick = useCallback((id: string) => {
@@ -162,10 +168,7 @@ export default function Board() {
       onDragEnd={handleDragEnd}
     >
       <div className="flex flex-col h-full">
-        <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-border">
-          <span className="text-[10px] uppercase tracking-widest font-bold text-neutral-600 dark:text-neutral-300">
-            Board
-          </span>
+        <div className="flex items-center justify-end px-4 py-2 border-b border-gray-200 dark:border-gray-border">
           <button onClick={() => setIsFormOpen(true)} className="glow-button flex items-center gap-1.5 text-xs">
             <Plus size={14} /> Add Story
           </button>

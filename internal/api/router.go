@@ -110,7 +110,15 @@ type UserStore interface {
 	CountUsers(ctx context.Context) (int, error)
 	CleanupExpiredSessions(ctx context.Context) error
 	ListAll(ctx context.Context) ([]*models.User, error)
+	UpdateUserProfile(ctx context.Context, id, displayName, email string) error
+	UpdateUserPassword(ctx context.Context, id, newPasswordHash string) error
 	DeleteUser(ctx context.Context, id string) error
+}
+
+// SettingStore defines the interface for interacting with application settings.
+type SettingStore interface {
+	Get(ctx context.Context, key string) (string, error)
+	Set(ctx context.Context, key, value string) error
 }
 
 // AgentProfileStore defines the interface for interacting with agent profiles.
@@ -119,16 +127,6 @@ type AgentProfileStore interface {
 	GetByID(ctx context.Context, id string) (*models.AgentProfile, error)
 	List(ctx context.Context) ([]*models.AgentProfile, error)
 	Update(ctx context.Context, profile *models.AgentProfile) error
-	Delete(ctx context.Context, id string) error
-}
-
-// TriggerRuleStore defines the interface for interacting with trigger rules.
-type TriggerRuleStore interface {
-	Create(ctx context.Context, rule *models.TriggerRule) error
-	GetByID(ctx context.Context, id string) (*models.TriggerRule, error)
-	ListByProfile(ctx context.Context, profileID string) ([]*models.TriggerRule, error)
-	List(ctx context.Context) ([]*models.TriggerRule, error)
-	Update(ctx context.Context, rule *models.TriggerRule) error
 	Delete(ctx context.Context, id string) error
 }
 
@@ -143,10 +141,10 @@ type handlers struct {
 	activity  ActivityStore
 	users     UserStore
 	profiles  AgentProfileStore
-	rules     TriggerRuleStore
 	dispatch  *dispatcher.Dispatcher
 	gateway   *gateway.Gateway
 	hub       HubInterface
+	settings  *SettingsHandler
 }
 
 // NewRouter creates and configures the chi router with all API routes.
@@ -160,11 +158,19 @@ func NewRouter(
 	activityStore ActivityStore,
 	userStore UserStore,
 	profileStore AgentProfileStore,
-	ruleStore TriggerRuleStore,
 	d *dispatcher.Dispatcher,
 	gw *gateway.Gateway,
 	hub HubInterface,
+	settingStore SettingStore,
 ) *chi.Mux {
+	// The settings handler propagates concurrency changes to the running
+	// gateway's job queue. Tests that pass a nil gateway still get a working
+	// handler — they just don't exercise the in-memory queue update path.
+	var maxTotalSetter MaxTotalSetter
+	if gw != nil {
+		maxTotalSetter = gw.Queue()
+	}
+
 	h := &handlers{
 		stories:   storyStore,
 		tasks:     taskStore,
@@ -175,10 +181,10 @@ func NewRouter(
 		activity:  activityStore,
 		users:     userStore,
 		profiles:  profileStore,
-		rules:     ruleStore,
 		dispatch:  d,
 		gateway:   gw,
 		hub:       hub,
+		settings:  NewSettingsHandler(settingStore, maxTotalSetter),
 	}
 
 	r := chi.NewRouter()
@@ -248,6 +254,10 @@ func NewRouter(
 
 		// Agent profile management.
 		r.Route("/profiles", h.registerProfileRoutes)
+
+		// Settings endpoints (admin-only: mutate global dispatcher behavior).
+		r.Get("/settings/global_max_concurrency", h.settings.GetGlobalMaxConcurrency)
+		r.Put("/settings/global_max_concurrency", h.settings.SetGlobalMaxConcurrency)
 	})
 
 	return r
@@ -261,12 +271,4 @@ func (h *handlers) registerProfileRoutes(r chi.Router) {
 	r.Get("/{id}", h.getProfile)
 	r.Put("/{id}", h.updateProfile)
 	r.Delete("/{id}", h.deleteProfile)
-
-	// Sub-resource: trigger rules for a profile.
-	r.Route("/{id}/rules", func(r chi.Router) {
-		r.Get("/", h.listRulesByProfile)
-		r.Post("/", h.createRule)
-		r.Put("/{ruleID}", h.updateRule) // ruleID path param
-		r.Delete("/{ruleID}", h.deleteRule)
-	})
 }

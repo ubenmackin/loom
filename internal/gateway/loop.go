@@ -76,29 +76,17 @@ func (g *Gateway) processEvent(ctx context.Context, event dispatcher.Event) {
 		agentType = "*"
 	}
 
-	// Evaluate the rules engine to determine the appropriate action.
-	action := g.rules.Evaluate(event.Type, agentType)
-	if action == ActionNoOp {
-		// Also try a wildcard match if we had a specific agent type.
-		if agentType != "*" {
-			action = g.rules.Evaluate(event.Type, "*")
-		}
-	}
-
-	slog.Debug("gateway: event evaluated",
-		"event_type", event.Type,
-		"agent_type", agentType,
-		"action", action)
-
-	switch action {
-	case ActionCreateSession, ActionResumeSession:
-		g.processCreateSession(ctx, event, agentType)
-	case ActionAssignTask:
+	switch event.Type {
+	case dispatcher.EventWorkRequested:
 		g.processAssignTask(ctx, event, agentType)
-	case ActionNoOp:
-		// Nothing to do.
+	case dispatcher.EventTaskCompleted:
+		if agentType == "planner" || agentType == "executor" || agentType == "reviewer" || agentType == "builder" {
+			g.processCreateSession(ctx, event, agentType)
+		}
+	case dispatcher.EventGateTaskCreated:
+		g.processCreateSession(ctx, event, agentType)
 	default:
-		slog.Warn("gateway: unknown action", "action", action)
+		// noop
 	}
 }
 
@@ -292,7 +280,7 @@ func (g *Gateway) resolveProjectID(ctx context.Context, event dispatcher.Event) 
 // ---------------------------------------------------------------------------
 
 // createACPSession creates a new ACP session for the given project and agent
-// type. It dials the ACP WebSocket endpoint, sends a create_session message,
+// type. It starts the ACP subprocess, sends a create_session message,
 // and registers the session in the tracker.
 func (g *Gateway) createACPSession(ctx context.Context, projectID, agentType string) error {
 	client, err := g.getOrCreateACPClient(ctx, projectID, agentType)

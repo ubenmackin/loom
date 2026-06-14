@@ -26,6 +26,26 @@ type JobQueue struct {
 	queues      map[string][]*Job // key: "projectID:agentType" -> FIFO queue
 	concurrency map[string]int    // key: "projectID:agentType" -> max concurrency
 	active      map[string]int    // key: "projectID:agentType" -> current active count
+	maxTotal    int               // 0 = unlimited
+}
+
+// SetMaxTotal sets a global cap on the total number of active sessions
+// across all (projectID, agentType) pairs. A value of 0 (the default)
+// means unlimited.
+func (jq *JobQueue) SetMaxTotal(n int) {
+	jq.mu.Lock()
+	defer jq.mu.Unlock()
+	jq.maxTotal = n
+}
+
+// totalActive returns the total number of active sessions across all
+// (projectID, agentType) pairs. The caller must hold at least an RLock.
+func (jq *JobQueue) totalActive() int {
+	total := 0
+	for _, count := range jq.active {
+		total += count
+	}
+	return total
 }
 
 // DefaultConcurrency returns the default maximum concurrent sessions per
@@ -113,10 +133,16 @@ func (jq *JobQueue) TotalLen() int {
 }
 
 // IncrementActive increments the active session count for the given
-// (projectID, agentType) pair.
+// (projectID, agentType) pair. If a global max total has been configured
+// and the total active sessions across all pairs has reached that limit,
+// the increment is silently skipped.
 func (jq *JobQueue) IncrementActive(projectID, agentType string) {
 	jq.mu.Lock()
 	defer jq.mu.Unlock()
+
+	if jq.maxTotal > 0 && jq.totalActive() >= jq.maxTotal {
+		return
+	}
 
 	k := queueKey(projectID, agentType)
 	jq.active[k]++
@@ -135,10 +161,15 @@ func (jq *JobQueue) DecrementActive(projectID, agentType string) {
 }
 
 // HasCapacity returns true if the number of active sessions for the given
-// (agentType, projectID) pair is less than the configured concurrency limit.
+// (agentType, projectID) pair is less than the configured concurrency limit
+// and the global max total (if set) has not been reached.
 func (jq *JobQueue) HasCapacity(projectID, agentType string) bool {
 	jq.mu.RLock()
 	defer jq.mu.RUnlock()
+
+	if jq.maxTotal > 0 && jq.totalActive() >= jq.maxTotal {
+		return false
+	}
 
 	k := queueKey(projectID, agentType)
 	max, ok := jq.concurrency[agentType]

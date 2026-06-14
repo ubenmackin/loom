@@ -2,9 +2,11 @@ package gateway
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"testing"
 
+	"github.com/ubenmackin/loom/internal/acp"
 	"github.com/ubenmackin/loom/internal/dispatcher"
 	"github.com/ubenmackin/loom/internal/models"
 )
@@ -59,6 +61,18 @@ func (m *mockSessionStore) UpdateLastSeen(_ context.Context, _ string) error    
 func (m *mockSessionStore) ListAll(_ context.Context) ([]*models.Session, error) { return nil, nil }
 func (m *mockSessionStore) Disconnect(_ context.Context, _ string) error         { return nil }
 
+type mockSettingStore struct {
+	data map[string]string
+}
+
+func (m *mockSettingStore) Get(_ context.Context, key string) (string, error) {
+	v, ok := m.data[key]
+	if !ok {
+		return "", sql.ErrNoRows
+	}
+	return v, nil
+}
+
 // ---------------------------------------------------------------------------
 // Helper to create a minimal test gateway
 // ---------------------------------------------------------------------------
@@ -66,6 +80,7 @@ func (m *mockSessionStore) Disconnect(_ context.Context, _ string) error        
 func newTestGateway(profiles []*models.AgentProfile) *Gateway {
 	g := &Gateway{
 		queue:            NewJobQueue(),
+		acpClients:       make(map[string]*acp.Client),
 		profileTaskTypes: make(map[string][]string),
 		profileStore:     &mockProfileStore{profiles: profiles},
 		taskStore:        &mockTaskStore{tasks: make(map[string]*models.Task)},
@@ -221,6 +236,170 @@ func TestResolveAgentType_DeterministicPickWhenMultipleMatch(t *testing.T) {
 	agentType := g.resolveAgentType(context.Background(), event)
 	if agentType != "AlphaAgent" {
 		t.Errorf("resolveAgentType() = %q, want %q (first alphabetically)", agentType, "AlphaAgent")
+	}
+}
+
+func TestNewGateway_LoadsGlobalMaxConcurrency(t *testing.T) {
+	ss := &mockSettingStore{
+		data: map[string]string{"global_max_concurrency": "3"},
+	}
+
+	d := dispatcher.NewDispatcher(dispatcher.DispatcherDeps{})
+	gw := NewGateway(
+		d,
+		"opencode acp",
+		5, // maxTotal — should be overridden by setting store
+		&mockTaskStore{tasks: make(map[string]*models.Task)},
+		&mockSessionStore{},
+		nil, // projectStore
+		nil, // storyStore
+		nil, // commentStore
+		nil, // activityStore
+		&mockProfileStore{},
+		ss,
+	)
+
+	// With maxTotal=3, we should be able to increment 3 distinct
+	// (projectID, agentType) pairs, but the 4th should be silently
+	// dropped because the global cap has been reached.
+	gw.queue.IncrementActive("p1", "executor")
+	gw.queue.IncrementActive("p2", "planner")
+	gw.queue.IncrementActive("p3", "builder")
+
+	if gw.queue.HasCapacity("p4", "reviewer") {
+		t.Fatal("expected HasCapacity to return false after 3 active sessions with maxTotal=3")
+	}
+
+	// Verify the default maxTotal of 5 was actually overridden by
+	// creating a 4th session that should be silently dropped.
+	if gw.queue.HasCapacity("p5", "executor") {
+		t.Fatal("expected no capacity after reaching maxTotal=3 even with a new agent type")
+	}
+}
+
+func TestNewGateway_NoSettingStore_UsesDefaultMaxTotal(t *testing.T) {
+	d := dispatcher.NewDispatcher(dispatcher.DispatcherDeps{})
+	gw := NewGateway(
+		d,
+		"opencode acp",
+		5, // maxTotal — should remain as-is when no setting store
+		&mockTaskStore{tasks: make(map[string]*models.Task)},
+		&mockSessionStore{},
+		nil, // projectStore
+		nil, // storyStore
+		nil, // commentStore
+		nil, // activityStore
+		&mockProfileStore{},
+		nil, // settingStore — nil, so default should be used
+	)
+
+	// With maxTotal=5 (default), we should be able to increment 5
+	// distinct pairs before hitting the cap.
+	gw.queue.IncrementActive("p1", "executor")
+	gw.queue.IncrementActive("p2", "planner")
+	gw.queue.IncrementActive("p3", "builder")
+	gw.queue.IncrementActive("p4", "reviewer")
+	gw.queue.IncrementActive("p5", "planner")
+
+	if gw.queue.HasCapacity("p6", "executor") {
+		t.Fatal("expected HasCapacity to return false after 5 active sessions with maxTotal=5")
+	}
+}
+
+func TestNewGateway_SettingStoreReturnsError_UsesDefaultMaxTotal(t *testing.T) {
+	// Setting store exists but the key is missing — Get returns sql.ErrNoRows.
+	ss := &mockSettingStore{data: map[string]string{}}
+
+	d := dispatcher.NewDispatcher(dispatcher.DispatcherDeps{})
+	gw := NewGateway(
+		d,
+		"opencode acp",
+		5, // maxTotal — should remain as-is when the setting is not found
+		&mockTaskStore{tasks: make(map[string]*models.Task)},
+		&mockSessionStore{},
+		nil, // projectStore
+		nil, // storyStore
+		nil, // commentStore
+		nil, // activityStore
+		&mockProfileStore{},
+		ss,
+	)
+
+	// With maxTotal=5 (default), we should be able to increment 5
+	// distinct pairs before hitting the cap.
+	gw.queue.IncrementActive("p1", "a")
+	gw.queue.IncrementActive("p2", "b")
+	gw.queue.IncrementActive("p3", "c")
+	gw.queue.IncrementActive("p4", "d")
+	gw.queue.IncrementActive("p5", "e")
+
+	if gw.queue.HasCapacity("p6", "f") {
+		t.Fatal("expected HasCapacity to return false after 5 active sessions with maxTotal=5")
+	}
+}
+
+func TestNewGateway_ZeroMaxTotalIsUnlimited(t *testing.T) {
+	ss := &mockSettingStore{
+		data: map[string]string{"global_max_concurrency": "0"},
+	}
+
+	d := dispatcher.NewDispatcher(dispatcher.DispatcherDeps{})
+	gw := NewGateway(
+		d,
+		"opencode acp",
+		5, // maxTotal — should be overridden by setting store value of 0
+		&mockTaskStore{tasks: make(map[string]*models.Task)},
+		&mockSessionStore{},
+		nil, // projectStore
+		nil, // storyStore
+		nil, // commentStore
+		nil, // activityStore
+		&mockProfileStore{},
+		ss,
+	)
+
+	// With maxTotal=0 (unlimited), HasCapacity should always return true
+	// regardless of how many sessions are active.
+	for i := 0; i < 10; i++ {
+		projectID := string(rune('a' + i))
+		gw.queue.IncrementActive(projectID, "executor")
+	}
+
+	if !gw.queue.HasCapacity("zzz", "executor") {
+		t.Fatal("expected HasCapacity to return true when maxTotal=0 (unlimited)")
+	}
+}
+
+func TestNewGateway_InvalidSettingValue_UsesDefaultMaxTotal(t *testing.T) {
+	ss := &mockSettingStore{
+		data: map[string]string{"global_max_concurrency": "not-a-number"},
+	}
+
+	d := dispatcher.NewDispatcher(dispatcher.DispatcherDeps{})
+	gw := NewGateway(
+		d,
+		"opencode acp",
+		5, // maxTotal — should remain as-is when setting value is invalid
+		&mockTaskStore{tasks: make(map[string]*models.Task)},
+		&mockSessionStore{},
+		nil, // projectStore
+		nil, // storyStore
+		nil, // commentStore
+		nil, // activityStore
+		&mockProfileStore{},
+		ss,
+	)
+
+	// With maxTotal=5 (default), we should be able to increment 5
+	// distinct pairs before hitting the cap.
+	gw.queue.IncrementActive("p1", "a")
+	gw.queue.IncrementActive("p2", "b")
+	gw.queue.IncrementActive("p3", "c")
+	gw.queue.IncrementActive("p4", "d")
+	gw.queue.IncrementActive("p5", "e")
+
+	if gw.queue.HasCapacity("p6", "f") {
+		t.Fatal("expected HasCapacity to return false after 5 active sessions with maxTotal=5")
 	}
 }
 

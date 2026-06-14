@@ -284,6 +284,30 @@ func (s *UserStore) ListAll(ctx context.Context) ([]*models.User, error) {
 	return users, nil
 }
 
+// UpdateUserProfile updates the display_name and email for a given user.
+func (s *UserStore) UpdateUserProfile(ctx context.Context, id, displayName, email string) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE users SET display_name = ?, email = ? WHERE id = ?`,
+		displayName, email, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update user profile %q: %w", id, err)
+	}
+	return requireOneRow(result, nil, "user", id)
+}
+
+// UpdateUserPassword updates the password_hash for a given user.
+func (s *UserStore) UpdateUserPassword(ctx context.Context, id, newPasswordHash string) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE users SET password_hash = ? WHERE id = ?`,
+		newPasswordHash, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update user password %q: %w", id, err)
+	}
+	return requireOneRow(result, nil, "user", id)
+}
+
 // DeleteUser removes a user by ID.
 func (s *UserStore) DeleteUser(ctx context.Context, id string) error {
 	result, err := s.db.ExecContext(ctx, "DELETE FROM users WHERE id = ?", id)

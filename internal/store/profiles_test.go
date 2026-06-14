@@ -19,7 +19,6 @@ func TestAgentProfileCreate(t *testing.T) {
 	profile := &models.AgentProfile{
 		Name:           "Test Agent",
 		Description:    "A test agent profile",
-		Capabilities:   `["code","build"]`,
 		MaxConcurrency: 3,
 	}
 
@@ -58,7 +57,6 @@ func TestAgentProfileGetByID(t *testing.T) {
 	profile := &models.AgentProfile{
 		Name:           "Get Test",
 		Description:    "Get test description",
-		Capabilities:   `["code"]`,
 		MaxConcurrency: 2,
 	}
 
@@ -109,9 +107,9 @@ func TestAgentProfileList(t *testing.T) {
 	ctx := context.Background()
 
 	profiles := []*models.AgentProfile{
-		{Name: "Agent Alpha", Capabilities: `["code"]`, MaxConcurrency: 1},
-		{Name: "Agent Beta", Capabilities: `["build"]`, MaxConcurrency: 2},
-		{Name: "Agent Gamma", Capabilities: `["review"]`, MaxConcurrency: 3},
+		{Name: "Agent Alpha", MaxConcurrency: 1},
+		{Name: "Agent Beta", MaxConcurrency: 2},
+		{Name: "Agent Gamma", MaxConcurrency: 3},
 	}
 
 	for _, p := range profiles {
@@ -149,7 +147,6 @@ func TestAgentProfileUpdate(t *testing.T) {
 	profile := &models.AgentProfile{
 		Name:           "Original Name",
 		Description:    "Original description",
-		Capabilities:   `["code"]`,
 		MaxConcurrency: 1,
 	}
 
@@ -159,7 +156,6 @@ func TestAgentProfileUpdate(t *testing.T) {
 
 	profile.Name = "Updated Name"
 	profile.Description = "Updated description"
-	profile.Capabilities = `["code","build","review"]`
 	profile.MaxConcurrency = 5
 
 	if err := profileStore.Update(ctx, profile); err != nil {
@@ -176,9 +172,6 @@ func TestAgentProfileUpdate(t *testing.T) {
 	}
 	if got.Description != "Updated description" {
 		t.Errorf("Update() Description = %q, want %q", got.Description, "Updated description")
-	}
-	if got.Capabilities != `["code","build","review"]` {
-		t.Errorf("Update() Capabilities = %q, want %q", got.Capabilities, `["code","build","review"]`)
 	}
 	if got.MaxConcurrency != 5 {
 		t.Errorf("Update() MaxConcurrency = %d, want 5", got.MaxConcurrency)

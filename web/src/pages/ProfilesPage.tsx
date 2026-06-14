@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   fetchProfiles,
   createProfile,
@@ -6,15 +6,15 @@ import {
   deleteProfile,
   importProfiles,
   fetchProjects,
+  fetchGlobalMaxConcurrency,
+  setGlobalMaxConcurrency,
   type AgentProfile,
 } from '../api/client'
 import { TaskType, type Project } from '../types'
-import TriggerRulesEditor from '../components/TriggerRulesEditor'
 
 interface ProfileCreatePayload {
   name: string
   description?: string
-  capabilities?: string
   max_concurrency?: number
   task_types?: string[]
 }
@@ -26,15 +26,27 @@ export default function ProfilesPage() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [editForm, setEditForm] = useState<Partial<AgentProfile>>({})
-  const [expandedRulesProfile, setExpandedRulesProfile] = useState<string | null>(null)
   const [showImportModal, setShowImportModal] = useState(false)
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [importing, setImporting] = useState(false)
+  const [globalMaxConcurrency, setGlobalMaxConcurrencyState] = useState(0)
+  const [saveIndicator, setSaveIndicator] = useState<string | null>(null)
+  const blurSeqRef = useRef(0)
 
   useEffect(() => {
     loadProfiles()
+    loadGlobalMaxConcurrency()
   }, [])
+
+  async function loadGlobalMaxConcurrency() {
+    try {
+      const val = await fetchGlobalMaxConcurrency()
+      setGlobalMaxConcurrencyState(val)
+    } catch {
+      // Default to 0
+    }
+  }
 
   async function loadProfiles() {
     try {
@@ -51,7 +63,7 @@ export default function ProfilesPage() {
 
   function startCreate() {
     setCreating(true)
-    setEditForm({ name: '', description: '', capabilities: '[]', max_concurrency: 5, task_types: [] })
+    setEditForm({ name: '', description: '', max_concurrency: 5, task_types: [] })
     setEditingId(null)
   }
 
@@ -67,10 +79,6 @@ export default function ProfilesPage() {
     setEditForm({})
   }
 
-  function toggleRules(profileId: string) {
-    setExpandedRulesProfile(expandedRulesProfile === profileId ? null : profileId)
-  }
-
   async function handleSave() {
     try {
       if (creating) {
@@ -81,7 +89,6 @@ export default function ProfilesPage() {
         const payload: ProfileCreatePayload = {
           name: editForm.name,
           description: editForm.description,
-          capabilities: editForm.capabilities,
           max_concurrency: editForm.max_concurrency,
           task_types: editForm.task_types,
         }
@@ -103,15 +110,6 @@ export default function ProfilesPage() {
       await loadProfiles()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete profile')
-    }
-  }
-
-  function parseCapabilities(capabilities?: string): string[] {
-    if (!capabilities) return []
-    try {
-      return JSON.parse(capabilities)
-    } catch {
-      return []
     }
   }
 
@@ -144,6 +142,25 @@ export default function ProfilesPage() {
     }
   }
 
+  async function handleGlobalMaxBlur(e: React.FocusEvent<HTMLInputElement>) {
+    const val = parseInt(e.target.value, 10)
+    if (isNaN(val) || val < 0) return
+    const mySeq = ++blurSeqRef.current
+    setSaveIndicator('Saving...')
+    try {
+      const updated = await setGlobalMaxConcurrency(val)
+      if (mySeq !== blurSeqRef.current) return
+      setGlobalMaxConcurrencyState(updated)
+      setSaveIndicator('Saved')
+    } catch {
+      if (mySeq !== blurSeqRef.current) return
+      setSaveIndicator('Error saving')
+    }
+    setTimeout(() => {
+      if (mySeq === blurSeqRef.current) setSaveIndicator(null)
+    }, 2000)
+  }
+
   if (loading) {
     return (
       <div className="p-6">
@@ -154,21 +171,42 @@ export default function ProfilesPage() {
 
   return (
     <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Agent Profiles</h1>
-        <div className="flex gap-2">
-          <button
-            onClick={openImportModal}
-            className="px-4 py-2 text-sm font-medium text-purple-700 dark:text-purple-300 bg-transparent border border-purple-600 dark:border-purple-500 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-none transition-colors"
-          >
-            Import from opencode.json
-          </button>
-          <button
-            onClick={startCreate}
-            className="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-none transition-colors"
-          >
-            + Create Profile
-          </button>
+      <div className="flex items-center gap-2 mb-6">
+        <button
+          onClick={openImportModal}
+          className="px-4 py-2 text-sm font-medium text-purple-700 dark:text-purple-300 bg-transparent border border-purple-600 dark:border-purple-500 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-none transition-colors"
+        >
+          Import from opencode.json
+        </button>
+        <button
+          onClick={startCreate}
+          className="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-none transition-colors"
+        >
+          + Create Profile
+        </button>
+        <div className="flex items-center gap-2 ml-auto">
+          <label className="text-sm text-slate-600 dark:text-neutral-400 whitespace-nowrap">
+            Global max agents:
+          </label>
+          <input
+            type="number"
+            min={0}
+            max={100}
+            value={globalMaxConcurrency}
+            onChange={(e) => {
+              const val = parseInt(e.target.value, 10)
+              if (!isNaN(val)) {
+                setGlobalMaxConcurrencyState(val)
+              }
+            }}
+            onBlur={handleGlobalMaxBlur}
+            title="0 = unlimited"
+            placeholder="0 = unlimited"
+            className="w-20 px-2 py-1 text-sm font-mono bg-white dark:bg-charcoal-darkest border border-gray-200 dark:border-gray-border text-slate-800 dark:text-white"
+          />
+          {saveIndicator && (
+            <span className="text-xs text-green-600 dark:text-green-400">{saveIndicator}</span>
+          )}
         </div>
       </div>
 
@@ -246,31 +284,12 @@ export default function ProfilesPage() {
                       {tt}
                     </span>
                   ))}
-                  {/* Capabilities badges */}
-                  {parseCapabilities(profile.capabilities).map((cap) => (
-                    <span
-                      key={cap}
-                      className="px-2 py-0.5 text-xs font-mono bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300"
-                    >
-                      {cap}
-                    </span>
-                  ))}
                 </div>
                 <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-neutral-400">
                   <span>Max concurrency:</span>
                   <span className="font-semibold text-slate-800 dark:text-white">{profile.max_concurrency}</span>
                 </div>
-                <button
-                  onClick={() => toggleRules(profile.id)}
-                  className="mt-3 w-full px-3 py-1.5 text-xs font-medium text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-900/20 hover:bg-purple-100 dark:hover:bg-purple-900/40 border border-purple-200 dark:border-purple-800 transition-colors"
-                >
-                  {expandedRulesProfile === profile.id ? 'Hide Trigger Rules' : 'Trigger Rules'}
-                </button>
-                {expandedRulesProfile === profile.id && (
-                  <div className="mt-3">
-                    <TriggerRulesEditor profileId={profile.id} />
-                  </div>
-                )}
+
               </div>
             )}
           </div>
@@ -400,20 +419,6 @@ function ProfileForm({
             </label>
           ))}
         </div>
-      </div>
-
-      {/* Keep existing capabilities input as "Additional Capabilities" */}
-      <div>
-        <label className="block text-sm font-medium text-slate-700 dark:text-neutral-300 mb-1">
-          Additional Capabilities <span className="text-xs text-slate-400">(JSON array, for advanced metadata)</span>
-        </label>
-        <input
-          type="text"
-          value={form.capabilities || '[]'}
-          onChange={(e) => onChange({ ...form, capabilities: e.target.value })}
-          className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-border bg-white dark:bg-charcoal-darkest text-slate-800 dark:text-white rounded-none focus:outline-none focus:ring-1 focus:ring-purple-500 font-mono"
-          placeholder='["story_planning"]'
-        />
       </div>
 
       {/* Max Concurrency */}

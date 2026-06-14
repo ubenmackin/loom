@@ -53,14 +53,10 @@ import {
   createProfile,
   updateProfile,
   deleteProfile,
-  fetchRulesByProfile,
-  createRule,
-  updateRule,
-  deleteRule,
 } from './client'
 import { useAuthStore } from '../stores/auth'
 import type { User, AuthResponse, Story, StoryWithTasks, Task, BoardState, TaskDetailResponse, Session, Comment, ActivityLogEntry, PromptTemplate, UserRoleType } from '../types'
-import type { AgentProfile, TriggerRule } from './client'
+import type { AgentProfile } from './client'
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -130,7 +126,6 @@ const sampleProfile: AgentProfile = {
   id: 'profile-1',
   name: 'Default Agent',
   description: 'Default agent profile',
-  capabilities: '["code","review"]',
   max_concurrency: 3,
   created_at: '2025-01-01T00:00:00Z',
   updated_at: '2025-01-01T00:00:00Z',
@@ -140,20 +135,9 @@ const sampleProfile2: AgentProfile = {
   id: 'profile-2',
   name: 'Build Agent',
   description: 'Handles build tasks',
-  capabilities: '["build","test"]',
   max_concurrency: 2,
   created_at: '2025-01-01T00:00:00Z',
   updated_at: '2025-01-01T00:00:00Z',
-}
-
-const sampleRule: TriggerRule = {
-  id: 'rule-1',
-  agent_profile_id: 'profile-1',
-  event_type: 'story.created',
-  action: 'assign',
-  priority: 10,
-  enabled: true,
-  created_at: '2025-01-01T00:00:00Z',
 }
 
 // ── MSW Server ──────────────────────────────────────────────────────────────
@@ -551,14 +535,12 @@ const handlers = [
     const body = (await request.json()) as {
       name: string
       description?: string
-      capabilities?: string
       max_concurrency?: number
     }
     return HttpResponse.json({
       id: 'profile-new',
       name: body.name,
       description: body.description,
-      capabilities: body.capabilities,
       max_concurrency: body.max_concurrency ?? 1,
       created_at: '2025-01-01T00:00:00Z',
       updated_at: '2025-01-01T00:00:00Z',
@@ -574,37 +556,6 @@ const handlers = [
     return new HttpResponse(null, { status: 204 })
   }),
 
-  // ── Trigger Rules ──────────────────────────────────────────────────────
-  http.get('/api/profiles/:id/rules', () => {
-    return HttpResponse.json([sampleRule])
-  }),
-
-  http.post('/api/profiles/:id/rules', async ({ request }) => {
-    const body = (await request.json()) as {
-      event_type: string
-      action: string
-      priority?: number
-      enabled?: boolean
-    }
-    return HttpResponse.json({
-      id: 'rule-new',
-      agent_profile_id: 'profile-1',
-      event_type: body.event_type,
-      action: body.action,
-      priority: body.priority ?? 5,
-      enabled: body.enabled ?? true,
-      created_at: '2025-01-01T00:00:00Z',
-    } satisfies TriggerRule)
-  }),
-
-  http.put('/api/profiles/:id/rules/:ruleId', async ({ request }) => {
-    const body = (await request.json()) as Partial<TriggerRule>
-    return HttpResponse.json({ ...sampleRule, ...body })
-  }),
-
-  http.delete('/api/profiles/:id/rules/:ruleId', () => {
-    return new HttpResponse(null, { status: 204 })
-  }),
 ]
 
 const server = setupServer(...handlers)
@@ -1494,7 +1445,6 @@ describe('API Client', () => {
 
       expect(result.id).toBe('profile-1')
       expect(result.name).toBe('Default Agent')
-      expect(result.capabilities).toBe('["code","review"]')
       expect(result.max_concurrency).toBe(3)
     })
 
@@ -1515,7 +1465,6 @@ describe('API Client', () => {
             id: 'profile-new',
             name: (capturedBody as { name: string }).name,
             description: (capturedBody as { description?: string }).description,
-            capabilities: (capturedBody as { capabilities?: string }).capabilities,
             max_concurrency: (capturedBody as { max_concurrency?: number }).max_concurrency ?? 1,
             created_at: '2025-01-01T00:00:00Z',
             updated_at: '2025-01-01T00:00:00Z',
@@ -1523,7 +1472,7 @@ describe('API Client', () => {
         }),
       )
 
-      const data = { name: 'New Agent', description: 'A new agent', capabilities: '["code"]', max_concurrency: 5 }
+      const data = { name: 'New Agent', description: 'A new agent', max_concurrency: 5 }
       const result = await createProfile(data)
 
       expect(capturedBody).toEqual(data)
@@ -1587,118 +1536,4 @@ describe('API Client', () => {
     })
   })
 
-  // ── Trigger Rules ───────────────────────────────────────────────────
-
-  describe('Trigger Rule endpoints', () => {
-    it('fetchRulesByProfile(profileId) fetches /profiles/{id}/rules', async () => {
-      const result = await fetchRulesByProfile('profile-1')
-
-      expect(result).toHaveLength(1)
-      expect(result[0].id).toBe('rule-1')
-      expect(result[0].event_type).toBe('story.created')
-      expect(result[0].action).toBe('assign')
-      expect(result[0].priority).toBe(10)
-      expect(result[0].enabled).toBe(true)
-    })
-
-    it('createRule(profileId, data) posts to /profiles/{id}/rules', async () => {
-      let capturedBody: unknown
-      let capturedProfileId: string | undefined
-      server.use(
-        http.post('/api/profiles/:id/rules', async ({ request, params }) => {
-          capturedBody = await request.json()
-          capturedProfileId = params.id as string
-          const body = capturedBody as { event_type: string; action: string; priority?: number; enabled?: boolean }
-          return HttpResponse.json({
-            id: 'rule-new',
-            agent_profile_id: capturedProfileId,
-            event_type: body.event_type,
-            action: body.action,
-            priority: body.priority ?? 5,
-            enabled: body.enabled ?? true,
-            created_at: '2025-01-01T00:00:00Z',
-          } satisfies TriggerRule)
-        }),
-      )
-
-      const data = { event_type: 'task.created', action: 'notify', priority: 8, enabled: true }
-      const result = await createRule('profile-1', data)
-
-      expect(capturedBody).toEqual(data)
-      expect(capturedProfileId).toBe('profile-1')
-      expect(result.id).toBe('rule-new')
-      expect(result.event_type).toBe('task.created')
-      expect(result.action).toBe('notify')
-      expect(result.priority).toBe(8)
-      expect(result.enabled).toBe(true)
-    })
-
-    it('createRule(profileId, data) defaults priority and enabled', async () => {
-      let capturedBody: unknown
-      server.use(
-        http.post('/api/profiles/:id/rules', async ({ request }) => {
-          capturedBody = await request.json()
-          const body = capturedBody as { event_type: string; action: string; priority?: number; enabled?: boolean }
-          return HttpResponse.json({
-            id: 'rule-default',
-            agent_profile_id: 'profile-1',
-            event_type: body.event_type,
-            action: body.action,
-            priority: body.priority ?? 5,
-            enabled: body.enabled ?? true,
-            created_at: '2025-01-01T00:00:00Z',
-          } satisfies TriggerRule)
-        }),
-      )
-
-      const result = await createRule('profile-1', { event_type: 'build.complete', action: 'deploy' })
-
-      expect(capturedBody).toEqual({ event_type: 'build.complete', action: 'deploy' })
-      expect(result.priority).toBe(5)
-      expect(result.enabled).toBe(true)
-    })
-
-    it('updateRule(profileId, ruleId, data) puts to /profiles/{id}/rules/{ruleId}', async () => {
-      let capturedBody: unknown
-      let capturedProfileId: string | undefined
-      let capturedRuleId: string | undefined
-      server.use(
-        http.put('/api/profiles/:id/rules/:ruleId', async ({ request, params }) => {
-          capturedBody = await request.json()
-          capturedProfileId = params.id as string
-          capturedRuleId = params.ruleId as string
-          return HttpResponse.json({ ...sampleRule, ...(capturedBody as Partial<TriggerRule>) })
-        }),
-      )
-
-      const data = { priority: 20, enabled: false }
-      const result = await updateRule('profile-1', 'rule-1', data)
-
-      expect(capturedBody).toEqual(data)
-      expect(capturedProfileId).toBe('profile-1')
-      expect(capturedRuleId).toBe('rule-1')
-      expect(result.priority).toBe(20)
-      expect(result.enabled).toBe(false)
-    })
-
-    it('deleteRule(profileId, ruleId) deletes /profiles/{id}/rules/{ruleId}', async () => {
-      let methodSeen: string | undefined
-      let capturedProfileId: string | undefined
-      let capturedRuleId: string | undefined
-      server.use(
-        http.delete('/api/profiles/:id/rules/:ruleId', ({ request, params }) => {
-          methodSeen = request.method
-          capturedProfileId = params.id as string
-          capturedRuleId = params.ruleId as string
-          return new HttpResponse(null, { status: 204 })
-        }),
-      )
-
-      await deleteRule('profile-1', 'rule-1')
-
-      expect(methodSeen).toBe('DELETE')
-      expect(capturedProfileId).toBe('profile-1')
-      expect(capturedRuleId).toBe('rule-1')
-    })
-  })
 })

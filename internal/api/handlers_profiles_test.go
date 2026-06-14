@@ -36,7 +36,6 @@ func TestProfiles_CreateAndGet(t *testing.T) {
 	createBody := map[string]any{
 		"name":            "Test Agent",
 		"description":     "A test agent profile",
-		"capabilities":    `["code","build"]`,
 		"max_concurrency": 3,
 	}
 	rr := doRequest(t, mux, http.MethodPost, "/api/profiles", createBody)
@@ -142,7 +141,6 @@ func TestProfiles_Update(t *testing.T) {
 	updateBody := map[string]any{
 		"name":            "Updated",
 		"description":     "Updated description",
-		"capabilities":    `["review"]`,
 		"max_concurrency": 5,
 	}
 	rr = doRequest(t, mux, http.MethodPut, "/api/profiles/"+created.ID, updateBody)

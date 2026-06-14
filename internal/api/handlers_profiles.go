@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 
@@ -198,7 +199,8 @@ func stripJSONCComments(input string) (string, error) {
 }
 
 // importProfiles handles POST /api/profiles/import
-// Reads opencode.json from a project's repo_path and creates/updates agent profiles.
+// Reads opencode.json from a project's repo_path or the global OpenCode config directory
+// (~/.config/opencode/opencode.json) and creates/updates agent profiles.
 func (h *handlers) importProfiles(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 10<<20) // 10 MB limit
 
@@ -213,63 +215,101 @@ func (h *handlers) importProfiles(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if projectID == "" {
-		respondError(w, http.StatusBadRequest, "project_id is required")
-		return
-	}
-
-	// Fetch the project to get repo_path.
-	project, err := h.projects.GetByID(r.Context(), projectID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "project not found")
-			return
-		}
-		respondError(w, http.StatusInternalServerError, "failed to get project: "+err.Error())
-		return
-	}
-
-	if project.RepoPath == "" {
-		respondError(w, http.StatusNotFound, "project has no repo_path configured")
-		return
-	}
-
-	// Validate the repo path to prevent path traversal.
-	cleanPath := filepath.Clean(project.RepoPath)
-	if !filepath.IsAbs(cleanPath) {
-		respondError(w, http.StatusBadRequest, "project repo_path must be an absolute path")
-		return
-	}
-	project.RepoPath = cleanPath
-
-	// Try to read opencode.json or opencode.jsonc from the repo path.
+	// Try to read opencode.json or opencode.jsonc from the project repo path or global config.
 	var data []byte
 	var readErr error
+	var jsonPath string
+	var searchedPaths []string
 
-	// Try opencode.json first.
-	jsonPath := filepath.Join(project.RepoPath, "opencode.json")
-	data, readErr = os.ReadFile(jsonPath)
+	// If project_id is provided, try to find config in the project's repo_path.
+	if projectID != "" {
+		// Fetch the project to get repo_path.
+		project, err := h.projects.GetByID(r.Context(), projectID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				respondError(w, http.StatusNotFound, "project not found")
+				return
+			}
+			respondError(w, http.StatusInternalServerError, "failed to get project: "+err.Error())
+			return
+		}
 
-	// If not found, try .opencode/opencode.json (or .opencode.json)
-	if readErr != nil {
-		jsonPath = filepath.Join(project.RepoPath, ".opencode", "opencode.json")
+		if project.RepoPath == "" {
+			respondError(w, http.StatusNotFound, "project has no repo_path configured")
+			return
+		}
+
+		// Validate the repo path to prevent path traversal.
+		cleanPath := filepath.Clean(project.RepoPath)
+		if !filepath.IsAbs(cleanPath) {
+			respondError(w, http.StatusBadRequest, "project repo_path must be an absolute path")
+			return
+		}
+		project.RepoPath = cleanPath
+
+		// Try opencode.json first.
+		jsonPath = filepath.Join(project.RepoPath, "opencode.json")
 		data, readErr = os.ReadFile(jsonPath)
+		searchedPaths = append(searchedPaths, jsonPath)
+
+		// If not found, try .opencode/opencode.json
+		if readErr != nil {
+			jsonPath = filepath.Join(project.RepoPath, ".opencode", "opencode.json")
+			data, readErr = os.ReadFile(jsonPath)
+			searchedPaths = append(searchedPaths, jsonPath)
+		}
+
+		// Try opencode.jsonc (with comments)
+		if readErr != nil {
+			jsonPath = filepath.Join(project.RepoPath, "opencode.jsonc")
+			data, readErr = os.ReadFile(jsonPath)
+			searchedPaths = append(searchedPaths, jsonPath)
+		}
+
+		// Try .opencode/opencode.jsonc
+		if readErr != nil {
+			jsonPath = filepath.Join(project.RepoPath, ".opencode", "opencode.jsonc")
+			data, readErr = os.ReadFile(jsonPath)
+			searchedPaths = append(searchedPaths, jsonPath)
+		}
+
+		if readErr != nil {
+			slog.Warn("opencode.json not found at project repo_path, falling back to global config",
+				"project_id", projectID, "repo_path", project.RepoPath)
+		}
 	}
 
-	// Try opencode.jsonc (with comments)
-	if readErr != nil {
-		jsoncPath := filepath.Join(project.RepoPath, "opencode.jsonc")
-		data, readErr = os.ReadFile(jsoncPath)
+	// Fallback to global OpenCode config directory (~/.config/opencode/).
+	if readErr != nil || projectID == "" {
+		usr, err := user.Current()
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to get current user: "+err.Error())
+			return
+		}
+		homeDir := usr.HomeDir
+		globalBase := filepath.Join(homeDir, ".config", "opencode")
+
+		// Try opencode.json
+		globalPath := filepath.Join(globalBase, "opencode.json")
+		data, readErr = os.ReadFile(globalPath)
+		if readErr == nil {
+			jsonPath = globalPath
+		}
+		searchedPaths = append(searchedPaths, globalPath)
+
+		// Try opencode.jsonc (with comments)
+		if readErr != nil {
+			globalPath = filepath.Join(globalBase, "opencode.jsonc")
+			data, readErr = os.ReadFile(globalPath)
+			if readErr == nil {
+				jsonPath = globalPath
+			}
+			searchedPaths = append(searchedPaths, globalPath)
+		}
 	}
 
-	// Try .opencode/opencode.jsonc
 	if readErr != nil {
-		jsoncPath := filepath.Join(project.RepoPath, ".opencode", "opencode.jsonc")
-		data, readErr = os.ReadFile(jsoncPath)
-	}
-
-	if readErr != nil {
-		respondError(w, http.StatusNotFound, "opencode.json not found in project")
+		respondError(w, http.StatusNotFound, fmt.Sprintf("opencode.json not found. Searched: %v", searchedPaths))
 		return
 	}
 
@@ -326,9 +366,6 @@ func (h *handlers) importProfiles(w http.ResponseWriter, r *http.Request) {
 		if ok {
 			// Update existing profile.
 			existing.Description = agentDef.Description
-			if existing.Capabilities == "" {
-				existing.Capabilities = "[]"
-			}
 			if existing.MaxConcurrency == 0 {
 				existing.MaxConcurrency = 5
 			}
@@ -342,7 +379,6 @@ func (h *handlers) importProfiles(w http.ResponseWriter, r *http.Request) {
 			profile := &models.AgentProfile{
 				Name:           agentName,
 				Description:    agentDef.Description,
-				Capabilities:   "[]",
 				MaxConcurrency: 5,
 			}
 			if err := h.profiles.Create(r.Context(), profile); err != nil {

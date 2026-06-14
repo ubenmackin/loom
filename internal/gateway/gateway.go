@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,6 +15,10 @@ import (
 	"github.com/ubenmackin/loom/internal/dispatcher"
 	"github.com/ubenmackin/loom/internal/models"
 )
+
+// SettingKeyGlobalMaxConcurrency is the settings table key for the global
+// max concurrency cap on the gateway's job queue.
+const SettingKeyGlobalMaxConcurrency = "global_max_concurrency"
 
 // ---------------------------------------------------------------------------
 // Store interfaces — minimal subsets of the store interfaces used by the
@@ -63,9 +70,9 @@ type AgentProfileStore interface {
 	GetByID(ctx context.Context, id string) (*models.AgentProfile, error)
 }
 
-// TriggerRuleStore defines the gateway's trigger rule storage requirements.
-type TriggerRuleStore interface {
-	List(ctx context.Context) ([]*models.TriggerRule, error)
+// SettingStore defines the gateway's settings storage requirements.
+type SettingStore interface {
+	Get(ctx context.Context, key string) (string, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -74,12 +81,11 @@ type TriggerRuleStore interface {
 // goroutine with an event-driven loop.
 // ---------------------------------------------------------------------------
 
-// Gateway is the main orchestrator that manages ACP agent sessions and
-// proactively pushes work to opencode serve sessions.
+// Gateway is the main orchestrator that manages ACP agent sessions (spawned as
+// subprocesses) and proactively pushes work to opencode serve sessions.
 type Gateway struct {
 	dispatcher *dispatcher.Dispatcher
 	tracker    *SessionTracker
-	rules      *RulesEngine
 	queue      *JobQueue
 	acpClients map[string]*acp.Client // key: "projectID:agentType"
 
@@ -90,7 +96,6 @@ type Gateway struct {
 	commentStore  CommentStore
 	activityStore ActivityStore
 	profileStore  AgentProfileStore
-	ruleStore     TriggerRuleStore
 
 	mu      sync.RWMutex
 	eventCh chan dispatcher.Event
@@ -102,16 +107,18 @@ type Gateway struct {
 	eventsProcessed atomic.Int64
 	startedAt       time.Time
 
-	acpBaseURL       string              // e.g., "ws://localhost:8765"
+	acpCommand       string              // e.g., "opencode acp"
 	profileTaskTypes map[string][]string // profile name -> task types (protected by mu)
 }
 
-// NewGateway creates a new Gateway with the given dependencies. The acpBaseURL
-// configures where opencode serve is running (e.g. "ws://localhost:8765"). The
-// gateway does not start processing events until Start() is called.
+// NewGateway creates a new Gateway with the given dependencies. The acpCommand
+// configures the ACP subprocess command (e.g., "opencode acp"). The
+// maxTotal parameter sets a global cap on active sessions (0 = unlimited).
+// The gateway does not start processing events until Start() is called.
 func NewGateway(
 	d *dispatcher.Dispatcher,
-	acpBaseURL string,
+	acpCommand string,
+	maxTotal int,
 	taskStore TaskStore,
 	sessionStore SessionStore,
 	projectStore ProjectStore,
@@ -119,13 +126,33 @@ func NewGateway(
 	commentStore CommentStore,
 	activityStore ActivityStore,
 	profileStore AgentProfileStore,
-	ruleStore TriggerRuleStore,
+	settingStore SettingStore,
 ) *Gateway {
+	q := NewJobQueue()
+	q.SetMaxTotal(maxTotal)
+
+	// Load global_max_concurrency from setting store, overriding the
+	// hardcoded maxTotal default if present.
+	if settingStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		v, err := settingStore.Get(ctx, SettingKeyGlobalMaxConcurrency)
+		if err != nil {
+			slog.Warn("gateway: failed to load global_max_concurrency from settings store, using default",
+				"error", err)
+		} else if n, err := strconv.Atoi(v); err != nil {
+			slog.Warn("gateway: global_max_concurrency has invalid value, using default",
+				"value", v, "error", err)
+		} else if n >= 0 {
+			q.SetMaxTotal(n)
+			slog.Info("gateway: loaded global_max_concurrency from settings store", "value", n)
+		}
+	}
+
 	return &Gateway{
 		dispatcher:       d,
 		tracker:          NewSessionTracker(),
-		rules:            NewRulesEngine(),
-		queue:            NewJobQueue(),
+		queue:            q,
 		acpClients:       make(map[string]*acp.Client),
 		taskStore:        taskStore,
 		sessionStore:     sessionStore,
@@ -134,10 +161,9 @@ func NewGateway(
 		commentStore:     commentStore,
 		activityStore:    activityStore,
 		profileStore:     profileStore,
-		ruleStore:        ruleStore,
 		eventCh:          make(chan dispatcher.Event, 256),
 		done:             make(chan struct{}),
-		acpBaseURL:       acpBaseURL,
+		acpCommand:       acpCommand,
 		profileTaskTypes: make(map[string][]string),
 	}
 }
@@ -154,16 +180,13 @@ func (g *Gateway) Start() {
 	if err := g.loadProfiles(ctx); err != nil {
 		slog.Error("gateway: failed to load profiles", "error", err)
 	}
-	if err := g.loadRules(ctx); err != nil {
-		slog.Error("gateway: failed to load rules", "error", err)
-	}
 
 	g.wg.Add(1)
 	go func() {
 		defer g.wg.Done()
 		g.run()
 	}()
-	slog.Info("gateway started", "acp_base_url", g.acpBaseURL)
+	slog.Info("gateway started", "acp_command", g.acpCommand)
 }
 
 // Stop signals the gateway to shut down gracefully. It is idempotent:
@@ -173,17 +196,33 @@ func (g *Gateway) Stop() {
 		return
 	}
 	close(g.done)
-	g.wg.Wait()
 
-	// Close all ACP client connections.
+	// Collect client references under lock so we can close them outside
+	// the lock. This avoids two deadlocks:
+	//   1) g.wg.Wait() blocking forever because readACPResponses is
+	//      ranging over receiveCh, which only closes when the subprocess
+	//      exits (triggered by client.Close()).
+	//   2) client.Close() triggering subprocess exit → receiveCh close →
+	//      readACPResponses defer calls removeACPClient() which
+	//      re-acquires g.mu.
 	g.mu.Lock()
-	for key, client := range g.acpClients {
-		if err := client.Close(); err != nil {
-			slog.Warn("gateway: error closing acp client",
-				"key", key, "error", err)
-		}
+	clients := make([]*acp.Client, 0, len(g.acpClients))
+	for _, client := range g.acpClients {
+		clients = append(clients, client)
 	}
 	g.mu.Unlock()
+
+	// Close all clients first (outside the lock) so their receiveCh
+	// closes and readACPResponses goroutines can terminate.
+	for _, client := range clients {
+		if err := client.Close(); err != nil {
+			slog.Warn("gateway: error closing acp client",
+				"error", err)
+		}
+	}
+
+	// Now wait for all goroutines (including readACPResponses) to finish.
+	g.wg.Wait()
 
 	slog.Info("gateway stopped")
 }
@@ -238,8 +277,8 @@ func acpClientKey(projectID, agentType string) string {
 }
 
 // getOrCreateACPClient returns an existing ACP client for the given
-// (projectID, agentType) pair, or creates a new one by dialing the
-// ACP WebSocket endpoint. This is a best-effort operation — if the
+// (projectID, agentType) pair, or creates a new one by spawning the
+// ACP subprocess. This is a best-effort operation — if the
 // connection fails, the error is returned and the caller should queue
 // the work rather than fail.
 func (g *Gateway) getOrCreateACPClient(ctx context.Context, projectID, agentType string) (*acp.Client, error) {
@@ -253,13 +292,58 @@ func (g *Gateway) getOrCreateACPClient(ctx context.Context, projectID, agentType
 		return client, nil
 	}
 
-	// Need to create a new client.
-	url := fmt.Sprintf("%s/acp", g.acpBaseURL)
-	newClient := acp.NewClient(url)
+	// Listen on an ephemeral port and pass the already-bound socket to the
+	// subprocess via ExtraFiles + --listen-fd. This eliminates the TOCTOU
+	// race between closing our temporary listener and the subprocess binding
+	// the port.
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		return nil, fmt.Errorf("listen for %s/%s: %w", projectID, agentType, err)
+	}
+	tcpListener, ok := listener.(*net.TCPListener)
+	if !ok {
+		_ = listener.Close()
+		return nil, fmt.Errorf("expected TCPListener for %s/%s", projectID, agentType)
+	}
+	tcpAddr, ok := tcpListener.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = tcpListener.Close()
+		return nil, fmt.Errorf("expected TCPAddr for %s/%s", projectID, agentType)
+	}
+	port := tcpAddr.Port
 
-	if err := newClient.Connect(ctx); err != nil {
+	// Dup the file descriptor so the socket survives closing the listener.
+	listenFile, err := tcpListener.File()
+	if err != nil {
+		_ = tcpListener.Close()
+		return nil, fmt.Errorf("get listener fd for %s/%s: %w", projectID, agentType, err)
+	}
+	_ = tcpListener.Close()
+
+	newClient := acp.NewClient(g.acpCommand)
+	newClient.ExtraFiles = []*os.File{listenFile}
+	// ExtraFiles[0] appears as fd 3 in the child process.
+	newClient.Args = []string{"--listen-fd", "3"}
+
+	project, err := g.projectStore.GetByID(ctx, projectID)
+	if err != nil {
+		slog.Warn("gateway: failed to look up project for --cwd",
+			"project_id", projectID, "error", err)
+	} else if project.RepoPath != "" {
+		newClient.Args = append(newClient.Args, "--cwd", project.RepoPath)
+	}
+
+	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if err := newClient.Connect(connectCtx); err != nil {
+		_ = listenFile.Close()
 		return nil, fmt.Errorf("connect acp client for %s/%s: %w", projectID, agentType, err)
 	}
+
+	// The subprocess has inherited the fd via fork+exec; the parent no
+	// longer needs its copy.
+	_ = listenFile.Close()
 
 	g.mu.Lock()
 	// Double-check — another goroutine may have created one while we
@@ -279,7 +363,8 @@ func (g *Gateway) getOrCreateACPClient(ctx context.Context, projectID, agentType
 	go g.readACPResponses(ctx, newClient, projectID, agentType)
 
 	slog.Info("gateway: created acp client",
-		"project_id", projectID, "agent_type", agentType, "url", url)
+		"project_id", projectID, "agent_type", agentType,
+		"command", newClient.Command, "args", newClient.Args, "port", port)
 
 	return newClient, nil
 }
@@ -356,13 +441,6 @@ func (g *Gateway) ReloadProfiles(ctx context.Context) error {
 	return g.loadProfiles(ctx)
 }
 
-// ReloadRules reloads all trigger rules from the database and updates the
-// rules engine. This allows rule changes made via the REST API to take
-// effect without a server restart.
-func (g *Gateway) ReloadRules(ctx context.Context) error {
-	return g.loadRules(ctx)
-}
-
 // loadProfiles loads all agent profiles from the database and configures the
 // gateway's concurrency limits accordingly.
 func (g *Gateway) loadProfiles(ctx context.Context) error {
@@ -384,45 +462,5 @@ func (g *Gateway) loadProfiles(ctx context.Context) error {
 	}
 	g.mu.Unlock()
 
-	return nil
-}
-
-// loadRules loads all trigger rules from the database and replaces the
-// rules engine's ruleset with the database-backed rules.
-func (g *Gateway) loadRules(ctx context.Context) error {
-	rules, err := g.ruleStore.List(ctx)
-	if err != nil {
-		return fmt.Errorf("load trigger rules: %w", err)
-	}
-
-	// If no rules exist in DB, keep the default rules.
-	if len(rules) == 0 {
-		slog.Info("gateway: no trigger rules found in database, using defaults")
-		return nil
-	}
-
-	var gatewayRules []Rule
-	for _, r := range rules {
-		if !r.Enabled {
-			continue
-		}
-		// Resolve the profile name to get the agent type.
-		profile, err := g.profileStore.GetByID(ctx, r.AgentProfileID)
-		if err != nil {
-			slog.Warn("gateway: skipping rule for unknown profile",
-				"rule_id", r.ID, "profile_id", r.AgentProfileID)
-			continue
-		}
-
-		gatewayRules = append(gatewayRules, Rule{
-			EventType: r.EventType,
-			AgentType: profile.Name,
-			Action:    ActionType(r.Action),
-		})
-	}
-
-	g.rules.SetRules(gatewayRules)
-	slog.Info("gateway: loaded trigger rules from database",
-		"count", len(gatewayRules))
 	return nil
 }

@@ -111,4 +111,48 @@ describe('SubNav', () => {
     )
     expect(screen.getByText('Activity')).toBeInTheDocument()
   })
+
+  it('shows breadcrumb for /gateway', () => {
+    setAuthState(normalUser, true)
+
+    render(
+      <MemoryRouter initialEntries={['/gateway']}>
+        <SubNav />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('Gateway')).toBeInTheDocument()
+  })
+
+  it('shows breadcrumb for /profiles', () => {
+    setAuthState(normalUser, true)
+
+    render(
+      <MemoryRouter initialEntries={['/profiles']}>
+        <SubNav />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('Agent Profiles')).toBeInTheDocument()
+  })
+
+  it('shows breadcrumb for /profile', () => {
+    setAuthState(normalUser, true)
+
+    render(
+      <MemoryRouter initialEntries={['/profile']}>
+        <SubNav />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('User Profile')).toBeInTheDocument()
+  })
+
+  it('does not render ProjectPicker when on non-board paths (e.g. /activity)', () => {
+    setAuthState(normalUser, true)
+
+    render(
+      <MemoryRouter initialEntries={['/activity']}>
+        <SubNav />
+      </MemoryRouter>,
+    )
+    expect(screen.queryByTestId('project-picker')).toBeNull()
+  })
 })

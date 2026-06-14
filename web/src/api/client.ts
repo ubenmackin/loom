@@ -280,21 +280,10 @@ export interface AgentProfile {
   id: string
   name: string
   description?: string
-  capabilities?: string // JSON string array
   max_concurrency: number
   task_types?: string[]
   created_at: string
   updated_at: string
-}
-
-export interface TriggerRule {
-  id: string
-  agent_profile_id: string
-  event_type: string
-  action: string
-  priority: number
-  enabled: boolean
-  created_at: string
 }
 
 export async function fetchProfiles(): Promise<AgentProfile[]> {
@@ -305,7 +294,7 @@ export async function fetchProfile(id: string): Promise<AgentProfile> {
   return request<AgentProfile>(`/profiles/${id}`)
 }
 
-export async function createProfile(data: { name: string; description?: string; capabilities?: string; max_concurrency?: number; task_types?: string[] }): Promise<AgentProfile> {
+export async function createProfile(data: { name: string; description?: string; max_concurrency?: number; task_types?: string[] }): Promise<AgentProfile> {
   return request<AgentProfile>('/profiles', { method: 'POST', body: JSON.stringify(data) })
 }
 
@@ -320,22 +309,6 @@ export async function deleteProfile(id: string): Promise<void> {
 export async function importProfiles(projectId?: string): Promise<AgentProfile[]> {
   const url = projectId ? `/profiles/import?project_id=${encodeURIComponent(projectId)}` : '/profiles/import'
   return request<AgentProfile[]>(url, { method: 'POST' })
-}
-
-export async function fetchRulesByProfile(profileId: string): Promise<TriggerRule[]> {
-  return request<TriggerRule[]>(`/profiles/${profileId}/rules`)
-}
-
-export async function createRule(profileId: string, data: { event_type: string; action: string; priority?: number; enabled?: boolean }): Promise<TriggerRule> {
-  return request<TriggerRule>(`/profiles/${profileId}/rules`, { method: 'POST', body: JSON.stringify(data) })
-}
-
-export async function updateRule(profileId: string, ruleId: string, data: Partial<TriggerRule>): Promise<TriggerRule> {
-  return request<TriggerRule>(`/profiles/${profileId}/rules/${ruleId}`, { method: 'PUT', body: JSON.stringify(data) })
-}
-
-export async function deleteRule(profileId: string, ruleId: string): Promise<void> {
-  await request(`/profiles/${profileId}/rules/${ruleId}`, { method: 'DELETE' })
 }
 
 // ── Work Protocol ───────────────────────────────────────────────────────
@@ -487,6 +460,11 @@ export async function getOnboardingCheck(): Promise<{ onboarding_required: boole
 
 // ── Users ────────────────────────────────────────────────────────────────
 
+export async function updateMyProfile(data: { display_name?: string; email?: string; current_password?: string; new_password?: string }): Promise<User> {
+  const res = await request<{ user: User }>('/auth/me', { method: 'PUT', body: JSON.stringify(data) })
+  return res.user
+}
+
 export async function getUsers(): Promise<User[]> {
   return request<User[]>('/users')
 }
@@ -497,4 +475,19 @@ export async function postUser(data: { username: string; email: string; display_
 
 export async function deleteUser(id: string): Promise<void> {
   await deleteResource(`/users/${id}`)
+}
+
+// ── Settings ───────────────────────────────────────────────────────────
+
+export async function fetchGlobalMaxConcurrency(): Promise<number> {
+  const res = await request<{ value: number }>('/settings/global_max_concurrency')
+  return res.value
+}
+
+export async function setGlobalMaxConcurrency(value: number): Promise<number> {
+  const res = await request<{ value: number }>('/settings/global_max_concurrency', {
+    method: 'PUT',
+    body: JSON.stringify({ value }),
+  })
+  return res.value
 }

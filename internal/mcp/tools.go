@@ -12,7 +12,7 @@ import (
 	"github.com/ubenmackin/loom/internal/store"
 )
 
-// registerTools registers all 14 MCP tools with their handlers and schemas.
+// registerTools registers all 15 MCP tools with their handlers and schemas.
 func (s *Server) registerTools() {
 	toolList := []struct {
 		name        string
@@ -215,6 +215,18 @@ func (s *Server) registerTools() {
 				"required": []string{"story_id", "title"},
 			},
 			handler: s.handleCreateTask,
+		},
+		{
+			name:        "get_story",
+			description: "Get full details of a story including its tasks.",
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"story_id": map[string]any{"type": "string", "description": "The story ID to retrieve"},
+				},
+				"required": []string{"story_id"},
+			},
+			handler: s.handleGetStory,
 		},
 	}
 
@@ -715,4 +727,29 @@ func (s *Server) handleCreateTask(ctx context.Context, params map[string]any) (*
 	}
 
 	return jsonTextResult(task)
+}
+
+// handleGetStory returns full details of a story including its tasks.
+func (s *Server) handleGetStory(ctx context.Context, params map[string]any) (*ToolResult, error) {
+	storyID, err := getRequiredString(params, "story_id")
+	if err != nil {
+		return nil, err
+	}
+
+	story, err := s.stories.GetByID(ctx, storyID)
+	if err != nil {
+		return nil, fmt.Errorf("get story %q: %w", storyID, err)
+	}
+
+	tasks, err := s.tasks.GetByStory(ctx, storyID)
+	if err != nil {
+		return nil, fmt.Errorf("get tasks for story %q: %w", storyID, err)
+	}
+
+	result := map[string]any{
+		"story": story,
+		"tasks": tasks,
+	}
+
+	return jsonTextResult(result)
 }

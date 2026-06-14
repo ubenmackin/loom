@@ -8,6 +8,7 @@ import DispatcherPage from './pages/DispatcherPage'
 import GatewayPage from './pages/GatewayPage'
 import LoginPage from './pages/LoginPage'
 import OnboardingPage from './pages/OnboardingPage'
+import ProfilePage from './pages/ProfilePage'
 import ProfilesPage from './pages/ProfilesPage'
 import ProjectsPage from './pages/ProjectsPage'
 import UsersPage from './pages/UsersPage'
@@ -26,6 +27,7 @@ export default function App() {
           <Route path="agents" element={<AgentsPage />} />
           <Route path="dispatcher" element={<DispatcherPage />} />
           <Route path="gateway" element={<GatewayPage />} />
+          <Route path="profile" element={<ProfilePage />} />
           <Route element={<ProtectedRoute requireAdmin />}>
             <Route path="projects" element={<ProjectsPage />} />
             <Route path="users" element={<UsersPage />} />

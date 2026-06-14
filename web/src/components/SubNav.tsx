@@ -16,12 +16,17 @@ export default function SubNav() {
     : location.pathname === '/dispatcher' ? 'Dispatcher'
     : location.pathname === '/projects' ? 'Projects'
     : location.pathname === '/users' ? 'Users'
+    : location.pathname === '/gateway' ? 'Gateway'
+    : location.pathname === '/profiles' ? 'Agent Profiles'
+    : location.pathname === '/profile' ? 'User Profile'
     : ''
+
+  const showProjectPicker = location.pathname === '/'
 
   return (
     <div className="flex items-center gap-3 px-4 py-1.5 border-b border-gray-200 dark:border-gray-border bg-gray-50 dark:bg-charcoal-darkest">
       {/* Left — Project Picker */}
-      <ProjectPicker />
+      {showProjectPicker && <ProjectPicker />}
 
       {/* Center — Breadcrumbs placeholder (flex-1) */}
       <div className="flex-1 flex items-center">

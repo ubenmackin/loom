@@ -197,7 +197,7 @@ describe('TopNav', () => {
       const user = userEvent.setup()
       renderTopNav()
       await user.click(screen.getByLabelText('User menu'))
-      expect(screen.getByText('Profile')).toBeInTheDocument()
+      expect(screen.getByText('User Profile')).toBeInTheDocument()
       expect(screen.getByText('Logout')).toBeInTheDocument()
     })
 
@@ -205,11 +205,11 @@ describe('TopNav', () => {
       const user = userEvent.setup()
       renderTopNav()
       await user.click(screen.getByLabelText('User menu'))
-      expect(screen.getByText('Profile')).toBeInTheDocument()
+      expect(screen.getByText('User Profile')).toBeInTheDocument()
 
       // Click on the brand text (outside the dropdown)
       await user.click(screen.getByText('LOOM'))
-      expect(screen.queryByText('Profile')).not.toBeInTheDocument()
+      expect(screen.queryByText('User Profile')).not.toBeInTheDocument()
     })
 
     it('calls logout and navigates to /login on Logout click', async () => {
@@ -247,12 +247,12 @@ authState = {
       expect(document.querySelector('.lucide-users')).toBeInTheDocument()
     })
 
-    it('shows Profile and Logout alongside Users', async () => {
+    it('shows User Profile and Logout alongside Users', async () => {
       const user = userEvent.setup()
       renderTopNav()
       await user.click(screen.getByLabelText('User menu'))
 
-      expect(screen.getByText('Profile')).toBeInTheDocument()
+      expect(screen.getByText('User Profile')).toBeInTheDocument()
       expect(screen.getByText('Users')).toBeInTheDocument()
       expect(screen.getByText('Logout')).toBeInTheDocument()
     })
@@ -273,7 +273,7 @@ authState = {
       await user.click(screen.getByLabelText('User menu'))
 
       expect(screen.queryByText('Users')).not.toBeInTheDocument()
-      expect(screen.getByText('Profile')).toBeInTheDocument()
+      expect(screen.getByText('User Profile')).toBeInTheDocument()
       expect(screen.getByText('Logout')).toBeInTheDocument()
     })
   })

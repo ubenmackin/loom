@@ -19,8 +19,8 @@ const mockProfiles: AgentProfile[] = [
     id: 'profile-1',
     name: 'Planner',
     description: 'Handles story planning and estimation',
-    capabilities: '["story_planning","estimation"]',
     max_concurrency: 3,
+    task_types: ['planning'],
     created_at: '2025-01-01T00:00:00Z',
     updated_at: '2025-01-01T00:00:00Z',
   },
@@ -28,8 +28,8 @@ const mockProfiles: AgentProfile[] = [
     id: 'profile-2',
     name: 'Coder',
     description: 'Implements features and fixes bugs',
-    capabilities: '["code","review","refactor"]',
     max_concurrency: 5,
+    task_types: ['code', 'review'],
     created_at: '2025-01-02T00:00:00Z',
     updated_at: '2025-01-02T00:00:00Z',
   },
@@ -46,15 +46,6 @@ function setupEmpty() {
 describe('ProfilesPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-  })
-
-  it('renders the "Agent Profiles" header', async () => {
-    setupWithProfiles()
-    render(<ProfilesPage />)
-
-    await waitFor(() => {
-      expect(screen.getByText('Agent Profiles')).toBeInTheDocument()
-    })
   })
 
   it('renders profile cards with names', async () => {
@@ -74,10 +65,13 @@ describe('ProfilesPage', () => {
     render(<ProfilesPage />)
 
     await waitFor(() => {
-      expect(screen.getByText('story_planning')).toBeInTheDocument()
+      expect(screen.getByText('planning')).toBeInTheDocument()
     })
     await waitFor(() => {
       expect(screen.getByText('code')).toBeInTheDocument()
+    })
+    await waitFor(() => {
+      expect(screen.getByText('review')).toBeInTheDocument()
     })
   })
 

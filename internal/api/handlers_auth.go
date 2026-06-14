@@ -1,11 +1,15 @@
 package api
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/ubenmackin/loom/internal/models"
+	"github.com/ubenmackin/loom/internal/store"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // --- Request/Response types for Auth ---
@@ -36,6 +40,13 @@ type meResponse struct {
 	User *models.User `json:"user"`
 }
 
+type updateProfileRequest struct {
+	DisplayName     string `json:"display_name,omitempty"`
+	Email           string `json:"email,omitempty"`
+	CurrentPassword string `json:"current_password,omitempty"`
+	NewPassword     string `json:"new_password,omitempty"`
+}
+
 // --- Route registration ---
 
 func (h *handlers) registerAuthRoutes(r chi.Router) {
@@ -48,6 +59,7 @@ func (h *handlers) registerAuthRoutes(r chi.Router) {
 		r.Use(h.UserAuthenticator)
 		r.Post("/logout", h.logout)
 		r.Get("/me", h.me)
+		r.Put("/me", h.updateMyProfile)
 	})
 }
 
@@ -180,6 +192,90 @@ func (h *handlers) me(w http.ResponseWriter, r *http.Request) {
 	if currentUser == nil {
 		respondError(w, http.StatusUnauthorized, "unauthenticated")
 		return
+	}
+
+	respondJSON(w, http.StatusOK, meResponse{
+		User: currentUser,
+	})
+}
+
+// updateMyProfile handles PUT /api/auth/me
+func (h *handlers) updateMyProfile(w http.ResponseWriter, r *http.Request) {
+	currentUser := GetUser(r)
+	if currentUser == nil {
+		respondError(w, http.StatusUnauthorized, "unauthenticated")
+		return
+	}
+
+	var req updateProfileRequest
+	if err := decodeJSON(r, w, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	hasProfileChanges := req.DisplayName != "" || req.Email != ""
+
+	// Validate password change
+	if req.CurrentPassword != "" || req.NewPassword != "" {
+		if req.CurrentPassword == "" {
+			respondError(w, http.StatusBadRequest, "current_password is required for password change")
+			return
+		}
+		if req.NewPassword == "" {
+			respondError(w, http.StatusBadRequest, "new_password is required for password change")
+			return
+		}
+		if len(req.NewPassword) < 6 {
+			respondError(w, http.StatusBadRequest, "new_password must be at least 6 characters")
+			return
+		}
+
+		// Verify current password
+		_, err := h.users.AuthenticateUser(r.Context(), currentUser.Username, req.CurrentPassword)
+		if err != nil {
+			respondError(w, http.StatusUnauthorized, "current password is incorrect")
+			return
+		}
+
+		// Hash new password
+		hashBytes, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), 12)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to hash password")
+			return
+		}
+
+		if err := h.users.UpdateUserPassword(r.Context(), currentUser.ID, string(hashBytes)); err != nil {
+			if errors.Is(err, sql.ErrNoRows) || errors.Is(err, store.ErrNotFound) {
+				respondError(w, http.StatusNotFound, "user not found")
+				return
+			}
+			respondError(w, http.StatusInternalServerError, "failed to update password: "+err.Error())
+			return
+		}
+	}
+
+	// Update profile fields (display_name, email) if provided
+	if hasProfileChanges {
+		displayName := currentUser.DisplayName
+		email := currentUser.Email
+		if req.DisplayName != "" {
+			displayName = req.DisplayName
+		}
+		if req.Email != "" {
+			email = req.Email
+		}
+
+		if err := h.users.UpdateUserProfile(r.Context(), currentUser.ID, displayName, email); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				respondError(w, http.StatusNotFound, "user not found")
+				return
+			}
+			respondError(w, http.StatusInternalServerError, "failed to update profile: "+err.Error())
+			return
+		}
+
+		currentUser.DisplayName = displayName
+		currentUser.Email = email
 	}
 
 	respondJSON(w, http.StatusOK, meResponse{

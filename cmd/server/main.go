@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -45,7 +46,7 @@ type Stores struct {
 	Activity *store.ActivityStore
 	User     *store.UserStore
 	Profile  *store.AgentProfileStore
-	Rule     *store.TriggerRuleStore
+	Setting  *store.SettingStore
 }
 
 // NewStores creates all store instances from the given database connection.
@@ -60,7 +61,7 @@ func NewStores(db *sql.DB) *Stores {
 		Activity: store.NewActivityStore(db),
 		User:     store.NewUserStore(db),
 		Profile:  store.NewAgentProfileStore(db),
-		Rule:     store.NewTriggerRuleStore(db),
+		Setting:  store.NewSettingStore(db),
 	}
 }
 
@@ -96,6 +97,10 @@ func run() error {
 
 	if err := db.SeedDefaultAgentProfiles(ctx, stores.Profile); err != nil {
 		return fmt.Errorf("seed default agent profiles: %w", err)
+	}
+
+	if err := db.SeedDefaultSettings(ctx, stores.Setting); err != nil {
+		return fmt.Errorf("seed default settings: %w", err)
 	}
 
 	if err := db.BackfillNumericIDs(database); err != nil {
@@ -184,12 +189,28 @@ func runHTTP(cfg serverConfig, database *sql.DB, stores *Stores) error {
 	d.Start()
 	defer d.Stop()
 
-	// Create and start the gateway engine (ACP/WebSocket push orchestration).
-	// The ACP base URL defaults to ws://localhost:8765. In Phase 3 this
-	// will become configurable.
+	// Create and start the gateway engine (ACP/subprocess push orchestration).
+	// The ACP command defaults to "opencode acp", configurable via
+	// the acp_command setting. maxTotal is 0 (unlimited) by default; the
+	// setting store overrides it if global_max_concurrency is set.
+	// Resolve ACP command — check settings, fall back to default.
+	acpCommand := "opencode acp"
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		v, err := stores.Setting.Get(ctx, "acp_command")
+		cancel()
+		if err == nil && v != "" {
+			acpCommand = v
+		} else if err != nil {
+			slog.Warn("server: failed to load acp_command from settings store, using default",
+				"error", err)
+		}
+	}
+
 	gw := gateway.NewGateway(
 		d,
-		"ws://localhost:8765",
+		acpCommand,
+		0, // maxTotal — 0 means unlimited, overridden by settings store
 		stores.Task,
 		stores.Session,
 		stores.Project,
@@ -197,7 +218,7 @@ func runHTTP(cfg serverConfig, database *sql.DB, stores *Stores) error {
 		stores.Comment,
 		stores.Activity,
 		stores.Profile,
-		stores.Rule,
+		stores.Setting,
 	)
 	gw.Start()
 	defer gw.Stop()
@@ -212,8 +233,8 @@ func runHTTP(cfg serverConfig, database *sql.DB, stores *Stores) error {
 	// Create the API router.
 	apiRouter := api.NewRouter(
 		stores.Story, stores.Task, stores.Project, stores.Session, stores.Comment,
-		stores.Template, stores.Activity, stores.User, stores.Profile, stores.Rule,
-		d, gw, hub,
+		stores.Template, stores.Activity, stores.User, stores.Profile,
+		d, gw, hub, stores.Setting,
 	)
 
 	// Set up the top-level HTTP router.

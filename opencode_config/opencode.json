@@ -1,0 +1,282 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "planner",
+  "mcp": {
+    "loom": {
+      "type": "local",
+      "command": [
+        "/Users/kupan787/opencode/Loom/dist/loom-server",
+        "--mcp",
+        "--db-path",
+        "/Users/kupan787/opencode/Loom/loom.db"
+      ],
+      "enabled": true
+    }
+  },
+  "plugin": [
+    "@tarquinen/opencode-dcp@latest"
+  ],
+  "permission": {
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "todoread": "deny",
+    "todowrite": "deny"
+  },
+  "agent": {
+    "plan": {
+      "disable": true,
+      "options": {},
+      "permission": {}
+    },
+    "build": {
+      "disable": true,
+      "options": {},
+      "permission": {}
+    },
+    "general": {
+      "disable": true,
+      "options": {},
+      "permission": {}
+    },
+    "explore": {
+      "disable": true,
+      "options": {},
+      "permission": {}
+    },
+    "planner": {
+      "mode": "primary",
+      "color": "#4dabf7",
+      "description": "Lead Architect responsible for codebase analysis and creating execution blueprints.",
+      "prompt": "{file:./prompts/planner.txt}",
+      "permission": {
+        "skill": {
+          "*": "deny",
+          "find_pattern": "allow"
+        },
+        "task": {
+          "*": "deny",
+          "orchestrator": "allow",
+          "git-manager": "ask"
+        },
+        "architect_map_workspace": "allow",
+        "architect_summarize_structure": "allow",
+        "register_session": "allow",
+        "create_task": "allow",
+        "add_dependency": "allow",
+        "get_task": "allow",
+        "get_blockers": "allow",
+        "bash": "deny",
+        "edit": "deny"
+      },
+      "options": {}
+    },
+    "orchestrator": {
+      "mode": "all",
+      "color": "#be4bdb",
+      "description": "Factory Manager: Pipeline coordination and state updates.",
+      "prompt": "{file:./prompts/orchestrator.txt}",
+      "permission": {
+        "skill": {
+          "*": "deny",
+          "find_pattern": "allow"
+        },
+        "task": {
+          "*": "deny",
+          "executor": "allow",
+          "builder": "allow",
+          "reviewer": "allow"
+        },
+        "architect_map_workspace": "allow",
+        "architect_summarize_structure": "allow",
+        "register_session": "allow",
+        "get_task": "allow",
+        "get_blockers": "allow",
+        "get_comments": "allow",
+        "add_comment": "allow",
+        "get_unread_comments": "allow",
+        "bash": "deny",
+        "edit": "deny",
+        "google_search": "deny",
+        "webfetch": "deny"
+      },
+      "options": {}
+    },
+    "executor": {
+      "mode": "all",
+      "color": "#ff922b",
+      "description": "Lead Developer: Code implementation.",
+      "prompt": "{file:./prompts/executor.txt}",
+      "permission": {
+        "skill": "allow",
+        "task": "deny",
+        "bash": "allow",
+        "edit": "allow",
+        "google_search": "deny",
+        "webfetch": "deny",
+        "architect_map_workspace": "allow",
+        "architect_summarize_structure": "allow",
+        "register_session": "allow",
+        "request_work": "allow",
+        "start_work": "allow",
+        "complete_work": "allow",
+        "report_blocked": "allow",
+        "keep_alive": "allow",
+        "get_task": "allow",
+        "get_blockers": "allow",
+        "add_comment": "allow",
+        "get_comments": "allow",
+        "memory_list": "deny",
+        "memory_set": "deny",
+        "memory_replace": "deny"
+      },
+      "options": {}
+    },
+    "builder": {
+      "mode": "all",
+      "color": "#51cf66",
+      "description": "Build Engineer: Verification and syntax fixes.",
+      "prompt": "{file:./prompts/builder.txt}",
+      "permission": {
+        "skill": "allow",
+        "task": "deny",
+        "bash": {
+          "*": "deny",
+          "echo $?": "allow",
+          "tail *": "allow",
+          "head *": "allow",
+          "npm ci *": "allow",
+          "npm install *": "allow",
+          "npm run *": "allow",
+          "npm test *": "allow",
+          "npx tsc *": "allow",
+          "make *": "allow",
+          "grep *": "allow",
+          "rg *": "allow",
+          "go mod tidy *": "allow",
+          "go vet *": "allow",
+          "go build *": "allow",
+          "go test *": "allow",
+          "gofmt *": "allow",
+          "golangci-lint *": "allow",
+          "xcodebuild *": "allow",
+          "xcodegen *": "allow"
+        },
+        "edit": "deny",
+        "google_search": "deny",
+        "webfetch": "deny",
+        "architect_map_workspace": "allow",
+        "architect_summarize_structure": "allow",
+        "register_session": "allow",
+        "request_work": "allow",
+        "start_work": "allow",
+        "complete_work": "allow",
+        "report_blocked": "allow",
+        "keep_alive": "allow",
+        "get_task": "allow",
+        "add_comment": "allow",
+        "memory_list": "deny",
+        "memory_set": "deny",
+        "memory_replace": "deny"
+      },
+      "options": {}
+    },
+    "reviewer": {
+      "mode": "all",
+      "color": "#ff6b6b",
+      "description": "Senior Reviewer: Architecture audit.",
+      "prompt": "{file:./prompts/reviewer.txt}",
+      "permission": {
+        "skill": "allow",
+        "task": "deny",
+        "bash": "allow",
+        "edit": "deny",
+        "architect_map_workspace": "allow",
+        "architect_summarize_structure": "allow",
+        "register_session": "allow",
+        "request_work": "allow",
+        "start_work": "allow",
+        "complete_work": "allow",
+        "report_blocked": "allow",
+        "keep_alive": "allow",
+        "get_task": "allow",
+        "add_comment": "allow",
+        "memory_list": "deny",
+        "memory_set": "deny",
+        "memory_replace": "deny"
+      },
+      "options": {}
+    },
+    "git-manager": {
+      "mode": "all",
+      "color": "#20c997",
+      "description": "Git Specialist: Commits and branching.",
+      "prompt": "You are the Git Manager. Handle commits and branching.\n\n- Always check `git status` first. Do not push without confirmation.",
+      "permission": {
+        "skill": "allow",
+        "task": "deny",
+        "bash": {
+          "*": "deny",
+          "git *": "allow",
+          "git push*": "ask",
+          "git reset*": "ask",
+          "cat *": "ask"
+        },
+        "edit": "deny",
+        "google_search": "deny",
+        "webfetch": "deny",
+        "register_session": "allow",
+        "get_task": "allow",
+        "memory_list": "deny",
+        "memory_set": "deny",
+        "memory_replace": "deny"
+      },
+      "options": {}
+    }
+  },
+  "provider": {
+    "macbook-llama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "macBook Llama",
+      "options": {
+        "baseURL": "http://localhost:11434/v1",
+        "apiKey": "not-needed"
+      },
+      "models": {
+        "gemma4:e2b": {
+          "name": "gemma4:e2b",
+          "limit": {
+            "context": 131072,
+            "output": 131072
+          },
+          "tool_call": true
+        }
+      }
+    },
+    "local-llama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Local Llama",
+      "options": {
+        "baseURL": "http://nas.int.volcrypt.com:11434/v1",
+        "apiKey": "not-needed"
+      },
+      "models": {
+        "gemma-4-26B-A4B-it-UD-Q5_K_M": {
+          "name": "gemma-4-26B-A4B-it-UD-Q5_K_M",
+          "limit": {
+            "context": 131072,
+            "output": 131072
+          },
+          "tool_call": true
+        }
+      }
+    }
+  },
+  "server": {
+    "port": 56789,
+    "hostname": "0.0.0.0",
+    "cors": [
+      "https://code.int.volcrypt.com"
+    ]
+  }
+}

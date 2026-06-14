@@ -55,15 +55,6 @@ describe('GatewayPage', () => {
     vi.clearAllMocks()
   })
 
-  it('renders the "Gateway Dashboard" header', async () => {
-    setupRunning()
-    render(<GatewayPage />)
-
-    await waitFor(() => {
-      expect(screen.getByText('Gateway Dashboard')).toBeInTheDocument()
-    })
-  })
-
   describe('status bar', () => {
     it('shows Running status when gateway is running', async () => {
       setupRunning()

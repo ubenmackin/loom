@@ -83,6 +83,7 @@ vi.mock('../api/client', () => ({
   deleteStory: vi.fn(),
   getUsers: vi.fn(),
   fetchSessions: vi.fn(),
+  fetchProjects: vi.fn(),
   createTask: vi.fn(),
   fetchComments: vi.fn(),
   addComment: vi.fn(),
@@ -104,6 +105,11 @@ const mockUsers: User[] = [
 
 const mockSessions: Session[] = [
   { id: 'session-1', harness_type: 'openai', status: 'active', last_seen_at: '2025-01-01T00:00:00Z', created_at: '2025-01-01T00:00:00Z' },
+]
+
+const mockProjects = [
+  { id: 'proj-1', name: 'Project 1', created_at: '', updated_at: '' },
+  { id: 'proj-2', name: 'Project 2', created_at: '', updated_at: '' },
 ]
 
 const createMockMutation = () => ({
@@ -133,6 +139,9 @@ function mockStoryQueryWithUsers(result: { data?: StoryWithTasks; isLoading?: bo
     if (key === 'sessions') {
       return { data: mockSessions, isLoading: false }
     }
+    if (key === 'projects') {
+      return { data: mockProjects, isLoading: false }
+    }
     return { data: [], isLoading: false }
   })
 }
@@ -148,6 +157,9 @@ function mockStoryQuery(result: { data?: StoryWithTasks; isLoading?: boolean }) 
         data: result.data,
         isLoading: result.isLoading ?? false,
       }
+    }
+    if (key === 'projects') {
+      return { data: mockProjects, isLoading: false }
     }
     // All other queries (users, sessions, comments, activity) return empty
     return { data: [], isLoading: false }
@@ -230,8 +242,7 @@ describe('StoryDetail', () => {
 
     it('renders status in select dropdown', () => {
       renderStoryDetail('story-1')
-      // Use role query for the select element
-      const select = screen.getByRole('combobox')
+      const select = screen.getByLabelText('Status')
       expect(select).toBeInTheDocument()
       expect(select).toHaveValue('in_progress')
     })
@@ -327,7 +338,7 @@ describe('StoryDetail', () => {
 
       // Task type select should be visible in the form (use role query)
       const selects = await screen.findAllByRole('combobox')
-      expect(selects[1]).toHaveValue('code') // Second select is in the form
+      expect(selects[2]).toHaveValue('code') // Third select is in the form
     })
 
     it('shows Cancel and Create buttons in form', async () => {
@@ -468,7 +479,7 @@ describe('StoryDetail', () => {
       const user = userEvent.setup()
       renderStoryDetail('story-1')
 
-      const select = screen.getByRole('combobox')
+      const select = screen.getByLabelText('Status')
       expect(select).toHaveValue('in_progress')
 
       await user.selectOptions(select, 'done')
@@ -603,7 +614,7 @@ describe('StoryDetail', () => {
       await user.type(textarea, 'New desc')
 
       // Change status
-      const select = screen.getByRole('combobox')
+      const select = screen.getByLabelText('Status')
       await user.selectOptions(select, 'done')
 
       // Click Save

@@ -40,7 +40,7 @@ export default function TopNav() {
 
   const handleProfileClick = () => {
     setDropdownOpen(false)
-    // placeholder - would navigate to profile page if it existed
+    navigate('/profile')
   }
 
   return (
@@ -100,7 +100,7 @@ export default function TopNav() {
                     onClick={handleProfileClick}
                     className="w-full px-4 py-2 text-left text-sm font-mono text-slate-700 dark:text-neutral-300 hover:bg-gray-100 dark:hover:bg-charcoal-darkest border-b border-gray-200 dark:border-gray-border transition-colors"
                   >
-                    Profile
+                    User Profile
                   </button>
                   {isAdmin && (
                     <>
@@ -126,7 +126,7 @@ export default function TopNav() {
                         className="flex items-center gap-2 px-4 py-2 text-sm font-mono text-slate-700 dark:text-neutral-300 hover:bg-gray-100 dark:hover:bg-charcoal-darkest border-b border-gray-200 dark:border-gray-border transition-colors"
                       >
                         <Layers size={14} />
-                        <span>Profiles</span>
+                        <span>Agent Profiles</span>
                       </NavLink>
                     </>
                   )}

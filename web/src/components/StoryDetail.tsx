@@ -20,6 +20,7 @@ import {
 import type { Story, StoryWithTasks, StatusType, User, Session, AssigneeTypeType } from '../types'
 import { statusVariant, STATUS_ORDER, STATUS_LABELS } from '../utils/status'
 import { useWorkItemDraft } from '../hooks/useWorkItemDraft'
+import { useProjects } from '../hooks/useProjects'
 
 interface StoryDetailProps {
   storyId: string | null
@@ -30,6 +31,7 @@ interface StoryDetailProps {
 interface StoryDraft {
   title: string
   description: string
+  project_id: string
   requires_build: boolean
   requires_review: boolean
   status: StatusType
@@ -47,6 +49,8 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
   const [showSaveDropdown, setShowSaveDropdown] = useState(false)
   const [showGenerateModal, setShowGenerateModal] = useState(false)
   const saveDropdownRef = useRef<HTMLDivElement>(null)
+
+  const { data: projects } = useProjects()
 
   const { data, isLoading } = useQuery<StoryWithTasks>({
     queryKey: ['story', storyId],
@@ -129,6 +133,7 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
         ? ({
             title: story.title,
             description: story.description ?? '',
+            project_id: story.project_id ?? '',
             requires_build: story.requires_build,
             requires_review: story.requires_review,
             status: story.status,
@@ -143,6 +148,7 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
   const { draft, setDraft, isDirty, computeChanges, reset } = useWorkItemDraft(serverData, [
     'title',
     'description',
+    'project_id',
     'requires_build',
     'requires_review',
     'status',
@@ -249,10 +255,29 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
           />
         </div>
 
+        {/* Project */}
+        <div>
+          <FieldLabel margin="mb-2" htmlFor="story-project-select">Project</FieldLabel>
+          <select
+            id="story-project-select"
+            value={draft?.project_id ?? ''}
+            onChange={(e) => setDraft((prev) => (prev ? { ...prev, project_id: e.target.value } : null))}
+            className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-transparent p-2 font-mono text-sm text-neutral-800 dark:text-light-neutral"
+          >
+            <option value="">No Project</option>
+            {projects?.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
         {/* Status */}
         <div>
-          <FieldLabel margin="mb-2">Status</FieldLabel>
+          <FieldLabel margin="mb-2" htmlFor="story-status-select">Status</FieldLabel>
           <select
+            id="story-status-select"
             value={draft?.status ?? story.status}
             onChange={(e) => setDraft((prev) => (prev ? { ...prev, status: e.target.value as StatusType } : null))}
             className="w-full rounded-none border border-gray-200 dark:border-gray-border bg-transparent p-2 font-mono text-sm text-neutral-800 dark:text-light-neutral"

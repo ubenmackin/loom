@@ -82,8 +82,8 @@ type AgentProfileSeeder interface {
 	List(ctx context.Context) ([]*models.AgentProfile, error)
 }
 
-// SeedDefaultAgentProfiles creates three built-in agent profiles (planner,
-// executor, reviewer) if no agent profiles exist yet.
+// SeedDefaultAgentProfiles creates the built-in agent profiles (planner,
+// executor, builder, reviewer) if no agent profiles exist yet.
 func SeedDefaultAgentProfiles(ctx context.Context, profileStore AgentProfileSeeder) error {
 	profiles, err := profileStore.List(ctx)
 	if err != nil {
@@ -104,17 +104,26 @@ func SeedDefaultAgentProfiles(ctx context.Context, profileStore AgentProfileSeed
 			ID:             uuid.New().String(),
 			Name:           "planner",
 			Description:    "Story planning and task decomposition",
-			Capabilities:   `["story_planning"]`,
 			MaxConcurrency: 2,
+			TaskTypes:      []string{"planning"},
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		},
 		{
 			ID:             uuid.New().String(),
 			Name:           "executor",
-			Description:    "Code implementation, build, and review execution",
-			Capabilities:   `["code","build","review"]`,
+			Description:    "Code implementation and execution",
 			MaxConcurrency: 5,
+			TaskTypes:      []string{"code"},
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+		{
+			ID:             uuid.New().String(),
+			Name:           "builder",
+			Description:    "Build verification and syntax checking",
+			MaxConcurrency: 2,
+			TaskTypes:      []string{"build"},
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		},
@@ -122,8 +131,8 @@ func SeedDefaultAgentProfiles(ctx context.Context, profileStore AgentProfileSeed
 			ID:             uuid.New().String(),
 			Name:           "reviewer",
 			Description:    "Code review and quality verification",
-			Capabilities:   `["review"]`,
 			MaxConcurrency: 3,
+			TaskTypes:      []string{"review"},
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		},
@@ -176,6 +185,37 @@ func SeedDefaults(ctx context.Context, templateStore TemplateSeeder) error {
 		}
 
 		log.Printf("Seeded default template: %s", dt.taskType)
+	}
+
+	return nil
+}
+
+// SettingSeeder is the minimal interface needed by SeedDefaultSettings.
+type SettingSeeder interface {
+	Get(ctx context.Context, key string) (string, error)
+	Set(ctx context.Context, key, value string) error
+}
+
+// SeedDefaultSettings creates default application settings if the settings table is empty.
+func SeedDefaultSettings(ctx context.Context, settingStore SettingSeeder) error {
+	// Check if settings already exist by trying to read a known key.
+	if _, err := settingStore.Get(ctx, "acp_command"); err == nil {
+		log.Println("Settings already exist, skipping default settings seed")
+		return nil
+	}
+
+	log.Println("No settings found, seeding default settings...")
+
+	defaults := map[string]string{
+		"acp_command":            "opencode acp",
+		"global_max_concurrency": "0",
+	}
+
+	for key, value := range defaults {
+		if err := settingStore.Set(ctx, key, value); err != nil {
+			return fmt.Errorf("seed setting %q: %w", key, err)
+		}
+		log.Printf("Seeded default setting: %s = %s", key, value)
 	}
 
 	return nil

@@ -90,10 +90,7 @@ const handleDelete = (userId: string) => {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-border">
-        <span className="text-[10px] uppercase tracking-widest font-bold text-neutral-600 dark:text-neutral-300">
-          Users
-        </span>
+      <div className="flex items-center px-4 py-3 border-b border-gray-200 dark:border-gray-border">
         <button
           onClick={() => setIsModalOpen(true)}
           className="glow-button"
