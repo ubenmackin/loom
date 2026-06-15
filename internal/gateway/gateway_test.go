@@ -51,6 +51,10 @@ func (m *mockTaskStore) GetByStory(_ context.Context, _ string) ([]*models.Task,
 	return nil, nil
 }
 
+func (m *mockTaskStore) Update(_ context.Context, _ *models.Task) error {
+	return nil
+}
+
 type mockSessionStore struct{}
 
 func (m *mockSessionStore) Register(_ context.Context, _ *models.Session) error { return nil }
@@ -79,12 +83,13 @@ func (m *mockSettingStore) Get(_ context.Context, key string) (string, error) {
 
 func newTestGateway(profiles []*models.AgentProfile) *Gateway {
 	g := &Gateway{
-		queue:            NewJobQueue(),
-		acpClients:       make(map[string]*acp.Client),
-		profileTaskTypes: make(map[string][]string),
-		profileStore:     &mockProfileStore{profiles: profiles},
-		taskStore:        &mockTaskStore{tasks: make(map[string]*models.Task)},
-		sessionStore:     &mockSessionStore{},
+		queue:             NewJobQueue(),
+		acpClients:        make(map[string]*acp.Client),
+		sessionIDtoClient: make(map[string]*acp.Client),
+		profileTaskTypes:  make(map[string][]string),
+		profileStore:      &mockProfileStore{profiles: profiles},
+		taskStore:         &mockTaskStore{tasks: make(map[string]*models.Task)},
+		sessionStore:      &mockSessionStore{},
 	}
 	return g
 }

@@ -256,26 +256,12 @@ export interface GatewayQueueResponse {
   jobs: GatewayJob[]
 }
 
-export interface GatewayTriggerRequest {
-  event_type: string
-  project_id: string
-  agent_type: string
-  task_id: string
-}
-
 export async function fetchGatewayStatus(): Promise<GatewayStatus> {
   return request<GatewayStatus>('/gateway/status')
 }
 
 export async function fetchGatewayQueue(): Promise<GatewayQueueResponse> {
   return request<GatewayQueueResponse>('/gateway/queue')
-}
-
-export async function triggerGatewayAction(data: GatewayTriggerRequest): Promise<void> {
-  await request('/gateway/trigger', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  })
 }
 
 // ── Agent Profiles ─────────────────────────────────────────────────────────

@@ -166,12 +166,9 @@ func (g *Gateway) processCreateSession(ctx context.Context, event dispatcher.Eve
 		return
 	}
 
-	// For planner sessions, resolve the story ID so we can build session
-	// context (story details, tasks, comments) on the fly.
-	var storyID string
-	if agentType == "planner" {
-		storyID = g.resolveStoryID(ctx, event)
-	}
+	// Resolve story ID and task ID for session context building.
+	storyID := g.resolveStoryID(ctx, event)
+	taskID := event.TaskID
 
 	// Check if a gateway session already exists for this (project, agentType).
 	if existing, ok := g.tracker.GetSession(projectID, agentType); ok {
@@ -194,18 +191,31 @@ func (g *Gateway) processCreateSession(ctx context.Context, event dispatcher.Eve
 	slog.Info("gateway: creating new session",
 		"project_id", projectID, "agent_type", agentType)
 
-	if err := g.createACPSession(ctx, projectID, agentType, storyID); err != nil {
+	projectName := projectID
+	if p, err := g.projectStore.GetByID(ctx, projectID); err == nil && p != nil {
+		projectName = p.Name
+	}
+
+	if err := g.createACPSession(ctx, projectID, agentType, storyID, taskID); err != nil {
 		slog.Error("gateway: failed to create session",
 			"project_id", projectID,
 			"agent_type", agentType,
 			"error", err)
 		g.logActivity(ctx, projectID, "project", "gateway_session_create_failed",
-			fmt.Sprintf("agent_type=%s error=%v", agentType, err))
+			fmt.Sprintf("agent_type=%s project=%s error=%v", agentType, projectName, err))
 		return
 	}
 
+	// Store the story ID on the session so that handleACPMessage can persist
+	// the ACP session ID back to the story (planner sessions created via
+	// processCreateSession do not go through assignTaskToSession, so
+	// AssignedTaskID is never set).
+	if gs, ok := g.tracker.GetSession(projectID, agentType); ok && storyID != "" {
+		gs.StoryID = storyID
+	}
+
 	g.logActivity(ctx, projectID, "project", "gateway_session_created",
-		fmt.Sprintf("agent_type=%s", agentType))
+		fmt.Sprintf("agent_type=%s project=%s", agentType, projectName))
 }
 
 // processAssignTask handles the assign_task action. It finds an available
@@ -316,142 +326,186 @@ func (g *Gateway) resolveStoryID(ctx context.Context, event dispatcher.Event) st
 // ---------------------------------------------------------------------------
 
 // createACPSession creates a new ACP session for the given project and agent
-// type. It starts the ACP subprocess, sends a create_session message,
-// and registers the session in the tracker. For planner sessions, storyID
-// is used to build session context (story details, tasks, comments) that
-// is included in the create_session message.
-func (g *Gateway) createACPSession(ctx context.Context, projectID, agentType, storyID string) error {
+// type. It creates the ACP session via the client, registers it in the
+// tracker, and sends the initial context as a prompt. storyID and taskID are
+// used to build session context (story details, tasks, comments) that is
+// included as the initial prompt.
+func (g *Gateway) createACPSession(ctx context.Context, projectID, agentType, storyID, taskID string) error {
 	client, err := g.getOrCreateACPClient(ctx, projectID, agentType)
 	if err != nil {
 		return fmt.Errorf("get or create acp client: %w", err)
 	}
 
-	// Send a create_session message.
-	sessionMsg := acp.SessionMessage{
-		Type:      "create_session",
-		ProjectID: projectID,
-		AgentType: agentType,
+	// Determine project path and build MCP server config.
+	projectPath := projectID
+	mcpServers := []acp.MCPServer{}
+	if p, err := g.projectStore.GetByID(ctx, projectID); err == nil && p != nil && p.RepoPath != "" {
+		projectPath = p.RepoPath
+		mcpServers = append(mcpServers, acp.MCPServer{
+			Name:    "loom",
+			Command: p.RepoPath + "/dist/loom-server",
+			Args:    []string{"--mcp"},
+		})
 	}
 
-	// For planner sessions, build the session context (story + tasks +
-	// comments) and attach it to the create_session message. If context
-	// building fails, log the error but proceed without context rather
-	// than blocking session creation entirely.
-	if agentType == "planner" && storyID != "" {
-		plannerCtx, err := g.buildPlannerContext(ctx, storyID)
-		if err != nil {
-			slog.Warn("gateway: failed to build planner context, proceeding without it",
+	// Create the ACP session.
+	sessionID, err := client.NewSession(ctx, acp.NewSessionRequest{
+		Cwd:        projectPath,
+		MCPServers: mcpServers,
+	})
+	if err != nil {
+		return fmt.Errorf("new acp session: %w", err)
+	}
+
+	// Register the session in the tracker with the real session ID.
+	_ = g.tracker.RegisterSession(projectID, agentType, sessionID)
+
+	// Register the session client for future prompt sends.
+	g.RegisterSessionClient(sessionID, client)
+
+	// Build and send the initial context as a prompt.
+	acpCtx, err := g.buildACPContext(ctx, storyID, taskID, agentType, false)
+	if err != nil {
+		slog.Warn("gateway: failed to build acp context, proceeding without it",
+			"project_id", projectID,
+			"story_id", storyID,
+			"task_id", taskID,
+			"agent_type", agentType,
+			"error", err)
+	} else {
+		stopReason, promptErr := client.SendPrompt(ctx, sessionID, acpCtx)
+		if promptErr != nil {
+			slog.Warn("gateway: failed to send initial prompt, continuing",
 				"project_id", projectID,
-				"story_id", storyID,
-				"agent_type", agentType,
-				"error", err)
+				"session_id", sessionID,
+				"error", promptErr)
 		} else {
-			sessionMsg.Context = plannerCtx
+			slog.Info("gateway: initial prompt sent to session",
+				"project_id", projectID,
+				"session_id", sessionID,
+				"stop_reason", stopReason)
 		}
 	}
 
-	if err := client.Send(sessionMsg); err != nil {
-		return fmt.Errorf("send create_session: %w", err)
-	}
-
-	// Register the session in the tracker with a temporary session ID.
-	// The actual ACP session ID will be received asynchronously via the
-	// ACP response channel. We use a placeholder until the response arrives.
-	placeholderID := fmt.Sprintf("pending-%s-%s-%d", projectID, agentType, time.Now().UnixNano())
-	session := g.tracker.RegisterSession(projectID, agentType, placeholderID)
-
-	slog.Info("gateway: acp session creation requested",
+	slog.Info("gateway: acp session created",
 		"project_id", projectID,
 		"agent_type", agentType,
-		"session_id", session.SessionID,
-		"has_context", sessionMsg.Context != "")
+		"session_id", sessionID)
 
 	return nil
 }
 
-// buildPlannerContext fetches a story together with its tasks and comments
-// and returns a formatted context string suitable for a planner ACP
-// session. The context is used by the planner to reason about the
-// current state of the story and any prior Q&A exchanged in comments.
-func (g *Gateway) buildPlannerContext(ctx context.Context, storyID string) (string, error) {
-	// 1. Fetch the story.
-	story, err := g.storyStore.GetByID(ctx, storyID)
-	if err != nil {
-		return "", fmt.Errorf("get story %q: %w", storyID, err)
-	}
-	if story == nil {
-		return "", fmt.Errorf("story %q not found", storyID)
-	}
-
-	// 2. Fetch all tasks for the story.
-	tasks, err := g.taskStore.GetByStory(ctx, storyID)
-	if err != nil {
-		return "", fmt.Errorf("get tasks for story %q: %w", storyID, err)
-	}
-
-	// 3. Fetch all comments for the story in chronological order.
-	comments, err := g.commentStore.GetByWorkItem(ctx, storyID, models.WorkItemTypeStory)
-	if err != nil {
-		return "", fmt.Errorf("get comments for story %q: %w", storyID, err)
-	}
-
-	// 4. Format the context string.
+// buildACPContext fetches story and/or task data and returns a formatted
+// context string suitable for any ACP session. The context includes the
+// system prompt for the given agent type, an MCP server hint, and optional
+// story/task details. If isUpdate is true, a "[CONTEXT UPDATE]" prefix is
+// prepended.
+func (g *Gateway) buildACPContext(ctx context.Context, storyID, taskID, agentType string, isUpdate bool) (string, error) {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "Story ID: %s\n", story.ID)
-	fmt.Fprintf(&b, "Story Title: %s\n", story.Title)
-	if story.Description != "" {
-		fmt.Fprintf(&b, "Story Description: %s\n", story.Description)
+	// Prefix for context updates.
+	if isUpdate {
+		b.WriteString("[CONTEXT UPDATE] The user has answered your question.\n\n")
 	}
-	fmt.Fprintf(&b, "Story Status: %s\n", story.Status)
 
-	b.WriteString("\nCurrent Tasks:\n")
-	if len(tasks) == 0 {
-		b.WriteString("- (no tasks)\n")
-	} else {
-		for _, task := range tasks {
-			if task == nil {
-				continue
+	// System prompt.
+	b.WriteString(SystemPrompt(agentType))
+	b.WriteString("\n\n## CONTEXT\n\n")
+
+	// MCP server hint.
+	b.WriteString("Connect to Loom's MCP server (configured in your opencode.json's mcpServers as 'loom').\n\n")
+
+	// Story data.
+	if storyID != "" {
+		story, err := g.storyStore.GetByID(ctx, storyID)
+		if err != nil {
+			return "", fmt.Errorf("get story %q: %w", storyID, err)
+		}
+		if story == nil {
+			return "", fmt.Errorf("story %q not found", storyID)
+		}
+
+		fmt.Fprintf(&b, "Story ID: %s\n", story.ID)
+		fmt.Fprintf(&b, "Story Title: %s\n", story.Title)
+		if story.Description != "" {
+			fmt.Fprintf(&b, "Story Description: %s\n", story.Description)
+		}
+		fmt.Fprintf(&b, "Story Status: %s\n", story.Status)
+
+		// Tasks for the story.
+		tasks, err := g.taskStore.GetByStory(ctx, storyID)
+		if err != nil {
+			return "", fmt.Errorf("get tasks for story %q: %w", storyID, err)
+		}
+
+		b.WriteString("\nCurrent Tasks:\n")
+		if len(tasks) == 0 {
+			b.WriteString("- (no tasks)\n")
+		} else {
+			for _, task := range tasks {
+				if task == nil {
+					continue
+				}
+				fmt.Fprintf(&b, "- %s: %s [%s]\n", task.ID, task.Title, task.Status)
 			}
-			fmt.Fprintf(&b, "- %s: %s [%s]\n", task.ID, task.Title, task.Status)
+		}
+
+		// Comments.
+		comments, err := g.commentStore.GetByWorkItem(ctx, storyID, models.WorkItemTypeStory)
+		if err != nil {
+			return "", fmt.Errorf("get comments for story %q: %w", storyID, err)
+		}
+
+		b.WriteString("\nCurrent Comments (chronological):\n")
+		if len(comments) == 0 {
+			b.WriteString("- (no comments)\n")
+		} else {
+			for _, c := range comments {
+				if c == nil {
+					continue
+				}
+				fmt.Fprintf(&b, "- [%s] %s/%s: %s\n",
+					c.CreatedAt.UTC().Format(time.RFC3339),
+					c.AuthorType, c.AuthorID, c.Body)
+			}
 		}
 	}
 
-	b.WriteString("\nCurrent Comments (chronological):\n")
-	if len(comments) == 0 {
-		b.WriteString("- (no comments)\n")
-	} else {
-		for _, c := range comments {
-			if c == nil {
-				continue
+	// Task-specific data.
+	if taskID != "" {
+		task, err := g.taskStore.GetByID(ctx, taskID)
+		if err != nil {
+			return "", fmt.Errorf("get task %q: %w", taskID, err)
+		}
+		if task != nil {
+			fmt.Fprintf(&b, "\nAssigned Task:\n")
+			fmt.Fprintf(&b, "- ID: %s\n", task.ID)
+			fmt.Fprintf(&b, "- Title: %s\n", task.Title)
+			if task.Description != "" {
+				fmt.Fprintf(&b, "- Description: %s\n", task.Description)
 			}
-			fmt.Fprintf(&b, "- [%s] %s/%s: %s\n",
-				c.CreatedAt.UTC().Format(time.RFC3339),
-				c.AuthorType, c.AuthorID, c.Body)
+			fmt.Fprintf(&b, "- Status: %s\n", task.Status)
+			fmt.Fprintf(&b, "- Task Type: %s\n", task.TaskType)
+			if task.Instructions != "" {
+				fmt.Fprintf(&b, "- Instructions: %s\n", task.Instructions)
+			}
 		}
 	}
 
 	return b.String(), nil
 }
 
-// resumeACPSession sends a resume_session message for an existing session
-// to the ACP server. This re-establishes the session after a disconnect.
+// resumeACPSession re-establishes an existing session by re-registering the
+// session client. The client's Connect() already auto-initializes, so no
+// resume message is needed.
 func (g *Gateway) resumeACPSession(ctx context.Context, session *GatewaySession) error {
 	client, err := g.getOrCreateACPClient(ctx, session.ProjectID, session.AgentType)
 	if err != nil {
 		return fmt.Errorf("get or create acp client for resume: %w", err)
 	}
 
-	resumeMsg := acp.SessionMessage{
-		Type:      "resume_session",
-		SessionID: session.SessionID,
-		ProjectID: session.ProjectID,
-		AgentType: session.AgentType,
-	}
-
-	if err := client.Send(resumeMsg); err != nil {
-		return fmt.Errorf("send resume_session: %w", err)
-	}
+	// Re-register the session client.
+	g.RegisterSessionClient(session.SessionID, client)
 
 	// Update the session status.
 	if _, err := g.tracker.UpdateStatus(session.ProjectID, session.AgentType, SessionActive); err != nil {
@@ -470,9 +524,9 @@ func (g *Gateway) resumeACPSession(ctx context.Context, session *GatewaySession)
 }
 
 // assignTaskToSession finds an available session for the given agent type,
-// assigns the task, and sends a get_task message via ACP.
+// assigns the task, and sends it as a prompt via ACP. If no session exists,
+// one is created on the fly using NewSession.
 func (g *Gateway) assignTaskToSession(ctx context.Context, projectID, agentType, taskID string) error {
-	// Get or create an ACP client.
 	client, err := g.getOrCreateACPClient(ctx, projectID, agentType)
 	if err != nil {
 		return fmt.Errorf("get or create acp client for task assignment: %w", err)
@@ -482,18 +536,27 @@ func (g *Gateway) assignTaskToSession(ctx context.Context, projectID, agentType,
 	gs, ok := g.tracker.GetSession(projectID, agentType)
 	if !ok {
 		// No session yet — create one on the fly.
-		placeholderID := fmt.Sprintf("pending-%s-%s-%d", projectID, agentType, time.Now().UnixNano())
-		gs = g.tracker.RegisterSession(projectID, agentType, placeholderID)
+		projectPath := projectID
+		mcpServers := []acp.MCPServer{}
+		if p, err := g.projectStore.GetByID(ctx, projectID); err == nil && p != nil && p.RepoPath != "" {
+			projectPath = p.RepoPath
+			mcpServers = append(mcpServers, acp.MCPServer{
+				Name:    "loom",
+				Command: p.RepoPath + "/dist/loom-server",
+				Args:    []string{"--mcp"},
+			})
+		}
 
-		// Also send a create_session to the ACP server.
-		sessionMsg := acp.SessionMessage{
-			Type:      "create_session",
-			ProjectID: projectID,
-			AgentType: agentType,
+		sessionID, err := client.NewSession(ctx, acp.NewSessionRequest{
+			Cwd:        projectPath,
+			MCPServers: mcpServers,
+		})
+		if err != nil {
+			return fmt.Errorf("new acp session for task assignment: %w", err)
 		}
-		if err := client.Send(sessionMsg); err != nil {
-			return fmt.Errorf("send create_session before task assignment: %w", err)
-		}
+
+		gs = g.tracker.RegisterSession(projectID, agentType, sessionID)
+		g.RegisterSessionClient(sessionID, client)
 	}
 
 	// Look up the task for details.
@@ -502,22 +565,20 @@ func (g *Gateway) assignTaskToSession(ctx context.Context, projectID, agentType,
 		return fmt.Errorf("get task %q: %w", taskID, err)
 	}
 
-	// Build and send the task message.
-	taskMsg := acp.TaskMessage{
-		Type:        "get_task",
-		TaskID:      task.ID,
-		SessionID:   gs.SessionID,
-		Title:       task.Title,
-		Description: task.Description,
-		Status:      string(task.Status),
+	// Build task context and send as a prompt.
+	var b strings.Builder
+	fmt.Fprintf(&b, "Task ID: %s\n", task.ID)
+	fmt.Fprintf(&b, "Task Title: %s\n", task.Title)
+	if task.Description != "" {
+		fmt.Fprintf(&b, "Task Description: %s\n", task.Description)
 	}
-
+	fmt.Fprintf(&b, "Task Status: %s\n", task.Status)
 	if task.Instructions != "" {
-		taskMsg.Instructions = task.Instructions
+		fmt.Fprintf(&b, "Task Instructions: %s\n", task.Instructions)
 	}
 
-	if err := client.Send(taskMsg); err != nil {
-		return fmt.Errorf("send get_task: %w", err)
+	if _, err := client.SendPrompt(ctx, gs.SessionID, b.String()); err != nil {
+		return fmt.Errorf("send task prompt: %w", err)
 	}
 
 	// Mark the session as busy with the assigned task.
@@ -525,7 +586,6 @@ func (g *Gateway) assignTaskToSession(ctx context.Context, projectID, agentType,
 		return fmt.Errorf("tracker assign task: %w", err)
 	}
 
-	// Increment the active count for capacity tracking.
 	g.queue.IncrementActive(projectID, agentType)
 
 	slog.Info("gateway: task assigned to session",
@@ -541,116 +601,47 @@ func (g *Gateway) assignTaskToSession(ctx context.Context, projectID, agentType,
 // ACP message handling
 // ---------------------------------------------------------------------------
 
-// handleACPMessage processes an incoming ACP response message. It parses the
-// raw JSON bytes into an ACPResponse and dispatches accordingly.
-func (g *Gateway) handleACPMessage(ctx context.Context, msg []byte, projectID, agentType string) {
-	var resp acp.ACPResponse
-	if err := json.Unmarshal(msg, &resp); err != nil {
-		slog.Warn("gateway: failed to unmarshal acp response",
+// handleACPMessage processes an incoming ACP message from the receive channel.
+// Since session creation is now synchronous (NewSession returns the session ID
+// directly), this channel only receives notifications and unmatched messages.
+func (g *Gateway) handleACPMessage(ctx context.Context, msg []byte, projectID, agentType string, client *acp.Client) {
+	// Try to parse as a JSON-RPC response for logging.
+	var generic map[string]any
+	if err := json.Unmarshal(msg, &generic); err != nil {
+		slog.Warn("gateway: failed to unmarshal acp message",
 			"project_id", projectID,
 			"agent_type", agentType,
 			"error", err)
 		return
 	}
 
-	slog.Debug("gateway: acp response received",
+	slog.Debug("gateway: acp notification received",
 		"project_id", projectID,
 		"agent_type", agentType,
-		"success", resp.Success,
-		"session_id", resp.SessionID,
-		"task_id", resp.TaskID)
+		"message", generic)
 
-	if !resp.Success {
+	// Check for error field.
+	if errVal, ok := generic["error"]; ok && errVal != nil {
 		slog.Warn("gateway: acp response indicated failure",
 			"project_id", projectID,
 			"agent_type", agentType,
-			"session_id", resp.SessionID,
-			"error", resp.Error)
+			"error", errVal)
 
-		// If there was an error, mark the session as errored and attempt
-		// to dequeue the next job.
-		if resp.SessionID != "" {
-			if gs, ok := g.tracker.GetBySessionID(resp.SessionID); ok {
-				_, _ = g.tracker.UpdateStatus(gs.ProjectID, gs.AgentType, SessionError)
-				// Decrement active count and try next job.
-				g.queue.DecrementActive(gs.ProjectID, gs.AgentType)
-				if gs.AssignedTaskID != "" {
-					g.queue.Remove(gs.AssignedTaskID)
-					g.tryDequeueNextJob(ctx, gs.ProjectID, gs.AgentType)
-				}
+		if gs, ok := g.tracker.GetSession(projectID, agentType); ok {
+			_, _ = g.tracker.UpdateStatus(gs.ProjectID, gs.AgentType, SessionError)
+			g.queue.DecrementActive(gs.ProjectID, gs.AgentType)
+			if gs.AssignedTaskID != "" {
+				g.queue.Remove(gs.AssignedTaskID)
+				g.tryDequeueNextJob(ctx, gs.ProjectID, gs.AgentType)
 			}
 		}
 		return
-	}
-
-	// Update the session ID in the tracker if this is a session creation response.
-	if resp.SessionID != "" {
-		if gs, ok := g.tracker.GetSession(projectID, agentType); ok {
-			// Only update if the current session ID starts with "pending-".
-			if len(gs.SessionID) > 8 && gs.SessionID[:8] == "pending-" {
-				if _, err := g.tracker.UpdateSessionID(projectID, agentType, resp.SessionID); err != nil {
-					slog.Warn("gateway: failed to update session id in tracker",
-						"project_id", projectID,
-						"agent_type", agentType,
-						"error", err)
-				} else {
-					slog.Info("gateway: session id updated from acp response",
-						"project_id", projectID,
-						"agent_type", agentType,
-						"session_id", resp.SessionID)
-				}
-			}
-		}
-	}
-
-	// Handle task completion.
-	if resp.TaskID != "" {
-		g.handleTaskCompleted(ctx, resp, projectID, agentType)
 	}
 
 	// Update heartbeat for the session.
 	if gs, ok := g.tracker.GetSession(projectID, agentType); ok {
 		_ = g.tracker.Heartbeat(gs.ProjectID, gs.AgentType)
 	}
-}
-
-// handleTaskCompleted processes a task completion ACP response. It updates
-// the task status in the store, logs activity, broadcasts the event through
-// the dispatcher, and dequeues the next job.
-func (g *Gateway) handleTaskCompleted(ctx context.Context, resp acp.ACPResponse, projectID, agentType string) {
-	// Update the task status to done in the store.
-	if err := g.taskStore.UpdateStatus(ctx, resp.TaskID, models.StatusDone); err != nil {
-		slog.Error("gateway: failed to update task status to done",
-			"task_id", resp.TaskID, "error", err)
-	}
-
-	// Log the activity.
-	g.logActivity(ctx, resp.TaskID, string(models.WorkItemTypeTask),
-		"gateway_task_completed",
-		fmt.Sprintf("agent_type=%s session_id=%s", agentType, resp.SessionID))
-
-	// Broadcast a task completed event through the dispatcher so the
-	// dispatcher can resolve dependencies and check gates.
-	g.dispatcher.Submit(ctx, dispatcher.Event{
-		Type:      dispatcher.EventTaskCompleted,
-		TaskID:    resp.TaskID,
-		SessionID: resp.SessionID,
-	})
-
-	slog.Info("gateway: task completed via acp",
-		"task_id", resp.TaskID,
-		"project_id", projectID,
-		"agent_type", agentType)
-
-	// Mark the session as idle and clear the assigned task.
-	if _, err := g.tracker.CompleteTask(projectID, agentType); err != nil {
-		slog.Warn("gateway: failed to complete task in tracker",
-			"project_id", projectID, "agent_type", agentType, "error", err)
-	}
-
-	// Decrement the active count and try to dequeue the next job.
-	g.queue.DecrementActive(projectID, agentType)
-	g.tryDequeueNextJob(ctx, projectID, agentType)
 }
 
 // tryDequeueNextJob checks for queued jobs for the given (projectID, agentType)

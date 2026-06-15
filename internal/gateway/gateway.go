@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -30,6 +29,7 @@ const SettingKeyGlobalMaxConcurrency = "global_max_concurrency"
 // TaskStore defines the gateway's task storage requirements.
 type TaskStore interface {
 	GetByID(ctx context.Context, id string) (*models.Task, error)
+	Update(ctx context.Context, task *models.Task) error
 	UpdateStatus(ctx context.Context, id string, status models.Status) error
 	GetByStory(ctx context.Context, storyID string) ([]*models.Task, error)
 }
@@ -52,6 +52,7 @@ type ProjectStore interface {
 // StoryStore defines the gateway's story storage requirements.
 type StoryStore interface {
 	GetByID(ctx context.Context, id string) (*models.Story, error)
+	Update(ctx context.Context, story *models.Story) error
 }
 
 // CommentStore defines the gateway's comment storage requirements.
@@ -85,10 +86,11 @@ type SettingStore interface {
 // Gateway is the main orchestrator that manages ACP agent sessions (spawned as
 // subprocesses) and proactively pushes work to opencode serve sessions.
 type Gateway struct {
-	dispatcher *dispatcher.Dispatcher
-	tracker    *SessionTracker
-	queue      *JobQueue
-	acpClients map[string]*acp.Client // key: "projectID:agentType"
+	dispatcher        *dispatcher.Dispatcher
+	tracker           *SessionTracker
+	queue             *JobQueue
+	acpClients        map[string]*acp.Client // key: "projectID:agentType"
+	sessionIDtoClient map[string]*acp.Client // key: ACP session ID → client
 
 	taskStore     TaskStore
 	sessionStore  SessionStore
@@ -151,21 +153,22 @@ func NewGateway(
 	}
 
 	return &Gateway{
-		dispatcher:       d,
-		tracker:          NewSessionTracker(),
-		queue:            q,
-		acpClients:       make(map[string]*acp.Client),
-		taskStore:        taskStore,
-		sessionStore:     sessionStore,
-		projectStore:     projectStore,
-		storyStore:       storyStore,
-		commentStore:     commentStore,
-		activityStore:    activityStore,
-		profileStore:     profileStore,
-		eventCh:          make(chan dispatcher.Event, 256),
-		done:             make(chan struct{}),
-		acpCommand:       acpCommand,
-		profileTaskTypes: make(map[string][]string),
+		dispatcher:        d,
+		tracker:           NewSessionTracker(),
+		queue:             q,
+		acpClients:        make(map[string]*acp.Client),
+		sessionIDtoClient: make(map[string]*acp.Client),
+		taskStore:         taskStore,
+		sessionStore:      sessionStore,
+		projectStore:      projectStore,
+		storyStore:        storyStore,
+		commentStore:      commentStore,
+		activityStore:     activityStore,
+		profileStore:      profileStore,
+		eventCh:           make(chan dispatcher.Event, 256),
+		done:              make(chan struct{}),
+		acpCommand:        acpCommand,
+		profileTaskTypes:  make(map[string][]string),
 	}
 }
 
@@ -277,6 +280,59 @@ func acpClientKey(projectID, agentType string) string {
 	return fmt.Sprintf("%s:%s", projectID, agentType)
 }
 
+// RegisterSessionClient maps an ACP session ID to its client for future
+// context updates. The sessionID is the actual ACP session ID received
+// from the create_session response.
+func (g *Gateway) RegisterSessionClient(sessionID string, client *acp.Client) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.sessionIDtoClient[sessionID] = client
+}
+
+// SendContextUpdate sends a context update to an existing ACP session.
+// It looks up the client by session ID, builds the new context with
+// isUpdate=true, and sends it as a prompt.
+func (g *Gateway) SendContextUpdate(ctx context.Context, sessionID, storyID, taskID, agentType, newContext string) error {
+	g.mu.RLock()
+	client, ok := g.sessionIDtoClient[sessionID]
+	g.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("no client found for session %q", sessionID)
+	}
+
+	// We accept newContext as a parameter, OR we build it here.
+	// The caller can pass empty string to have it built, or pass the pre-built context.
+	contextToSend := newContext
+	if contextToSend == "" {
+		var err error
+		contextToSend, err = g.buildACPContext(ctx, storyID, taskID, agentType, true)
+		if err != nil {
+			return fmt.Errorf("build context update: %w", err)
+		}
+	}
+
+	_, err := client.SendPrompt(ctx, sessionID, contextToSend)
+	return err
+}
+
+// randomPort allocates a random available TCP port by listening on :0.
+func randomPort() (port int, err error) {
+	addr, err := net.Listen("tcp", ":0")
+	if err != nil {
+		return 0, err
+	}
+
+	tcpAddr, ok := addr.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = addr.Close()
+		return 0, fmt.Errorf("expected TCPAddr, got %T", addr.Addr())
+	}
+	port = tcpAddr.Port
+
+	return port, addr.Close()
+}
+
 // getOrCreateACPClient returns an existing ACP client for the given
 // (projectID, agentType) pair, or creates a new one by spawning the
 // ACP subprocess. This is a best-effort operation — if the
@@ -293,38 +349,13 @@ func (g *Gateway) getOrCreateACPClient(ctx context.Context, projectID, agentType
 		return client, nil
 	}
 
-	// Listen on an ephemeral port and pass the already-bound socket to the
-	// subprocess via ExtraFiles + --listen-fd. This eliminates the TOCTOU
-	// race between closing our temporary listener and the subprocess binding
-	// the port.
-	listener, err := net.Listen("tcp", ":0")
+	port, err := randomPort()
 	if err != nil {
-		return nil, fmt.Errorf("listen for %s/%s: %w", projectID, agentType, err)
+		return nil, fmt.Errorf("allocate port for %s/%s: %w", projectID, agentType, err)
 	}
-	tcpListener, ok := listener.(*net.TCPListener)
-	if !ok {
-		_ = listener.Close()
-		return nil, fmt.Errorf("expected TCPListener for %s/%s", projectID, agentType)
-	}
-	tcpAddr, ok := tcpListener.Addr().(*net.TCPAddr)
-	if !ok {
-		_ = tcpListener.Close()
-		return nil, fmt.Errorf("expected TCPAddr for %s/%s", projectID, agentType)
-	}
-	port := tcpAddr.Port
-
-	// Dup the file descriptor so the socket survives closing the listener.
-	listenFile, err := tcpListener.File()
-	if err != nil {
-		_ = tcpListener.Close()
-		return nil, fmt.Errorf("get listener fd for %s/%s: %w", projectID, agentType, err)
-	}
-	_ = tcpListener.Close()
 
 	newClient := acp.NewClient(g.acpCommand)
-	newClient.ExtraFiles = []*os.File{listenFile}
-	// ExtraFiles[0] appears as fd 3 in the child process.
-	newClient.Args = []string{"--listen-fd", "3"}
+	newClient.Args = []string{"--port", strconv.Itoa(port)}
 
 	project, err := g.projectStore.GetByID(ctx, projectID)
 	if err != nil {
@@ -338,13 +369,8 @@ func (g *Gateway) getOrCreateACPClient(ctx context.Context, projectID, agentType
 	defer cancel()
 
 	if err := newClient.Connect(connectCtx); err != nil {
-		_ = listenFile.Close()
 		return nil, fmt.Errorf("connect acp client for %s/%s: %w", projectID, agentType, err)
 	}
-
-	// The subprocess has inherited the fd via fork+exec; the parent no
-	// longer needs its copy.
-	_ = listenFile.Close()
 
 	g.mu.Lock()
 	// Double-check — another goroutine may have created one while we
@@ -384,7 +410,7 @@ func (g *Gateway) readACPResponses(ctx context.Context, client *acp.Client, proj
 	}
 
 	for msg := range receiveCh {
-		g.handleACPMessage(ctx, msg, projectID, agentType)
+		g.handleACPMessage(ctx, msg, projectID, agentType, client)
 	}
 
 	slog.Info("gateway: acp client receive channel closed",
@@ -400,6 +426,12 @@ func (g *Gateway) removeACPClient(projectID, agentType string) {
 	client, ok := g.acpClients[key]
 	if ok {
 		delete(g.acpClients, key)
+		// Also remove from sessionIDtoClient
+		for sid, c := range g.sessionIDtoClient {
+			if c == client {
+				delete(g.sessionIDtoClient, sid)
+			}
+		}
 	}
 	g.mu.Unlock()
 

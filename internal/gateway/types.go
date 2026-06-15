@@ -29,6 +29,7 @@ type GatewaySession struct {
 	SessionID      string // ACP session ID
 	Status         GatewaySessionStatus
 	AssignedTaskID string
+	StoryID        string // Story being planned (for planner sessions)
 	LastHeartbeat  time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time

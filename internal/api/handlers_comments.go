@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -129,10 +130,10 @@ func (h *handlers) createComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If the parent story's status is "planning" or "blocked", re-spawn the
-	// planner ACP session via the gateway so the planner agent can process
-	// any new feedback.
-	h.respawnPlannerIfNeeded(w, r, id, workItemType, comment.Body)
+	// If the parent story's status is "planning" or "blocked", send a context
+	// update to the existing planner ACP session so the planner agent can
+	// process any new feedback.
+	h.handlePlannerContextUpdate(w, r, id, workItemType, comment.Body)
 
 	respondJSON(w, http.StatusCreated, comment)
 }
@@ -230,11 +231,11 @@ func (h *handlers) deleteComment(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// respawnPlannerIfNeeded checks whether the parent story for the newly created
-// comment is in a state that requires planner attention ("planning" or
-// "blocked"). If so, it submits an event to the gateway asking it to create or
-// resume a planner session for the story's project.
-func (h *handlers) respawnPlannerIfNeeded(_ http.ResponseWriter, _ *http.Request, workItemID, workItemType, _ string) {
+// handlePlannerContextUpdate checks whether the parent story for the newly
+// created comment is in a state that requires planner attention ("planning"
+// or "blocked"). If so, it sends a context update to the existing ACP
+// session rather than spawning a new one.
+func (h *handlers) handlePlannerContextUpdate(_ http.ResponseWriter, _ *http.Request, workItemID, workItemType, _ string) {
 	if workItemType != string(models.WorkItemTypeStory) || h.gateway == nil {
 		return
 	}
@@ -251,6 +252,18 @@ func (h *handlers) respawnPlannerIfNeeded(_ http.ResponseWriter, _ *http.Request
 		return
 	}
 
+	// If we have a stored ACP session ID, send a context update.
+	if story.AgentSessionID != "" {
+		if err := h.gateway.SendContextUpdate(ctx, story.AgentSessionID, story.ID, "", "planner", ""); err != nil {
+			slog.Warn("api: failed to send context update to planner session",
+				"story_id", story.ID,
+				"session_id", story.AgentSessionID,
+				"error", err)
+		}
+		return
+	}
+
+	// Fall back to submitting an event (legacy behavior) if no session ID stored.
 	h.gateway.SubmitEvent(dispatcher.Event{
 		Type: dispatcher.EventWorkRequested,
 		Payload: map[string]interface{}{

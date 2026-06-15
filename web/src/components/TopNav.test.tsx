@@ -122,11 +122,11 @@ describe('TopNav', () => {
 
   // ── Nav Links ─────────────────────────────────────────────────────────
 
-  it('renders all four nav links: Board, Activity, Dispatcher, Agents', () => {
+  it('renders all four nav links: Board, Activity, Operations, Agents', () => {
     renderTopNav()
     expect(screen.getByText('Board')).toBeInTheDocument()
     expect(screen.getByText('Activity')).toBeInTheDocument()
-    expect(screen.getByText('Dispatcher')).toBeInTheDocument()
+    expect(screen.getByText('Operations')).toBeInTheDocument()
     expect(screen.getByText('Agents')).toBeInTheDocument()
   })
 

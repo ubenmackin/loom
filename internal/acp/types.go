@@ -4,48 +4,66 @@ package acp
 
 import "encoding/json"
 
-// SessionState represents the lifecycle state of an agent session.
-type SessionState string
-
-const (
-	SessionStateCreating SessionState = "creating"
-	SessionStateActive   SessionState = "active"
-	SessionStateIdle     SessionState = "idle"
-	SessionStateBusy     SessionState = "busy"
-	SessionStateError    SessionState = "error"
-)
-
-// SessionMessage is sent during session lifecycle operations.
-type SessionMessage struct {
-	Type      string       `json:"type"`
-	SessionID string       `json:"session_id,omitempty"`
-	ProjectID string       `json:"project_id,omitempty"`
-	AgentType string       `json:"agent_type,omitempty"`
-	TaskID    string       `json:"task_id,omitempty"`
-	Result    string       `json:"result,omitempty"`
-	Status    SessionState `json:"status,omitempty"`
-	Context   string       `json:"context,omitempty"`
+// ClientInfo represents the client identification info.
+type ClientInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
 }
 
-// TaskMessage is sent for task operation flows.
-type TaskMessage struct {
-	Type         string `json:"type"`
-	TaskID       string `json:"task_id,omitempty"`
-	SessionID    string `json:"session_id,omitempty"`
-	Title        string `json:"title,omitempty"`
-	Description  string `json:"description,omitempty"`
-	Instructions string `json:"instructions,omitempty"`
-	Status       string `json:"status,omitempty"`
-	Result       string `json:"result,omitempty"`
+// InitializeRequest is sent to initialize an ACP session.
+type InitializeRequest struct {
+	ProtocolVersion int         `json:"protocolVersion"`
+	ClientInfo      *ClientInfo `json:"clientInfo,omitempty"`
 }
 
-// ACPResponse is a generic response wrapper returned for any ACP request.
-type ACPResponse struct {
-	Success   bool   `json:"success"`
-	Message   string `json:"message,omitempty"`
-	SessionID string `json:"session_id,omitempty"`
-	TaskID    string `json:"task_id,omitempty"`
-	Error     string `json:"error,omitempty"`
+// InitializeResponse is the response to an initialize request.
+type InitializeResponse struct {
+	ProtocolVersion   int            `json:"protocolVersion"`
+	AgentCapabilities map[string]any `json:"agentCapabilities"`
+	AgentInfo         *ClientInfo    `json:"agentInfo,omitempty"`
+}
+
+// MCPServer represents an MCP server configuration.
+type MCPServer struct {
+	Name    string   `json:"name"`
+	Command string   `json:"command"`
+	Args    []string `json:"args"`
+	Env     []EnvVar `json:"env,omitempty"`
+}
+
+// EnvVar represents an environment variable.
+type EnvVar struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// NewSessionRequest is sent to create a new ACP session.
+type NewSessionRequest struct {
+	Cwd                   string      `json:"cwd"`
+	MCPServers            []MCPServer `json:"mcpServers"`
+	AdditionalDirectories []string    `json:"additionalDirectories,omitempty"`
+}
+
+// NewSessionResponse is the response to a session/new request.
+type NewSessionResponse struct {
+	SessionID string `json:"sessionId"`
+}
+
+// ContentBlock represents a content block in a prompt.
+type ContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// PromptRequest is sent to send a prompt to an existing session.
+type PromptRequest struct {
+	SessionID string         `json:"sessionId"`
+	Prompt    []ContentBlock `json:"prompt"`
+}
+
+// PromptResponse is the response to a session/prompt request.
+type PromptResponse struct {
+	StopReason string `json:"stopReason"`
 }
 
 // JSONRPCRequest represents a JSON-RPC 2.0 request.

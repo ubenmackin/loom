@@ -112,15 +112,15 @@ describe('SubNav', () => {
     expect(screen.getByText('Activity')).toBeInTheDocument()
   })
 
-  it('shows breadcrumb for /gateway', () => {
+  it('shows breadcrumb for /operations', () => {
     setAuthState(normalUser, true)
 
     render(
-      <MemoryRouter initialEntries={['/gateway']}>
+      <MemoryRouter initialEntries={['/operations']}>
         <SubNav />
       </MemoryRouter>,
     )
-    expect(screen.getByText('Gateway')).toBeInTheDocument()
+    expect(screen.getByText('Operations')).toBeInTheDocument()
   })
 
   it('shows breadcrumb for /profiles', () => {

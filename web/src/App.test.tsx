@@ -45,8 +45,8 @@ vi.mock('./pages/AgentsPage', () => ({
   default: () => <div data-testid="agents-page">Agents</div>,
 }))
 
-vi.mock('./pages/DispatcherPage', () => ({
-  default: () => <div data-testid="dispatcher-page">Dispatcher</div>,
+vi.mock('./pages/OperationsPage', () => ({
+  default: () => <div data-testid="operations-page">Operations</div>,
 }))
 
 vi.mock('./pages/UsersPage', () => ({
@@ -120,16 +120,16 @@ describe('App', () => {
     expect(screen.getByText('Agents')).toBeInTheDocument()
   })
 
-  it('/dispatcher renders DispatcherPage', () => {
+  it('/operations renders OperationsPage', () => {
     render(
-      <MemoryRouter initialEntries={['/dispatcher']}>
+      <MemoryRouter initialEntries={['/operations']}>
         <App />
       </MemoryRouter>,
     )
     expect(screen.getByTestId('protected-route')).toBeInTheDocument()
     expect(screen.getByTestId('layout')).toBeInTheDocument()
-    expect(screen.getByTestId('dispatcher-page')).toBeInTheDocument()
-    expect(screen.getByText('Dispatcher')).toBeInTheDocument()
+    expect(screen.getByTestId('operations-page')).toBeInTheDocument()
+    expect(screen.getByText('Operations')).toBeInTheDocument()
   })
 
   it('/users renders UsersPage (inside admin-protected route)', () => {
