@@ -1,0 +1,13 @@
+-- Migration 012: Update story status default concept to 'draft'
+--
+-- The stories table (created in migration 001) has a status column with
+-- DEFAULT 'new'. The new story lifecycle is:
+--   draft → planning → ready → in_progress → completed
+--
+-- SQLite does not support ALTER COLUMN ... SET DEFAULT, so the default cannot
+-- be changed in-place without recreating the table. Instead, the API handlers
+-- explicitly set the status to 'draft' when creating new stories.
+--
+-- Update any existing stories that have the old 'new' status to 'draft' so
+-- they reflect the new lifecycle terminology.
+UPDATE stories SET status = 'draft' WHERE status = 'new';

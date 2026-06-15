@@ -2,11 +2,13 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ubenmackin/loom/internal/dispatcher"
 	"github.com/ubenmackin/loom/internal/models"
 	"github.com/ubenmackin/loom/internal/store"
 )
@@ -54,7 +56,7 @@ func (h *handlers) registerStoryRoutes(r chi.Router) {
 	r.Route("/{id}", func(r chi.Router) {
 		r.Get("/", h.getStory)
 		r.Put("/", h.updateStory)
-		r.Patch("/status", h.updateStoryStatus)
+		r.Patch("/status", h.setStoryStatus)
 		r.Delete("/", h.deleteStory)
 		r.Get("/activity", h.getStoryActivity)
 		r.Post("/generate-tasks", h.generateTasks)
@@ -288,76 +290,6 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, story)
 }
 
-// updateStoryStatus handles PATCH /api/stories/{id}/status
-func (h *handlers) updateStoryStatus(w http.ResponseWriter, r *http.Request) {
-	id, ok := h.resolveAndRespond(w, r, "id", string(models.WorkItemTypeStory), "story")
-	if !ok {
-		return
-	}
-
-	var req updateStatusRequest
-	if err := decodeJSON(r, w, &req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return
-	}
-
-	if req.Status == "" {
-		respondError(w, http.StatusBadRequest, "status is required")
-		return
-	}
-
-	if !validStatus(req.Status) {
-		respondError(w, http.StatusBadRequest, "invalid status value")
-		return
-	}
-
-	// Fetch current story to capture the old status before the update.
-	oldStory, err := h.stories.GetByID(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "story not found")
-			return
-		}
-		respondError(w, http.StatusInternalServerError, "failed to get story: "+err.Error())
-		return
-	}
-	oldStatus := string(oldStory.Status)
-	newStatus := req.Status
-
-	if err := h.stories.UpdateStatus(r.Context(), id, models.Status(newStatus)); err != nil {
-		if errors.Is(err, store.ErrInvalidTransition) {
-			respondError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if errors.Is(err, store.ErrNotFound) {
-			respondError(w, http.StatusNotFound, "story not found")
-			return
-		}
-		respondError(w, http.StatusInternalServerError, "failed to update story status: "+err.Error())
-		return
-	}
-
-	// Return updated story.
-	story, err := h.stories.GetByID(r.Context(), id)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to get updated story: "+err.Error())
-		return
-	}
-	currentUser := GetUser(r)
-	details := oldStatus + " → " + newStatus
-	if currentUser != nil {
-		details = "Status changed by user " + currentUser.Username + ": " + details
-	}
-	h.logActivity(r.Context(), &models.ActivityLogEntry{
-		WorkItemID:   id,
-		WorkItemType: models.WorkItemTypeStory,
-		Action:       "status_changed",
-		Details:      details,
-	})
-
-	respondJSON(w, http.StatusOK, story)
-}
-
 // deleteStory handles DELETE /api/stories/{id}
 func (h *handlers) deleteStory(w http.ResponseWriter, r *http.Request) {
 	id, ok := h.resolveAndRespond(w, r, "id", string(models.WorkItemTypeStory), "story")
@@ -384,4 +316,199 @@ func (h *handlers) deleteStory(w http.ResponseWriter, r *http.Request) {
 // getStoryActivity handles GET /api/stories/{id}/activity
 func (h *handlers) getStoryActivity(w http.ResponseWriter, r *http.Request) {
 	h.getWorkItemActivity(w, r, models.WorkItemTypeStory, "story")
+}
+
+// planStory handles POST /api/stories/{id}/plan
+func (h *handlers) planStory(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.resolveAndRespond(w, r, "id", string(models.WorkItemTypeStory), "story")
+	if !ok {
+		return
+	}
+
+	story, err := h.stories.GetByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "story not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to get story: "+err.Error())
+		return
+	}
+
+	if story.Status != models.StatusDraft {
+		respondError(w, http.StatusBadRequest, "only draft stories can be planned; current status: "+string(story.Status))
+		return
+	}
+
+	// Transition story to "planning" first so the database state is
+	// consistent before any side effects occur.
+	if err := h.stories.UpdateStatus(r.Context(), story.ID, models.StatusPlanning); err != nil {
+		if errors.Is(err, store.ErrInvalidTransition) {
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "story not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to update story status: "+err.Error())
+		return
+	}
+
+	// Trigger a planner ACP session via the gateway so the planning agent
+	// can decompose the story into tasks.
+	if h.gateway != nil {
+		h.gateway.SubmitEvent(dispatcher.Event{
+			Type: dispatcher.EventWorkRequested,
+			Payload: map[string]interface{}{
+				"project_id": story.ProjectID,
+				"agent_type": "planner",
+				"story_id":   story.ID,
+			},
+		})
+	}
+
+	story, err = h.stories.GetByID(r.Context(), id)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to get updated story: "+err.Error())
+		return
+	}
+
+	currentUser := GetUser(r)
+	details := "Planning started"
+	if currentUser != nil {
+		details = "Planning started by user " + currentUser.Username
+	}
+	h.logActivity(r.Context(), &models.ActivityLogEntry{
+		WorkItemID:   story.ID,
+		WorkItemType: models.WorkItemTypeStory,
+		Action:       "story_planning_started",
+		Details:      details,
+	})
+
+	respondJSON(w, http.StatusOK, story)
+}
+
+// setStoryStatus handles PATCH /api/stories/{id}/status
+func (h *handlers) setStoryStatus(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.resolveAndRespond(w, r, "id", string(models.WorkItemTypeStory), "story")
+	if !ok {
+		return
+	}
+
+	var req updateStatusRequest
+	if err := decodeJSON(r, w, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	if req.Status == "" {
+		respondError(w, http.StatusBadRequest, "status is required")
+		return
+	}
+
+	if !validStatus(req.Status) {
+		respondError(w, http.StatusBadRequest, "invalid status value")
+		return
+	}
+
+	story, err := h.stories.GetByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "story not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to get story: "+err.Error())
+		return
+	}
+
+	oldStatus := story.Status
+	newStatus := models.Status(req.Status)
+
+	// Validate the transition against the shared model-level rules.
+	if !models.IsValidTransition(oldStatus, newStatus) {
+		respondError(w, http.StatusBadRequest,
+			fmt.Sprintf("invalid story status transition: %q → %q", oldStatus, newStatus))
+		return
+	}
+
+	if err := h.stories.UpdateStatus(r.Context(), story.ID, newStatus); err != nil {
+		if errors.Is(err, store.ErrInvalidTransition) {
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "story not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to update story status: "+err.Error())
+		return
+	}
+
+	// When transitioning to "ready", push all dependency-free tasks to ready
+	// and submit work requests so the dispatcher can assign them.
+	if newStatus == models.StatusReady {
+		tasks, err := h.tasks.GetByStory(r.Context(), story.ID)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to list story tasks: "+err.Error())
+			return
+		}
+
+		depsForTasks, err := h.tasks.GetBlockersForTasks(r.Context(), taskIDs(tasks))
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to get task blockers: "+err.Error())
+			return
+		}
+
+		for _, task := range tasks {
+			if task.Status != models.StatusNew && task.Status != models.StatusReady {
+				continue
+			}
+			if blockers, hasBlockers := depsForTasks[task.ID]; hasBlockers && len(blockers) > 0 {
+				continue
+			}
+			if task.Status != models.StatusReady {
+				if err := h.tasks.UpdateStatus(r.Context(), task.ID, models.StatusReady); err != nil {
+					respondError(w, http.StatusInternalServerError, "failed to update task status: "+err.Error())
+					return
+				}
+			}
+			if h.dispatch != nil {
+				h.dispatch.Submit(r.Context(), dispatcher.Event{
+					Type:    dispatcher.EventWorkRequested,
+					TaskID:  task.ID,
+					Payload: map[string]string{"story_id": story.ID},
+				})
+			}
+		}
+	}
+
+	story, err = h.stories.GetByID(r.Context(), id)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to get updated story: "+err.Error())
+		return
+	}
+
+	currentUser := GetUser(r)
+	details := string(oldStatus) + " → " + string(newStatus)
+	if currentUser != nil {
+		details = "Status changed by user " + currentUser.Username + ": " + details
+	}
+	h.logActivity(r.Context(), &models.ActivityLogEntry{
+		WorkItemID:   story.ID,
+		WorkItemType: models.WorkItemTypeStory,
+		Action:       "status_changed",
+		Details:      details,
+	})
+
+	respondJSON(w, http.StatusOK, story)
+}
+
+// taskIDs extracts the string IDs from a slice of tasks for bulk queries.
+func taskIDs(tasks []*models.Task) []string {
+	ids := make([]string, 0, len(tasks))
+	for _, t := range tasks {
+		ids = append(ids, t.ID)
+	}
+	return ids
 }

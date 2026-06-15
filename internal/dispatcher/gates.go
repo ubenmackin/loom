@@ -135,6 +135,16 @@ func (d *Dispatcher) createGateTask(ctx context.Context, story *models.Story, ta
 		"status":    string(models.StatusReady),
 	})
 
+	// Forward the gate task to the Gateway for ACP session creation.
+	d.submitToGateway(Event{
+		Type:   EventWorkRequested,
+		TaskID: task.ID,
+		Payload: map[string]string{
+			"story_id":   story.ID,
+			"project_id": story.ProjectID,
+		},
+	})
+
 	slog.Info("dispatcher: created gate task",
 		"task_id", task.ID, "story_id", story.ID, "task_type", taskType)
 
@@ -204,4 +214,37 @@ func (d *Dispatcher) resolveDependencies(ctx context.Context, completedTaskID st
 		slog.Info("dispatcher: resolved dependency, task unblocked",
 			"task_id", dep.ID, "resolved_by", completedTaskID)
 	}
+}
+
+// checkStoryCompletion evaluates whether all tasks for a story are
+// done and all gates have passed. If so, transitions the story to "completed".
+func (d *Dispatcher) checkStoryCompletion(ctx context.Context, storyID string) {
+	// Get all tasks for this story
+	tasks, err := d.tasks.GetByStory(ctx, storyID)
+	if err != nil {
+		slog.Error("dispatcher: failed to get tasks for story completion check",
+			"story_id", storyID, "error", err)
+		return
+	}
+
+	// Check if all tasks are done
+	for _, task := range tasks {
+		if task.Status != models.StatusDone && task.Status != models.StatusCancelled {
+			return // Not all tasks are done
+		}
+	}
+
+	// All tasks are done/canceled — transition story to completed
+	if err := d.stories.UpdateStatus(ctx, storyID, models.StatusCompleted); err != nil {
+		slog.Error("dispatcher: failed to mark story completed",
+			"story_id", storyID, "error", err)
+		return
+	}
+
+	slog.Info("dispatcher: story auto-completed",
+		"story_id", storyID)
+
+	d.hub.Broadcast("story_completed", map[string]string{
+		"story_id": storyID,
+	})
 }

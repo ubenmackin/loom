@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ubenmackin/loom/internal/dispatcher"
 	"github.com/ubenmackin/loom/internal/models"
 	"github.com/ubenmackin/loom/internal/store"
 )
@@ -126,6 +129,11 @@ func (h *handlers) createComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If the parent story's status is "planning" or "blocked", re-spawn the
+	// planner ACP session via the gateway so the planner agent can process
+	// any new feedback.
+	h.respawnPlannerIfNeeded(w, r, id, workItemType, comment.Body)
+
 	respondJSON(w, http.StatusCreated, comment)
 }
 
@@ -220,4 +228,35 @@ func (h *handlers) deleteComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// respawnPlannerIfNeeded checks whether the parent story for the newly created
+// comment is in a state that requires planner attention ("planning" or
+// "blocked"). If so, it submits an event to the gateway asking it to create or
+// resume a planner session for the story's project.
+func (h *handlers) respawnPlannerIfNeeded(_ http.ResponseWriter, _ *http.Request, workItemID, workItemType, _ string) {
+	if workItemType != string(models.WorkItemTypeStory) || h.gateway == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	story, err := h.stories.GetByID(ctx, workItemID)
+	if err != nil || story == nil {
+		return
+	}
+
+	if story.Status != models.StatusPlanning && story.Status != models.StatusBlocked {
+		return
+	}
+
+	h.gateway.SubmitEvent(dispatcher.Event{
+		Type: dispatcher.EventWorkRequested,
+		Payload: map[string]interface{}{
+			"project_id": story.ProjectID,
+			"agent_type": "planner",
+			"story_id":   story.ID,
+		},
+	})
 }

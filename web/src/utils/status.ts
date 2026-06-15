@@ -1,11 +1,14 @@
 import { Status, type StatusType } from '../types'
 
 export const STATUS_ORDER: StatusType[] = [
-  Status.New,
+  Status.Draft,
+  Status.Planning,
   Status.Ready,
   Status.InProgress,
-  Status.Blocked,
+  Status.Completed,
   Status.Done,
+  Status.Blocked,
+  Status.New,
   Status.Canceled,
   Status.Archived,
 ]
@@ -13,20 +16,26 @@ export const STATUS_ORDER: StatusType[] = [
 /** Module-level constant for status display labels */
 export const STATUS_LABELS: Record<string, string> = {
   [Status.New]: 'New',
+  [Status.Draft]: 'Draft',
+  [Status.Planning]: 'Planning',
   [Status.Ready]: 'Ready',
   [Status.InProgress]: 'In Progress',
   [Status.Blocked]: 'Blocked',
   [Status.Done]: 'Done',
+  [Status.Completed]: 'Completed',
   [Status.Canceled]: 'Canceled',
   [Status.Archived]: 'Archived',
 }
 
 export const VALID_TRANSITIONS: Record<StatusType, StatusType[]> = {
-  [Status.New]: [Status.Ready, Status.InProgress, Status.Canceled],
+  [Status.New]: [Status.Draft, Status.Ready, Status.InProgress, Status.Canceled],
+  [Status.Draft]: [Status.Planning],
+  [Status.Planning]: [Status.Ready],
   [Status.Ready]: [Status.InProgress, Status.Blocked, Status.Canceled],
   [Status.InProgress]: [Status.Done, Status.Blocked, Status.Canceled],
   [Status.Blocked]: [Status.Ready, Status.InProgress, Status.Canceled],
   [Status.Done]: [Status.Archived, Status.Canceled],
+  [Status.Completed]: [Status.Done],
   [Status.Canceled]: [Status.New],
   [Status.Archived]: [],
 }

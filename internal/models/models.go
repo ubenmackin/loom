@@ -21,10 +21,13 @@ type Status string
 
 const (
 	StatusNew        Status = "new"
+	StatusDraft      Status = "draft"
+	StatusPlanning   Status = "planning"
 	StatusReady      Status = "ready"
 	StatusInProgress Status = "in_progress"
 	StatusBlocked    Status = "blocked"
 	StatusDone       Status = "done"
+	StatusCompleted  Status = "completed"
 	StatusCancelled  Status = "canceled"
 	StatusArchived   Status = "archived"
 )
@@ -33,7 +36,7 @@ func (s Status) String() string { return string(s) }
 
 // AllStatuses returns all known status values in a canonical order.
 func AllStatuses() []Status {
-	return []Status{StatusNew, StatusReady, StatusInProgress, StatusBlocked, StatusDone, StatusCancelled, StatusArchived}
+	return []Status{StatusNew, StatusDraft, StatusPlanning, StatusReady, StatusInProgress, StatusBlocked, StatusDone, StatusCompleted, StatusCancelled, StatusArchived}
 }
 
 // SessionStatus represents the connection state of an agent session.

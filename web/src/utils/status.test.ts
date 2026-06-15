@@ -10,20 +10,23 @@ import {
 } from './status'
 
 const ALL_STATUSES: StatusType[] = [
-  Status.New,
+  Status.Draft,
+  Status.Planning,
   Status.Ready,
   Status.InProgress,
-  Status.Blocked,
+  Status.Completed,
   Status.Done,
+  Status.Blocked,
+  Status.New,
   Status.Canceled,
   Status.Archived,
 ]
 
 describe('status', () => {
   describe('STATUS_ORDER', () => {
-    it('contains exactly 7 status entries', () => {
-      expect(STATUS_ORDER).toHaveLength(7)
-    })
+  it('contains exactly 10 status entries', () => {
+    expect(STATUS_ORDER).toHaveLength(10)
+  })
 
     it('contains all status values in the correct order', () => {
       expect(STATUS_ORDER).toEqual(ALL_STATUSES)
@@ -31,13 +34,13 @@ describe('status', () => {
   })
 
   describe('VALID_TRANSITIONS', () => {
-    it('has an entry for every status', () => {
-      const keys = Object.keys(VALID_TRANSITIONS) as StatusType[]
-      expect(keys).toHaveLength(7)
-      ALL_STATUSES.forEach((status) => {
-        expect(VALID_TRANSITIONS).toHaveProperty(status)
-      })
+  it('has an entry for every status', () => {
+    const keys = Object.keys(VALID_TRANSITIONS) as StatusType[]
+    expect(keys).toHaveLength(10)
+    ALL_STATUSES.forEach((status) => {
+      expect(VALID_TRANSITIONS).toHaveProperty(status)
     })
+  })
 
     it('every transition target is a valid status', () => {
       for (const targets of Object.values(VALID_TRANSITIONS)) {

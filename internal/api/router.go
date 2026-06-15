@@ -214,6 +214,9 @@ func NewRouter(
 		r.Use(h.UserAuthenticator)
 
 		r.Route("/stories", h.registerStoryRoutes)
+		// Story plan endpoint (outside registerStoryRoutes because it is not
+		// a sub-resource of /stories/{id}).
+		r.Post("/stories/{id}/plan", h.planStory)
 		r.Route("/tasks", h.registerTaskRoutes)
 		r.Route("/work-items", h.registerCommentRoutes)
 		r.Route("/templates", h.registerTemplateRoutes)

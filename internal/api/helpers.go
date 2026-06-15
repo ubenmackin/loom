@@ -111,9 +111,10 @@ func decodeJSON(r *http.Request, w http.ResponseWriter, v any) error {
 // validStatus returns true if the status is a known value.
 func validStatus(s string) bool {
 	switch models.Status(s) {
-	case models.StatusNew, models.StatusReady, models.StatusInProgress,
-		models.StatusBlocked, models.StatusDone, models.StatusCancelled,
-		models.StatusArchived:
+	case models.StatusNew, models.StatusDraft, models.StatusPlanning,
+		models.StatusReady, models.StatusInProgress,
+		models.StatusBlocked, models.StatusDone, models.StatusCompleted,
+		models.StatusCancelled, models.StatusArchived:
 		return true
 	}
 	return false
@@ -122,7 +123,7 @@ func validStatus(s string) bool {
 // validTaskType returns true if the task type is a known value.
 func validTaskType(s string) bool {
 	switch models.TaskType(s) {
-	case models.TaskTypeCode, models.TaskTypeBuild, models.TaskTypeReview:
+	case models.TaskTypeCode, models.TaskTypeBuild, models.TaskTypeReview, models.TaskTypePlanning:
 		return true
 	}
 	return false

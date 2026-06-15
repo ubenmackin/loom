@@ -134,6 +134,10 @@ export async function updateStoryStatus(id: string, status: StatusType): Promise
   return patchResourceStatus<Story>(`/stories/${id}/status`, status)
 }
 
+export async function planStory(storyId: string): Promise<Story> {
+  return request<Story>(`/stories/${storyId}/plan`, { method: 'POST' })
+}
+
 export async function deleteStory(id: string): Promise<void> {
   await deleteResource(`/stories/${id}`)
 }

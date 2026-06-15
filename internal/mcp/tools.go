@@ -206,6 +206,11 @@ func (s *Server) registerTools() {
 					"title":       map[string]any{"type": "string", "description": "The task title"},
 					"description": map[string]any{"type": "string", "description": "The task description"},
 					"task_type":   map[string]any{"type": "string", "description": "The task type (code, build, review)", "enum": []string{"code", "build", "review"}},
+					"status": map[string]any{
+						"type":        "string",
+						"description": "Optional initial status for the task ('new' or 'ready'). Default: 'new'",
+						"enum":        []string{"new", "ready"},
+					},
 					"depends_on": map[string]any{
 						"type":        "array",
 						"items":       map[string]any{"type": "string"},
@@ -519,6 +524,26 @@ func (s *Server) handleReportBlocked(ctx context.Context, params map[string]any)
 		SessionID: sessionID,
 	})
 
+	// If this is a planner asking a question about a story, trigger re-spawn.
+	// Check if the story status indicates a planner session is waiting for answers.
+	if task.StoryID != "" {
+		story, err := s.stories.GetByID(ctx, task.StoryID)
+		if err == nil && (story.Status == models.Status("planning") || story.Status == models.StatusBlocked) {
+			// Submit event to gateway to re-spawn the planner.
+			if s.gateway != nil {
+				s.gateway.SubmitEvent(dispatcher.Event{
+					Type:   dispatcher.EventWorkRequested,
+					TaskID: task.ID,
+					Payload: map[string]interface{}{
+						"project_id": story.ProjectID,
+						"story_id":   task.StoryID,
+						"agent_type": "planner",
+					},
+				})
+			}
+		}
+	}
+
 	return textResult(fmt.Sprintf("Task %s is now blocked. Reason: %s", taskID, reason)), nil
 }
 
@@ -706,13 +731,35 @@ func (s *Server) handleCreateTask(ctx context.Context, params map[string]any) (*
 
 	description := getOptionalString(params, "description")
 	taskType := getOptionalString(params, "task_type")
+	taskStatus := getOptionalString(params, "status")
+
+	// Fetch the parent story once — needed for both status validation and gateway events.
+	story, err := s.stories.GetByID(ctx, storyID)
+	if err != nil {
+		return nil, fmt.Errorf("create task: get story %q: %w", storyID, err)
+	}
+
+	// Determine the initial task status.
+	var status models.Status
+	switch taskStatus {
+	case "ready":
+		// Validate that the parent story is ready or in_progress.
+		if story.Status != models.StatusReady && story.Status != models.StatusInProgress {
+			return nil, fmt.Errorf("cannot create a ready task: parent story is not ready or in_progress")
+		}
+		status = models.StatusReady
+	case "", "new":
+		status = models.StatusNew
+	default:
+		return nil, fmt.Errorf("invalid status %q: must be 'new' or 'ready'", taskStatus)
+	}
 
 	task := &models.Task{
 		StoryID:     storyID,
 		Title:       title,
 		Description: description,
 		TaskType:    models.TaskType(taskType),
-		Status:      models.StatusNew,
+		Status:      status,
 	}
 
 	if err := s.tasks.Create(ctx, task); err != nil {
@@ -723,6 +770,40 @@ func (s *Server) handleCreateTask(ctx context.Context, params map[string]any) (*
 	for _, depID := range dependsOn {
 		if err := s.tasks.AddDependency(ctx, task.ID, depID); err != nil {
 			return nil, fmt.Errorf("create task: failed to add dependency on %q: %w", depID, err)
+		}
+	}
+
+	// If task was created as "ready", validate dependencies and submit events.
+	if taskStatus == "ready" {
+		// Verify all dependencies are Done.
+		if len(dependsOn) > 0 {
+			var notDoneDeps []string
+			for _, depID := range dependsOn {
+				depTask, err := s.tasks.GetByID(ctx, depID)
+				if err != nil {
+					return nil, fmt.Errorf("create task: verify dependency %q: %w", depID, err)
+				}
+				if depTask.Status != models.StatusDone {
+					notDoneDeps = append(notDoneDeps, depID)
+				}
+			}
+			if len(notDoneDeps) > 0 {
+				return nil, fmt.Errorf("cannot create a ready task: the following dependencies are not Done yet: %v", notDoneDeps)
+			}
+		}
+
+		// Submit EventWorkRequested to both the dispatcher and the gateway.
+		event := dispatcher.Event{
+			Type:   dispatcher.EventWorkRequested,
+			TaskID: task.ID,
+			Payload: map[string]interface{}{
+				"story_id":   storyID,
+				"project_id": story.ProjectID,
+			},
+		}
+		s.submitEvent(ctx, event)
+		if s.gateway != nil {
+			s.gateway.SubmitEvent(event)
 		}
 	}
 

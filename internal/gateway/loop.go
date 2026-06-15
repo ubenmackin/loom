@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ubenmackin/loom/internal/acp"
@@ -78,7 +79,11 @@ func (g *Gateway) processEvent(ctx context.Context, event dispatcher.Event) {
 
 	switch event.Type {
 	case dispatcher.EventWorkRequested:
-		g.processAssignTask(ctx, event, agentType)
+		if agentType == "planner" {
+			g.processCreateSession(ctx, event, agentType)
+		} else {
+			g.processAssignTask(ctx, event, agentType)
+		}
 	case dispatcher.EventTaskCompleted:
 		if agentType == "planner" || agentType == "executor" || agentType == "reviewer" || agentType == "builder" {
 			g.processCreateSession(ctx, event, agentType)
@@ -161,6 +166,13 @@ func (g *Gateway) processCreateSession(ctx context.Context, event dispatcher.Eve
 		return
 	}
 
+	// For planner sessions, resolve the story ID so we can build session
+	// context (story details, tasks, comments) on the fly.
+	var storyID string
+	if agentType == "planner" {
+		storyID = g.resolveStoryID(ctx, event)
+	}
+
 	// Check if a gateway session already exists for this (project, agentType).
 	if existing, ok := g.tracker.GetSession(projectID, agentType); ok {
 		slog.Info("gateway: session already exists, resuming",
@@ -182,7 +194,7 @@ func (g *Gateway) processCreateSession(ctx context.Context, event dispatcher.Eve
 	slog.Info("gateway: creating new session",
 		"project_id", projectID, "agent_type", agentType)
 
-	if err := g.createACPSession(ctx, projectID, agentType); err != nil {
+	if err := g.createACPSession(ctx, projectID, agentType, storyID); err != nil {
 		slog.Error("gateway: failed to create session",
 			"project_id", projectID,
 			"agent_type", agentType,
@@ -275,14 +287,40 @@ func (g *Gateway) resolveProjectID(ctx context.Context, event dispatcher.Event) 
 	return ""
 }
 
+// resolveStoryID extracts the story ID from the event by inspecting the
+// referenced task, the event payload (for gate-style events), or falling
+// back to the active planner session's assigned task.
+func (g *Gateway) resolveStoryID(ctx context.Context, event dispatcher.Event) string {
+	// If the event has a task ID, look up the task to get its story.
+	if event.TaskID != "" {
+		task, err := g.taskStore.GetByID(ctx, event.TaskID)
+		if err == nil && task != nil && task.StoryID != "" {
+			return task.StoryID
+		}
+	}
+
+	// Try to extract story_id from the payload (e.g., gate_task_created events).
+	if event.Payload != nil {
+		if m, ok := event.Payload.(map[string]interface{}); ok {
+			if sid, ok := m["story_id"].(string); ok && sid != "" {
+				return sid
+			}
+		}
+	}
+
+	return ""
+}
+
 // ---------------------------------------------------------------------------
 // ACP session management
 // ---------------------------------------------------------------------------
 
 // createACPSession creates a new ACP session for the given project and agent
 // type. It starts the ACP subprocess, sends a create_session message,
-// and registers the session in the tracker.
-func (g *Gateway) createACPSession(ctx context.Context, projectID, agentType string) error {
+// and registers the session in the tracker. For planner sessions, storyID
+// is used to build session context (story details, tasks, comments) that
+// is included in the create_session message.
+func (g *Gateway) createACPSession(ctx context.Context, projectID, agentType, storyID string) error {
 	client, err := g.getOrCreateACPClient(ctx, projectID, agentType)
 	if err != nil {
 		return fmt.Errorf("get or create acp client: %w", err)
@@ -293,6 +331,23 @@ func (g *Gateway) createACPSession(ctx context.Context, projectID, agentType str
 		Type:      "create_session",
 		ProjectID: projectID,
 		AgentType: agentType,
+	}
+
+	// For planner sessions, build the session context (story + tasks +
+	// comments) and attach it to the create_session message. If context
+	// building fails, log the error but proceed without context rather
+	// than blocking session creation entirely.
+	if agentType == "planner" && storyID != "" {
+		plannerCtx, err := g.buildPlannerContext(ctx, storyID)
+		if err != nil {
+			slog.Warn("gateway: failed to build planner context, proceeding without it",
+				"project_id", projectID,
+				"story_id", storyID,
+				"agent_type", agentType,
+				"error", err)
+		} else {
+			sessionMsg.Context = plannerCtx
+		}
 	}
 
 	if err := client.Send(sessionMsg); err != nil {
@@ -308,9 +363,75 @@ func (g *Gateway) createACPSession(ctx context.Context, projectID, agentType str
 	slog.Info("gateway: acp session creation requested",
 		"project_id", projectID,
 		"agent_type", agentType,
-		"session_id", session.SessionID)
+		"session_id", session.SessionID,
+		"has_context", sessionMsg.Context != "")
 
 	return nil
+}
+
+// buildPlannerContext fetches a story together with its tasks and comments
+// and returns a formatted context string suitable for a planner ACP
+// session. The context is used by the planner to reason about the
+// current state of the story and any prior Q&A exchanged in comments.
+func (g *Gateway) buildPlannerContext(ctx context.Context, storyID string) (string, error) {
+	// 1. Fetch the story.
+	story, err := g.storyStore.GetByID(ctx, storyID)
+	if err != nil {
+		return "", fmt.Errorf("get story %q: %w", storyID, err)
+	}
+	if story == nil {
+		return "", fmt.Errorf("story %q not found", storyID)
+	}
+
+	// 2. Fetch all tasks for the story.
+	tasks, err := g.taskStore.GetByStory(ctx, storyID)
+	if err != nil {
+		return "", fmt.Errorf("get tasks for story %q: %w", storyID, err)
+	}
+
+	// 3. Fetch all comments for the story in chronological order.
+	comments, err := g.commentStore.GetByWorkItem(ctx, storyID, models.WorkItemTypeStory)
+	if err != nil {
+		return "", fmt.Errorf("get comments for story %q: %w", storyID, err)
+	}
+
+	// 4. Format the context string.
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "Story ID: %s\n", story.ID)
+	fmt.Fprintf(&b, "Story Title: %s\n", story.Title)
+	if story.Description != "" {
+		fmt.Fprintf(&b, "Story Description: %s\n", story.Description)
+	}
+	fmt.Fprintf(&b, "Story Status: %s\n", story.Status)
+
+	b.WriteString("\nCurrent Tasks:\n")
+	if len(tasks) == 0 {
+		b.WriteString("- (no tasks)\n")
+	} else {
+		for _, task := range tasks {
+			if task == nil {
+				continue
+			}
+			fmt.Fprintf(&b, "- %s: %s [%s]\n", task.ID, task.Title, task.Status)
+		}
+	}
+
+	b.WriteString("\nCurrent Comments (chronological):\n")
+	if len(comments) == 0 {
+		b.WriteString("- (no comments)\n")
+	} else {
+		for _, c := range comments {
+			if c == nil {
+				continue
+			}
+			fmt.Fprintf(&b, "- [%s] %s/%s: %s\n",
+				c.CreatedAt.UTC().Format(time.RFC3339),
+				c.AuthorType, c.AuthorID, c.Body)
+		}
+	}
+
+	return b.String(), nil
 }
 
 // resumeACPSession sends a resume_session message for an existing session

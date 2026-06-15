@@ -103,6 +103,10 @@ func run() error {
 		return fmt.Errorf("seed default settings: %w", err)
 	}
 
+	if err := db.SeedDefaultStory(ctx, stores.Story); err != nil {
+		return fmt.Errorf("seed default story: %w", err)
+	}
+
 	if err := db.BackfillNumericIDs(database); err != nil {
 		return fmt.Errorf("backfill numeric IDs: %w", err)
 	}
@@ -147,7 +151,7 @@ func runMCP(cfg serverConfig, database *sql.DB, stores *Stores) error {
 
 	mcpServer := mcp.NewServer(
 		stores.Story, stores.Task, stores.Session, stores.Comment,
-		stores.Template, stores.Activity, d,
+		stores.Template, stores.Activity, d, nil,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -220,6 +224,7 @@ func runHTTP(cfg serverConfig, database *sql.DB, stores *Stores) error {
 		stores.Profile,
 		stores.Setting,
 	)
+	d.SetGateway(gw)
 	gw.Start()
 	defer gw.Stop()
 

@@ -2,10 +2,13 @@
 
 export const Status = {
   New: 'new',
+  Draft: 'draft',
+  Planning: 'planning',
   Ready: 'ready',
   InProgress: 'in_progress',
   Blocked: 'blocked',
   Done: 'done',
+  Completed: 'completed',
   Canceled: 'canceled',
   Archived: 'archived',
 } as const

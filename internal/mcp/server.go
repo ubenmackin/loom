@@ -68,6 +68,7 @@ type Server struct {
 	templates  *store.TemplateStore
 	activities *store.ActivityStore
 	dispatcher *dispatcher.Dispatcher
+	gateway    dispatcher.GatewaySubmitter
 
 	encoder      *json.Encoder
 	decoder      *json.Decoder
@@ -78,7 +79,7 @@ type Server struct {
 }
 
 // NewServer creates a new MCP server with the given stores and dispatcher,
-// and registers all 14 MCP tools.
+// and registers all 15 MCP tools.
 func NewServer(
 	stories *store.StoryStore,
 	tasks *store.TaskStore,
@@ -87,6 +88,7 @@ func NewServer(
 	templates *store.TemplateStore,
 	activities *store.ActivityStore,
 	disp *dispatcher.Dispatcher,
+	gateway dispatcher.GatewaySubmitter,
 ) *Server {
 	s := &Server{
 		stories:    stories,
@@ -96,6 +98,7 @@ func NewServer(
 		templates:  templates,
 		activities: activities,
 		dispatcher: disp,
+		gateway:    gateway,
 		tools:      make(map[string]ToolHandler),
 	}
 	s.registerTools()

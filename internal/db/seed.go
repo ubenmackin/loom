@@ -190,6 +190,46 @@ func SeedDefaults(ctx context.Context, templateStore TemplateSeeder) error {
 	return nil
 }
 
+// StorySeeder is the minimal interface needed by SeedDefaultStory.
+// It is satisfied by *store.StoryStore.
+type StorySeeder interface {
+	Create(ctx context.Context, story *models.Story) error
+	ListAll(ctx context.Context) ([]*models.Story, error)
+}
+
+// SeedDefaultStory creates a single default story with Status "draft" if no
+// stories exist. This provides a starting point for the new story lifecycle.
+func SeedDefaultStory(ctx context.Context, storyStore StorySeeder) error {
+	stories, err := storyStore.ListAll(ctx)
+	if err != nil {
+		return fmt.Errorf("list existing stories: %w", err)
+	}
+
+	if len(stories) > 0 {
+		log.Printf("Stories already exist (%d), skipping default story seed", len(stories))
+		return nil
+	}
+
+	log.Println("No stories found, seeding default story...")
+
+	now := time.Now().UTC()
+	s := &models.Story{
+		ID:          uuid.New().String(),
+		Title:       "Welcome to Loom",
+		Description: "This is the first story. Use it to explore the Kanban board and understand the workflow.",
+		Status:      models.Status("draft"),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	if err := storyStore.Create(ctx, s); err != nil {
+		return fmt.Errorf("seed default story: %w", err)
+	}
+
+	log.Printf("Seeded default story: %s (%s)", s.Title, s.ID)
+	return nil
+}
+
 // SettingSeeder is the minimal interface needed by SeedDefaultSettings.
 type SettingSeeder interface {
 	Get(ctx context.Context, key string) (string, error)

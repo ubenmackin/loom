@@ -57,6 +57,7 @@ type StoryStore interface {
 // CommentStore defines the gateway's comment storage requirements.
 type CommentStore interface {
 	Create(ctx context.Context, c *models.Comment) error
+	GetByWorkItem(ctx context.Context, workItemID string, workItemType models.WorkItemType) ([]*models.Comment, error)
 }
 
 // ActivityStore defines the gateway's activity log storage requirements.

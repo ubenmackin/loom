@@ -24,6 +24,7 @@ type SessionMessage struct {
 	TaskID    string       `json:"task_id,omitempty"`
 	Result    string       `json:"result,omitempty"`
 	Status    SessionState `json:"status,omitempty"`
+	Context   string       `json:"context,omitempty"`
 }
 
 // TaskMessage is sent for task operation flows.

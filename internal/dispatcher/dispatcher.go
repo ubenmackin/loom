@@ -21,6 +21,12 @@ type EventBroadcaster interface {
 	Broadcast(eventType string, payload any)
 }
 
+// GatewaySubmitter allows the Dispatcher to submit events to the Gateway
+// for ACP session creation. The Gateway implements this interface.
+type GatewaySubmitter interface {
+	SubmitEvent(event Event)
+}
+
 // Event represents a discrete event processed by the dispatcher loop.
 // See events.go for the canonical list of event type constants.
 type Event struct {
@@ -42,6 +48,9 @@ type Dispatcher struct {
 	activities *store.ActivityStore
 
 	hub EventBroadcaster
+
+	gateway GatewaySubmitter // optional bridge to Gateway
+	mu      sync.RWMutex     // protects gateway access
 
 	eventCh            chan Event
 	stalenessThreshold time.Duration
@@ -164,6 +173,22 @@ func (d *Dispatcher) Submit(ctx context.Context, event Event) {
 	}
 }
 
+// SetGateway sets the Gateway bridge. Thread-safe.
+func (d *Dispatcher) SetGateway(g GatewaySubmitter) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.gateway = g
+}
+
+// submitToGateway sends an event to the Gateway if the bridge is configured.
+func (d *Dispatcher) submitToGateway(event Event) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.gateway != nil {
+		d.gateway.SubmitEvent(event)
+	}
+}
+
 // AssignWork finds and assigns the best available task for a specific session.
 // This is the synchronous API for the work request flow. It returns the
 // assigned task (or nil if no work is available) and any error encountered.
@@ -252,6 +277,7 @@ func (d *Dispatcher) handleTaskStatusChanged(ctx context.Context, event Event) {
 	if task.Status == models.StatusDone {
 		d.resolveDependencies(ctx, event.TaskID)
 		d.checkGateConditions(ctx, task.StoryID)
+		d.checkStoryCompletion(ctx, task.StoryID)
 	}
 
 	// Also attempt assignment in case a freed session can pick up new work.

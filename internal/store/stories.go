@@ -171,6 +171,13 @@ func (s *StoryStore) List(ctx context.Context, filter StoryFilter) ([]*models.St
 	return stories, nil
 }
 
+// ListAll returns every story without any filter applied. It satisfies the
+// db.StorySeeder interface used during seed operations, avoiding an import
+// cycle between the db and store packages.
+func (s *StoryStore) ListAll(ctx context.Context) ([]*models.Story, error) {
+	return s.List(ctx, StoryFilter{})
+}
+
 // Update saves all mutable fields of a story.
 func (s *StoryStore) Update(ctx context.Context, story *models.Story) error {
 	story.UpdatedAt = time.Now().UTC()

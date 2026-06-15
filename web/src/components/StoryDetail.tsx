@@ -12,6 +12,8 @@ import ConfirmModal from './ConfirmModal'
 import {
   fetchStory,
   updateStory,
+  updateStoryStatus,
+  planStory,
   deleteStory,
   getUsers,
   fetchSessions,
@@ -70,6 +72,38 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
         queryClient.setQueryData(['story', storyId], {
           ...previous,
           story: { ...previous.story, ...data },
+        })
+      }
+      return { previous }
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['story', storyId], context.previous)
+      }
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['story', storyId] })
+      queryClient.invalidateQueries({ queryKey: ['board'] })
+    },
+  })
+
+  const planStoryMutation = useMutation({
+    mutationFn: () => planStory(storyId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['story', storyId] })
+      queryClient.invalidateQueries({ queryKey: ['board'] })
+    },
+  })
+
+  const statusMutation = useMutation({
+    mutationFn: (status: StatusType) => updateStoryStatus(storyId!, status),
+    onMutate: async (newStatus) => {
+      await queryClient.cancelQueries({ queryKey: ['story', storyId] })
+      const previous = queryClient.getQueryData<StoryWithTasks>(['story', storyId])
+      if (previous) {
+        queryClient.setQueryData(['story', storyId], {
+          ...previous,
+          story: { ...previous.story, status: newStatus },
         })
       }
       return { previous }
@@ -227,6 +261,7 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
               {story.id}
             </span>
             <SharpTag label="STORY" variant="primary" />
+            <SharpTag label={STATUS_LABELS[story.status] ?? story.status} variant={statusVariant(story.status)} />
           </div>
           <button
             onClick={onClose}
@@ -328,6 +363,37 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
             sessions={sessions}
             onChange={handleAssigneeChange}
           />
+        </div>
+
+        {/* Actions — status-specific buttons */}
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          {story.status === 'draft' && (
+            <button
+              onClick={() => planStoryMutation.mutate()}
+              disabled={planStoryMutation.isPending}
+              className="px-3 py-1 text-xs font-mono uppercase tracking-wider bg-purple-active text-white rounded-none hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {planStoryMutation.isPending ? 'Planning...' : 'Plan Story'}
+            </button>
+          )}
+          {story.status === 'planning' && (
+            <button
+              onClick={() => statusMutation.mutate('ready')}
+              disabled={statusMutation.isPending}
+              className="px-3 py-1 text-xs font-mono uppercase tracking-wider border border-amber-600 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {statusMutation.isPending ? 'Marking...' : 'Mark Ready'}
+            </button>
+          )}
+          {story.status === 'completed' && (
+            <button
+              onClick={() => statusMutation.mutate('done')}
+              disabled={statusMutation.isPending}
+              className="px-3 py-1 text-xs font-mono uppercase tracking-wider border border-green-600 text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {statusMutation.isPending ? 'Completing...' : 'Mark Done'}
+            </button>
+          )}
         </div>
 
         {/* Child tasks */}

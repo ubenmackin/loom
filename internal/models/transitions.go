@@ -3,11 +3,14 @@ package models
 // ValidTransitions defines the allowed status transitions.
 var ValidTransitions = map[Status][]Status{
 	StatusNew:        {StatusReady, StatusInProgress, StatusCancelled},
+	StatusDraft:      {StatusPlanning, StatusCancelled},
+	StatusPlanning:   {StatusReady, StatusCancelled},
 	StatusReady:      {StatusInProgress, StatusBlocked, StatusCancelled},
-	StatusInProgress: {StatusDone, StatusBlocked, StatusCancelled},
+	StatusInProgress: {StatusDone, StatusCompleted, StatusBlocked, StatusCancelled},
 	StatusBlocked:    {StatusReady, StatusInProgress, StatusCancelled},
 	StatusDone:       {StatusArchived, StatusCancelled},
-	StatusCancelled:  {StatusNew},
+	StatusCompleted:  {StatusDone, StatusCancelled},
+	StatusCancelled:  {StatusNew, StatusDraft},
 	StatusArchived:   {},
 }
 
