@@ -134,7 +134,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.8'
+          go-version: '1.26.5'
           cache: true
           cache-dependency-path: go.sum
       
@@ -149,7 +149,7 @@ jobs:
 
       - name: Build Go binary
         run: |
-          CGO_ENABLED=1 go build -ldflags="-X loom/internal/common/version.Version=$(git describe --tags --always 2>/dev/null || echo 'dev')" -o loom ./cmd/loom-server
+          CGO_ENABLED=1 go build -ldflags="-X main.Version=$(git describe --tags --always 2>/dev/null || echo 'dev') -X main.Commit=$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown') -X main.BuiltAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o loom ./cmd/server
 
   backend-lint:
     needs: [changes, frontend]
@@ -168,7 +168,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.8'
+          go-version: '1.26.5'
           cache: false # Lint action has its own cache logic
 
       - name: Run golangci-lint
