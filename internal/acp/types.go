@@ -28,7 +28,7 @@ type MCPServer struct {
 	Name    string   `json:"name"`
 	Command string   `json:"command"`
 	Args    []string `json:"args"`
-	Env     []EnvVar `json:"env,omitempty"`
+	Env     []EnvVar `json:"env"`
 }
 
 // EnvVar represents an environment variable.

@@ -345,6 +345,7 @@ func (g *Gateway) createACPSession(ctx context.Context, projectID, agentType, st
 			Name:    "loom",
 			Command: p.RepoPath + "/dist/loom-server",
 			Args:    []string{"--mcp"},
+			Env:     []acp.EnvVar{},
 		})
 	}
 
@@ -544,6 +545,7 @@ func (g *Gateway) assignTaskToSession(ctx context.Context, projectID, agentType,
 				Name:    "loom",
 				Command: p.RepoPath + "/dist/loom-server",
 				Args:    []string{"--mcp"},
+				Env:     []acp.EnvVar{},
 			})
 		}
 
