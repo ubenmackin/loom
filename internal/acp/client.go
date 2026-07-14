@@ -64,14 +64,19 @@ func (c *Client) Connect(ctx context.Context) error {
 		return err
 	}
 
-	parts := strings.Fields(c.Command)
-	if len(parts) == 0 {
+	// Split command into executable name and any inline arguments.
+	// Build final argument list from any inline args plus explicit Args slice.
+	cmdParts := strings.Fields(c.Command)
+	if len(cmdParts) == 0 {
 		c.mu.Unlock()
 		return fmt.Errorf("acp: empty command")
 	}
-	parts = append(parts, c.Args...)
+	cmdName := cmdParts[0]
+	var finalArgs []string
+	finalArgs = append(finalArgs, cmdParts[1:]...)
+	finalArgs = append(finalArgs, c.Args...)
 
-	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd := exec.Command(cmdName, finalArgs...)
 	cmd.ExtraFiles = c.ExtraFiles
 
 	stdin, err := cmd.StdinPipe()

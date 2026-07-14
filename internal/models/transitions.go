@@ -5,13 +5,14 @@ var ValidTransitions = map[Status][]Status{
 	StatusNew:        {StatusReady, StatusInProgress, StatusCancelled},
 	StatusDraft:      {StatusPlanning, StatusCancelled},
 	StatusPlanning:   {StatusReady, StatusCancelled},
-	StatusReady:      {StatusInProgress, StatusBlocked, StatusCancelled},
-	StatusInProgress: {StatusDone, StatusCompleted, StatusBlocked, StatusCancelled},
-	StatusBlocked:    {StatusReady, StatusInProgress, StatusCancelled},
-	StatusDone:       {StatusArchived, StatusCancelled},
+	StatusReady:      {StatusInProgress, StatusBlocked, StatusCancelled, StatusFailed},
+	StatusInProgress: {StatusDone, StatusCompleted, StatusBlocked, StatusCancelled, StatusFailed},
+	StatusBlocked:    {StatusReady, StatusInProgress, StatusCancelled, StatusFailed},
+	StatusDone:       {StatusArchived, StatusCancelled, StatusFailed},
 	StatusCompleted:  {StatusDone, StatusCancelled},
 	StatusCancelled:  {StatusNew, StatusDraft},
 	StatusArchived:   {},
+	StatusFailed:     {StatusReady, StatusCancelled},
 }
 
 // IsValidTransition checks whether moving from current to next is allowed.

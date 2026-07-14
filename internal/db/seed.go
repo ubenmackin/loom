@@ -27,6 +27,8 @@ var defaultTemplateList = []defaultTemplate{
 	{taskType: models.TaskTypeCode, filename: "default-templates/code.md"},
 	{taskType: models.TaskTypeBuild, filename: "default-templates/build.md"},
 	{taskType: models.TaskTypeReview, filename: "default-templates/review.md"},
+	{taskType: models.TaskTypeSecurity, filename: "default-templates/security.md"},
+	{taskType: models.TaskTypeRelease, filename: "default-templates/release.md"},
 }
 
 // TemplateSeeder is the minimal interface needed by SeedDefaults.
@@ -133,6 +135,33 @@ func SeedDefaultAgentProfiles(ctx context.Context, profileStore AgentProfileSeed
 			Description:    "Code review and quality verification",
 			MaxConcurrency: 3,
 			TaskTypes:      []string{"review"},
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+		{
+			ID:             uuid.New().String(),
+			Name:           "security-auditor",
+			Description:    "Security audit verification and vulnerability scanning",
+			MaxConcurrency: 2,
+			TaskTypes:      []string{"security"},
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+		{
+			ID:             uuid.New().String(),
+			Name:           "release-manager",
+			Description:    "Release management — commit, push, and create PRs",
+			MaxConcurrency: 1,
+			TaskTypes:      []string{"release"},
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+		{
+			ID:             uuid.New().String(),
+			Name:           "workspace-setup",
+			Description:    "Workspace isolation via git worktree for executor sessions",
+			MaxConcurrency: 1,
+			TaskTypes:      []string{}, // No task type — ephemeral, spawned by Gateway
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		},

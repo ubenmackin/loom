@@ -11,6 +11,7 @@ const baseStory: Story = {
   status: 'new',
   requires_build: false,
   requires_review: false,
+  requires_security: true,
   assigned_to: undefined,
   sort_order: 1,
   created_at: '2025-01-01T00:00:00Z',

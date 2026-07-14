@@ -330,6 +330,30 @@ func getOptionalStringSlice(params map[string]any, key string) []string {
 	return result
 }
 
+// getOptionalJSONStringSlice extracts a JSON string array parameter from params.
+// It handles both []any (from JSON unmarshalling) and []string inputs.
+func getOptionalJSONStringSlice(params map[string]any, key string) []string {
+	raw, ok := params[key]
+	if !ok {
+		return nil
+	}
+
+	switch v := raw.(type) {
+	case []any:
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	case []string:
+		return v
+	default:
+		return nil
+	}
+}
+
 // getOptionalString extracts an optional string parameter from the params map.
 func getOptionalString(params map[string]any, key string) string {
 	v, ok := params[key]

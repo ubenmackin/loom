@@ -19,10 +19,13 @@ import (
 
 // validTaskTypes is the set of allowed task type values.
 var validTaskTypes = map[models.TaskType]bool{
-	models.TaskTypeCode:     true,
-	models.TaskTypeBuild:    true,
-	models.TaskTypeReview:   true,
-	models.TaskTypePlanning: true,
+	models.TaskTypeCode:           true,
+	models.TaskTypeBuild:          true,
+	models.TaskTypeReview:         true,
+	models.TaskTypePlanning:       true,
+	models.TaskTypeSecurity:       true,
+	models.TaskTypeRelease:        true,
+	models.TaskTypeWorkspaceSetup: true,
 }
 
 // listProfiles handles GET /api/profiles

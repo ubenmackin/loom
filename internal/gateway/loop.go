@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +27,76 @@ const stalenessThreshold = 5 * time.Minute
 // stalenessCheckInterval controls how often the gateway checks for stale
 // sessions.
 const stalenessCheckInterval = 30 * time.Second
+
+// ---------------------------------------------------------------------------
+// File-collision-aware parallel scheduling
+// ---------------------------------------------------------------------------
+
+// acquireFiles attempts to lock a set of target files for a task.
+// Returns true if all files were acquired, false if any file is already in use.
+// On success, the files are marked as in-use by the given taskID.
+func (g *Gateway) acquireFiles(taskID string, targetFiles []string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	// Check for collisions
+	for _, f := range targetFiles {
+		if existingID, ok := g.filesInUse[f]; ok && existingID != taskID {
+			slog.Debug("gateway: file collision detected",
+				"file", f, "task_id", taskID, "in_use_by", existingID)
+			return false
+		}
+	}
+
+	// All files available — acquire them
+	for _, f := range targetFiles {
+		g.filesInUse[f] = taskID
+	}
+	return true
+}
+
+// releaseFiles releases all target files for a completed/blocked/canceled task.
+func (g *Gateway) releaseFiles(taskID string, targetFiles []string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	for _, f := range targetFiles {
+		if existingID, ok := g.filesInUse[f]; ok && existingID == taskID {
+			delete(g.filesInUse, f)
+		}
+	}
+}
+
+// parseTargetFiles unmarshals a task's TargetFiles JSON string array.
+func parseTargetFiles(task *models.Task) []string {
+	if task == nil || task.TargetFiles == "" {
+		return nil
+	}
+	var files []string
+	if err := json.Unmarshal([]byte(task.TargetFiles), &files); err != nil {
+		slog.Warn("gateway: failed to parse target_files",
+			"task_id", task.ID, "target_files", task.TargetFiles, "error", err)
+		return nil
+	}
+	return files
+}
+
+// releaseFilesForTask looks up a task by ID and releases any files it holds.
+func (g *Gateway) releaseFilesForTask(ctx context.Context, taskID string) {
+	if taskID == "" {
+		return
+	}
+	task, err := g.taskStore.GetByID(ctx, taskID)
+	if err != nil || task == nil {
+		return
+	}
+	targetFiles := parseTargetFiles(task)
+	if len(targetFiles) > 0 {
+		g.releaseFiles(taskID, targetFiles)
+		slog.Debug("gateway: released files for task",
+			"task_id", taskID, "files", targetFiles)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Gateway event loop
@@ -85,11 +156,24 @@ func (g *Gateway) processEvent(ctx context.Context, event dispatcher.Event) {
 			g.processAssignTask(ctx, event, agentType)
 		}
 	case dispatcher.EventTaskCompleted:
+		// Release files acquired by this task.
+		g.releaseFilesForTask(ctx, event.TaskID)
 		if agentType == "planner" || agentType == "executor" || agentType == "reviewer" || agentType == "builder" {
 			g.processCreateSession(ctx, event, agentType)
 		}
+	case dispatcher.EventTaskBlocked:
+		// Release files acquired by this task.
+		g.releaseFilesForTask(ctx, event.TaskID)
 	case dispatcher.EventGateTaskCreated:
 		g.processCreateSession(ctx, event, agentType)
+	case dispatcher.EventStoryCompleted:
+		// A story has completed — clean up its worktree to avoid leaving
+		// orphaned git worktrees around. (Failed stories leave their
+		// worktree in place for human inspection.)
+		storyID := g.resolveStoryID(ctx, event)
+		if storyID != "" {
+			g.cleanupWorktree(ctx, storyID)
+		}
 	default:
 		// noop
 	}
@@ -192,8 +276,21 @@ func (g *Gateway) processCreateSession(ctx context.Context, event dispatcher.Eve
 		"project_id", projectID, "agent_type", agentType)
 
 	projectName := projectID
+	var repoPath string
 	if p, err := g.projectStore.GetByID(ctx, projectID); err == nil && p != nil {
 		projectName = p.Name
+		repoPath = p.RepoPath
+	}
+
+	// For executor and workspace-setup sessions, ensure a git worktree exists
+	// for story isolation before creating the session.
+	if (agentType == "executor" || agentType == "workspace-setup") && storyID != "" && repoPath != "" {
+		if err := g.ensureWorktree(ctx, storyID, repoPath); err != nil {
+			slog.Error("gateway: failed to ensure worktree, proceeding without it",
+				"story_id", storyID,
+				"project_id", projectID,
+				"error", err)
+		}
 	}
 
 	if err := g.createACPSession(ctx, projectID, agentType, storyID, taskID); err != nil {
@@ -238,23 +335,46 @@ func (g *Gateway) processAssignTask(ctx context.Context, event dispatcher.Event,
 
 	// Check if capacity exists for this agent type.
 	if g.queue.HasCapacity(projectID, agentType) {
+		// Check file collision for code tasks before assigning.
+		task, err := g.taskStore.GetByID(ctx, taskID)
+		if err == nil && task != nil && task.TaskType == models.TaskTypeCode {
+			targetFiles := parseTargetFiles(task)
+			if len(targetFiles) > 0 && !g.acquireFiles(taskID, targetFiles) {
+				slog.Info("gateway: file collision detected, queuing task",
+					"task_id", taskID,
+					"project_id", projectID,
+					"agent_type", agentType)
+
+				g.queue.Enqueue(projectID, agentType, taskID, event.Type)
+				g.logActivity(ctx, taskID, string(models.WorkItemTypeTask),
+					"gateway_task_queued",
+					fmt.Sprintf("agent_type=%s reason=file_collision", agentType))
+				return
+			}
+		}
+
 		slog.Info("gateway: assigning task to session",
 			"task_id", taskID,
 			"project_id", projectID,
 			"agent_type", agentType)
 
-		if err := g.assignTaskToSession(ctx, projectID, agentType, taskID); err != nil {
+		if assignErr := g.assignTaskToSession(ctx, projectID, agentType, taskID); assignErr != nil {
+			// If we acquired files for this task, release them on failure.
+			if err == nil && task != nil && task.TaskType == models.TaskTypeCode {
+				g.releaseFiles(taskID, parseTargetFiles(task))
+			}
+
 			slog.Error("gateway: failed to assign task, queuing",
 				"task_id", taskID,
 				"project_id", projectID,
 				"agent_type", agentType,
-				"error", err)
+				"error", assignErr)
 
 			// Queue the job for later assignment.
 			g.queue.Enqueue(projectID, agentType, taskID, event.Type)
 			g.logActivity(ctx, taskID, string(models.WorkItemTypeTask),
 				"gateway_task_queued",
-				fmt.Sprintf("agent_type=%s reason=%v", agentType, err))
+				fmt.Sprintf("agent_type=%s reason=%v", agentType, assignErr))
 		}
 	} else {
 		// No capacity — queue the job.
@@ -309,10 +429,17 @@ func (g *Gateway) resolveStoryID(ctx context.Context, event dispatcher.Event) st
 		}
 	}
 
-	// Try to extract story_id from the payload (e.g., gate_task_created events).
+	// Try to extract story_id from the payload (e.g., gate_task_created or
+	// story_completed events). Accept both map[string]interface{} (from
+	// MCP/API submissions) and map[string]string (from the dispatcher).
 	if event.Payload != nil {
-		if m, ok := event.Payload.(map[string]interface{}); ok {
+		switch m := event.Payload.(type) {
+		case map[string]interface{}:
 			if sid, ok := m["story_id"].(string); ok && sid != "" {
+				return sid
+			}
+		case map[string]string:
+			if sid := m["story_id"]; sid != "" {
 				return sid
 			}
 		}
@@ -349,9 +476,27 @@ func (g *Gateway) createACPSession(ctx context.Context, projectID, agentType, st
 		})
 	}
 
+	// Resolve the working directory — use the worktree path for executor and
+	// workspace-setup agents if a worktree exists for the story. This ensures
+	// that code-producing agents actually operate inside the story-isolated
+	// git worktree rather than the main repository.
+	cwd := projectPath
+	if (agentType == "executor" || agentType == "workspace-setup") && storyID != "" {
+		worktreePath := g.resolveWorktreePath(ctx, storyID)
+		if worktreePath != "" {
+			if info, err := os.Stat(worktreePath); err == nil && info.IsDir() {
+				cwd = worktreePath
+				slog.Info("gateway: using worktree as session cwd",
+					"story_id", storyID,
+					"agent_type", agentType,
+					"worktree_path", worktreePath)
+			}
+		}
+	}
+
 	// Create the ACP session.
 	sessionID, err := client.NewSession(ctx, acp.NewSessionRequest{
-		Cwd:        projectPath,
+		Cwd:        cwd,
 		MCPServers: mcpServers,
 	})
 	if err != nil {
@@ -524,6 +669,130 @@ func (g *Gateway) resumeACPSession(ctx context.Context, session *GatewaySession)
 	return nil
 }
 
+// resolveWorktreePath returns the filesystem path of the worktree for the
+// given story ID, honoring the git_worktree_root setting override (the same
+// resolution performed by ensureWorktree). Returns an empty string if the
+// effective worktree root cannot be determined.
+func (g *Gateway) resolveWorktreePath(ctx context.Context, storyID string) string {
+	if storyID == "" {
+		return ""
+	}
+
+	// The effective worktree root honors the git_worktree_root setting
+	// override, mirroring the resolution performed by ensureWorktree.
+	worktreeRoot := g.worktreeManager.root
+	if g.settingStore != nil {
+		if v, err := g.settingStore.Get(ctx, SettingKeyGitWorktreeRoot); err == nil && v != "" {
+			worktreeRoot = v
+		}
+	}
+
+	return fmt.Sprintf("%s/%s", worktreeRoot, storyID)
+}
+
+// ensureWorktree creates a git worktree for the given story if one does not
+// already exist. It generates a branch name from the story title if the story
+// does not yet have one, reads the git_worktree_root setting to override the
+// default worktree root, and persists the branch name back to the story.
+func (g *Gateway) ensureWorktree(ctx context.Context, storyID, repoPath string) error {
+	story, err := g.storyStore.GetByID(ctx, storyID)
+	if err != nil {
+		return fmt.Errorf("get story %q: %w", storyID, err)
+	}
+	if story == nil {
+		return fmt.Errorf("story %q not found", storyID)
+	}
+
+	// Generate a branch name if the story doesn't have one yet.
+	branchName := story.BranchName
+	if branchName == "" {
+		branchName = GenerateBranchName(storyID, story.Title)
+	}
+
+	// Check for a custom git_worktree_root setting.
+	worktreeRoot := g.worktreeManager.root
+	if g.settingStore != nil {
+		if v, err := g.settingStore.Get(ctx, SettingKeyGitWorktreeRoot); err == nil && v != "" {
+			worktreeRoot = v
+		}
+	}
+
+	// If the worktree root was overridden by settings, create a new manager.
+	wm := g.worktreeManager
+	if worktreeRoot != g.worktreeManager.root {
+		wm = NewWorktreeManager(worktreeRoot)
+	}
+
+	// Create the worktree.
+	_, _, err = wm.CreateWorktree(repoPath, storyID, branchName)
+	if err != nil {
+		return fmt.Errorf("create worktree for story %q: %w", storyID, err)
+	}
+
+	// Persist the branch name on the story if it was generated.
+	if story.BranchName == "" {
+		story.BranchName = branchName
+		if err := g.storyStore.Update(ctx, story); err != nil {
+			slog.Warn("gateway: failed to persist branch name on story",
+				"story_id", storyID, "branch_name", branchName, "error", err)
+		}
+	}
+
+	slog.Info("gateway: worktree ensured for story",
+		"story_id", storyID,
+		"branch_name", branchName,
+		"worktree_path", g.resolveWorktreePath(ctx, storyID))
+
+	return nil
+}
+
+// cleanupWorktree removes the git worktree associated with a completed story.
+// It is invoked when a story transitions to the "completed" status. The
+// worktree for a "failed" story is intentionally left in place to allow human
+// inspection of the failed branch.
+func (g *Gateway) cleanupWorktree(ctx context.Context, storyID string) {
+	if storyID == "" {
+		return
+	}
+
+	story, err := g.storyStore.GetByID(ctx, storyID)
+	if err != nil || story == nil {
+		slog.Warn("gateway: cannot clean up worktree, story not found",
+			"story_id", storyID, "error", err)
+		return
+	}
+
+	// Resolve the project's repo path so git worktree remove runs against the
+	// correct main repository.
+	if story.ProjectID == "" {
+		slog.Warn("gateway: cannot clean up worktree, story has no project_id",
+			"story_id", storyID)
+		return
+	}
+	project, err := g.projectStore.GetByID(ctx, story.ProjectID)
+	if err != nil || project == nil {
+		slog.Warn("gateway: cannot clean up worktree, project not found",
+			"story_id", storyID, "project_id", story.ProjectID, "error", err)
+		return
+	}
+
+	worktreePath := g.resolveWorktreePath(ctx, storyID)
+	if worktreePath == "" {
+		return
+	}
+
+	// RemoveWorktree takes the absolute worktree path directly, so the
+	// git_worktree_root override is already accounted for in worktreePath.
+	if err := g.worktreeManager.RemoveWorktree(project.RepoPath, worktreePath); err != nil {
+		slog.Warn("gateway: failed to remove worktree on story completion",
+			"story_id", storyID, "path", worktreePath, "error", err)
+		return
+	}
+
+	slog.Info("gateway: cleaned up worktree on story completion",
+		"story_id", storyID, "path", worktreePath)
+}
+
 // assignTaskToSession finds an available session for the given agent type,
 // assigns the task, and sends it as a prompt via ACP. If no session exists,
 // one is created on the fly using NewSession.
@@ -533,14 +802,25 @@ func (g *Gateway) assignTaskToSession(ctx context.Context, projectID, agentType,
 		return fmt.Errorf("get or create acp client for task assignment: %w", err)
 	}
 
+	// Look up the task for details. We need it before session creation so we
+	// can resolve the story's worktree path for executor/workspace-setup
+	// agents (mirroring the worktree isolation performed in
+	// processCreateSession → createACPSession).
+	task, err := g.taskStore.GetByID(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("get task %q: %w", taskID, err)
+	}
+
 	// Get or register a session in the tracker.
 	gs, ok := g.tracker.GetSession(projectID, agentType)
 	if !ok {
 		// No session yet — create one on the fly.
 		projectPath := projectID
+		repoPath := ""
 		mcpServers := []acp.MCPServer{}
 		if p, err := g.projectStore.GetByID(ctx, projectID); err == nil && p != nil && p.RepoPath != "" {
 			projectPath = p.RepoPath
+			repoPath = p.RepoPath
 			mcpServers = append(mcpServers, acp.MCPServer{
 				Name:    "loom",
 				Command: p.RepoPath + "/dist/loom-server",
@@ -549,8 +829,33 @@ func (g *Gateway) assignTaskToSession(ctx context.Context, projectID, agentType,
 			})
 		}
 
+		// Resolve the working directory — use the worktree path for executor
+		// and workspace-setup agents if a worktree exists for the story. This
+		// ensures code-producing agents operate inside the story-isolated git
+		// worktree rather than the main repository, mirroring the logic in
+		// createACPSession. ensureWorktree is idempotent in intent: if it
+		// fails (e.g. the worktree already exists), we still fall back to the
+		// resolved path when the directory is present on disk.
+		cwd := projectPath
+		if (agentType == "executor" || agentType == "workspace-setup") && task != nil && task.StoryID != "" && repoPath != "" {
+			if err := g.ensureWorktree(ctx, task.StoryID, repoPath); err != nil {
+				slog.Warn("gateway: failed to ensure worktree for task assignment, using main repo",
+					"story_id", task.StoryID, "error", err)
+			}
+			worktreePath := g.resolveWorktreePath(ctx, task.StoryID)
+			if worktreePath != "" {
+				if info, err := os.Stat(worktreePath); err == nil && info.IsDir() {
+					cwd = worktreePath
+					slog.Info("gateway: using worktree as session cwd for task assignment",
+						"story_id", task.StoryID,
+						"agent_type", agentType,
+						"worktree_path", worktreePath)
+				}
+			}
+		}
+
 		sessionID, err := client.NewSession(ctx, acp.NewSessionRequest{
-			Cwd:        projectPath,
+			Cwd:        cwd,
 			MCPServers: mcpServers,
 		})
 		if err != nil {
@@ -559,12 +864,6 @@ func (g *Gateway) assignTaskToSession(ctx context.Context, projectID, agentType,
 
 		gs = g.tracker.RegisterSession(projectID, agentType, sessionID)
 		g.RegisterSessionClient(sessionID, client)
-	}
-
-	// Look up the task for details.
-	task, err := g.taskStore.GetByID(ctx, taskID)
-	if err != nil {
-		return fmt.Errorf("get task %q: %w", taskID, err)
 	}
 
 	// Build task context and send as a prompt.
@@ -658,12 +957,30 @@ func (g *Gateway) tryDequeueNextJob(ctx context.Context, projectID, agentType st
 		return
 	}
 
+	// Check file collision for code tasks before assigning.
+	task, taskErr := g.taskStore.GetByID(ctx, job.TaskID)
+	if taskErr == nil && task != nil && task.TaskType == models.TaskTypeCode {
+		targetFiles := parseTargetFiles(task)
+		if len(targetFiles) > 0 && !g.acquireFiles(job.TaskID, targetFiles) {
+			slog.Info("gateway: file collision on dequeue, re-queuing job",
+				"task_id", job.TaskID,
+				"project_id", job.ProjectID,
+				"agent_type", job.AgentType)
+			g.queue.Enqueue(job.ProjectID, job.AgentType, job.TaskID, job.EventRef)
+			return
+		}
+	}
+
 	slog.Info("gateway: dequeuing job for assignment",
 		"task_id", job.TaskID,
 		"project_id", job.ProjectID,
 		"agent_type", job.AgentType)
 
 	if err := g.assignTaskToSession(ctx, job.ProjectID, job.AgentType, job.TaskID); err != nil {
+		// Release files on assignment failure.
+		if taskErr == nil && task != nil && task.TaskType == models.TaskTypeCode {
+			g.releaseFiles(job.TaskID, parseTargetFiles(task))
+		}
 		slog.Error("gateway: failed to assign dequeued task, re-queuing",
 			"task_id", job.TaskID,
 			"project_id", job.ProjectID,
@@ -716,6 +1033,11 @@ func (g *Gateway) checkStaleness(ctx context.Context) {
 						"session_id", s.SessionID,
 						"error", err)
 				}
+			}
+
+			// Release any files held by this session's assigned task.
+			if s.AssignedTaskID != "" {
+				g.releaseFilesForTask(ctx, s.AssignedTaskID)
 			}
 
 			// If this session had an assigned task, remove the job from the queue

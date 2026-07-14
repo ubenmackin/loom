@@ -113,7 +113,17 @@
       "permission": {
         "skill": "allow",
         "task": "deny",
-        "bash": "allow",
+        "bash": {
+          "*": "deny",
+          "mkdir *": "allow",
+          "mv *": "allow",
+          "cp *": "allow",
+          "cat *": "allow",
+          "grep *": "allow",
+          "rg *": "allow",
+          "find *": "allow",
+          "chmod *": "allow"
+        },
         "edit": "allow",
         "google_search": "deny",
         "webfetch": "deny",
@@ -209,6 +219,94 @@
         "memory_list": "deny",
         "memory_set": "deny",
         "memory_replace": "deny"
+      },
+      "options": {}
+    },
+    "security-auditor": {
+      "mode": "all",
+      "color": "#f06595",
+      "description": "Security Auditor: Vulnerability scanning and credential leak detection.",
+      "permission": {
+        "skill": "allow",
+        "task": "deny",
+        "bash": {
+          "*": "deny",
+          "govulncheck *": "allow",
+          "npm audit *": "allow",
+          "grep *": "allow",
+          "rg *": "allow",
+          "find *": "allow"
+        },
+        "edit": "deny",
+        "google_search": "deny",
+        "webfetch": "deny",
+        "register_session": "allow",
+        "request_work": "allow",
+        "start_work": "allow",
+        "complete_work": "allow",
+        "report_blocked": "allow",
+        "create_task": "allow",
+        "keep_alive": "allow",
+        "get_task": "allow",
+        "add_comment": "allow"
+      },
+      "options": {}
+    },
+    "release-manager": {
+      "mode": "all",
+      "color": "#20c997",
+      "description": "Release Manager: Commit, push, and create PRs.",
+      "permission": {
+        "skill": "allow",
+        "task": "deny",
+        "bash": {
+          "*": "deny",
+          "git status": "allow",
+          "git add *": "allow",
+          "git commit *": "allow",
+          "git push origin feature/*": "allow",
+          "gh pr *": "allow",
+          "git worktree *": "allow"
+        },
+        "edit": "deny",
+        "google_search": "deny",
+        "webfetch": "deny",
+        "register_session": "allow",
+        "request_work": "allow",
+        "start_work": "allow",
+        "complete_work": "allow",
+        "report_blocked": "allow",
+        "keep_alive": "allow",
+        "get_task": "allow",
+        "add_comment": "allow"
+      },
+      "options": {}
+    },
+    "workspace-setup": {
+      "mode": "all",
+      "color": "#7950f2",
+      "description": "Workspace Setup: Git worktree isolation for executor sessions.",
+      "permission": {
+        "skill": "allow",
+        "task": "deny",
+        "bash": {
+          "*": "deny",
+          "git worktree add *": "allow",
+          "git checkout -b *": "allow",
+          "mkdir *": "allow",
+          "git status": "allow"
+        },
+        "edit": "deny",
+        "google_search": "deny",
+        "webfetch": "deny",
+        "register_session": "allow",
+        "request_work": "allow",
+        "start_work": "allow",
+        "complete_work": "allow",
+        "report_blocked": "allow",
+        "keep_alive": "allow",
+        "get_task": "allow",
+        "add_comment": "allow"
       },
       "options": {}
     },

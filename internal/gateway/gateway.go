@@ -19,6 +19,10 @@ import (
 // max concurrency cap on the gateway's job queue.
 const SettingKeyGlobalMaxConcurrency = "global_max_concurrency"
 
+// SettingKeyGitWorktreeRoot is the settings table key for the git worktree
+// root directory used for story isolation.
+const SettingKeyGitWorktreeRoot = "git_worktree_root"
+
 // ---------------------------------------------------------------------------
 // Store interfaces — minimal subsets of the store interfaces used by the
 // gateway. These are intentionally narrower than the full-store interfaces
@@ -112,6 +116,10 @@ type Gateway struct {
 
 	acpCommand       string              // e.g., "opencode acp"
 	profileTaskTypes map[string][]string // profile name -> task types (protected by mu)
+	filesInUse       map[string]string   // file path → taskID (protected by mu)
+
+	worktreeManager *WorktreeManager // git worktree management for story isolation
+	settingStore    SettingStore     // settings store for dynamic configuration
 }
 
 // NewGateway creates a new Gateway with the given dependencies. The acpCommand
@@ -169,6 +177,9 @@ func NewGateway(
 		done:              make(chan struct{}),
 		acpCommand:        acpCommand,
 		profileTaskTypes:  make(map[string][]string),
+		filesInUse:        make(map[string]string),
+		worktreeManager:   NewWorktreeManager(".loom/worktrees"),
+		settingStore:      settingStore,
 	}
 }
 
@@ -449,6 +460,11 @@ func (g *Gateway) removeACPClient(projectID, agentType string) {
 // consumers (e.g., REST API handlers) to inspect queued jobs.
 func (g *Gateway) Queue() *JobQueue {
 	return g.queue
+}
+
+// GetWorktreePath returns the worktree path for the given story ID.
+func (g *Gateway) GetWorktreePath(storyID string) string {
+	return fmt.Sprintf("%s/%s", g.worktreeManager.root, storyID)
 }
 
 // logActivity is a helper that logs an activity entry and logs any error.

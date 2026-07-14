@@ -11,6 +11,7 @@ export const Status = {
   Completed: 'completed',
   Canceled: 'canceled',
   Archived: 'archived',
+  Failed: 'failed',
 } as const
 
 export type StatusType = (typeof Status)[keyof typeof Status]
@@ -28,6 +29,9 @@ export const TaskType = {
   Build: 'build',
   Review: 'review',
   Planning: 'planning',
+  Security: 'security',
+  Release: 'release',
+  WorkspaceSetup: 'workspace_setup',
 } as const
 
 export type TaskTypeType = (typeof TaskType)[keyof typeof TaskType]
@@ -74,6 +78,9 @@ export interface Story {
   status: StatusType
   requires_build: boolean
   requires_review: boolean
+  requires_security: boolean
+  failure_count?: number
+  branch_name?: string
   assigned_to?: string
   assignee_type?: AssigneeTypeType
   project_id?: string

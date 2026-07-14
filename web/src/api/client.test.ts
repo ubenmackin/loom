@@ -84,6 +84,7 @@ const sampleStory: Story = {
   status: 'new',
   requires_build: false,
   requires_review: false,
+  requires_security: true,
   sort_order: 1,
   created_at: '2025-01-01T00:00:00Z',
   updated_at: '2025-01-01T00:00:00Z',

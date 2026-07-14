@@ -226,8 +226,8 @@ const emptyBoardState: BoardState = {
 
 const populatedBoardState: BoardState = {
   stories: [
-    { id: 'story-1', title: 'First Story', status: 'in_progress', requires_build: false, requires_review: true, sort_order: 0, created_at: '2025-01-01T00:00:00Z', updated_at: '2025-01-01T00:00:00Z' },
-    { id: 'story-2', title: 'Second Story', status: 'new', requires_build: true, requires_review: false, sort_order: 1, created_at: '2025-01-01T00:00:00Z', updated_at: '2025-01-01T00:00:00Z' },
+    { id: 'story-1', title: 'First Story', status: 'in_progress', requires_build: false, requires_review: true, requires_security: true, sort_order: 0, created_at: '2025-01-01T00:00:00Z', updated_at: '2025-01-01T00:00:00Z' },
+    { id: 'story-2', title: 'Second Story', status: 'new', requires_build: true, requires_review: false, requires_security: true, sort_order: 1, created_at: '2025-01-01T00:00:00Z', updated_at: '2025-01-01T00:00:00Z' },
   ],
   tasks_by_story_and_status: {
     'story-1': {
@@ -247,8 +247,8 @@ const populatedBoardState: BoardState = {
 // Board state with multiple tasks across stories/cells for drag-and-drop tests
 const dragBoardState: BoardState = {
   stories: [
-    { id: 'story-1', title: 'Alpha', status: 'new', requires_build: false, requires_review: false, sort_order: 0, created_at: '2025-01-01T00:00:00Z', updated_at: '2025-01-01T00:00:00Z' },
-    { id: 'story-2', title: 'Beta', status: 'new', requires_build: false, requires_review: false, sort_order: 1, created_at: '2025-01-01T00:00:00Z', updated_at: '2025-01-01T00:00:00Z' },
+    { id: 'story-1', title: 'Alpha', status: 'new', requires_build: false, requires_review: false, requires_security: true, sort_order: 0, created_at: '2025-01-01T00:00:00Z', updated_at: '2025-01-01T00:00:00Z' },
+    { id: 'story-2', title: 'Beta', status: 'new', requires_build: false, requires_review: false, requires_security: true, sort_order: 1, created_at: '2025-01-01T00:00:00Z', updated_at: '2025-01-01T00:00:00Z' },
   ],
   tasks_by_story_and_status: {
     'story-1': {

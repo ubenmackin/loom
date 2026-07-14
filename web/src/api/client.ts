@@ -142,6 +142,10 @@ export async function deleteStory(id: string): Promise<void> {
   await deleteResource(`/stories/${id}`)
 }
 
+export async function resetStoryFailures(id: string): Promise<Story> {
+  return request<Story>(`/stories/${id}/reset-failures`, { method: 'POST' })
+}
+
 // ── Tasks ───────────────────────────────────────────────────────────────
 
 export async function fetchTasks(filter?: TaskFilter): Promise<Task[]> {

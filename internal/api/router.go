@@ -250,6 +250,9 @@ func NewRouter(
 		r.Put("/projects/{id}", h.updateProject)
 		r.Delete("/projects/{id}", h.deleteProject)
 
+		// Story failure reset (admin-only: bypass circuit breaker).
+		r.Post("/stories/{id}/reset-failures", h.resetStoryFailures)
+
 		// Gateway admin endpoints.
 		r.Get("/gateway/status", h.handleGatewayStatus)
 		r.Get("/gateway/queue", h.handleGatewayQueue)

@@ -1,6 +1,6 @@
 import { memo, useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, AlertCircle, Trash2, ChevronDown } from 'lucide-react'
+import { X, AlertCircle, AlertTriangle, RotateCcw, Trash2, ChevronDown } from 'lucide-react'
 import SharpTag from './SharpTag'
 import SlideInPanel, { PanelLoading, PanelNotFound } from './SlideInPanel'
 import EditableTitle from './EditableTitle'
@@ -18,6 +18,7 @@ import {
   getUsers,
   fetchSessions,
   createTask,
+  resetStoryFailures,
 } from '../api/client'
 import type { Story, StoryWithTasks, StatusType, User, Session, AssigneeTypeType } from '../types'
 import { statusVariant, STATUS_ORDER, STATUS_LABELS } from '../utils/status'
@@ -114,6 +115,14 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
       }
     },
     onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['story', storyId] })
+      queryClient.invalidateQueries({ queryKey: ['board'] })
+    },
+  })
+
+  const resetFailuresMutation = useMutation({
+    mutationFn: () => resetStoryFailures(storyId!),
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['story', storyId] })
       queryClient.invalidateQueries({ queryKey: ['board'] })
     },
@@ -364,6 +373,34 @@ function StoryDetail({ storyId, onClose, onOpenTask }: StoryDetailProps) {
             onChange={handleAssigneeChange}
           />
         </div>
+
+        {/* Circuit breaker: failure count — shown when > 0 */}
+        {story.failure_count != null && story.failure_count > 0 && (
+          <div className="border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/10 p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={16} className="text-red-500 shrink-0" />
+              <span className="font-mono text-xs font-semibold text-red-700 dark:text-red-300 uppercase tracking-wider">
+                {story.failure_count && story.failure_count >= 3
+                  ? 'Circuit Breaker Tripped'
+                  : 'Gate Failures Detected'}
+              </span>
+            </div>
+            <p className="font-mono text-xs text-red-600 dark:text-red-400">
+              Failure count: <span className="font-bold">{story.failure_count}</span>
+              {story.failure_count && story.failure_count >= 3 && (
+                <span className="ml-1">(&ge;3, story moved to <strong>failed</strong> status)</span>
+              )}
+            </p>
+            <button
+              onClick={() => resetFailuresMutation.mutate()}
+              disabled={resetFailuresMutation.isPending}
+              className="flex items-center gap-1.5 px-3 py-1 text-xs font-mono uppercase tracking-wider border border-red-400 text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <RotateCcw size={12} />
+              {resetFailuresMutation.isPending ? 'Resetting...' : 'Reset and Retry'}
+            </button>
+          </div>
+        )}
 
         {/* Actions — status-specific buttons */}
         <div className="flex flex-wrap items-center gap-2 pt-1">

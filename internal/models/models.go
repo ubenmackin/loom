@@ -30,13 +30,14 @@ const (
 	StatusCompleted  Status = "completed"
 	StatusCancelled  Status = "canceled"
 	StatusArchived   Status = "archived"
+	StatusFailed     Status = "failed"
 )
 
 func (s Status) String() string { return string(s) }
 
 // AllStatuses returns all known status values in a canonical order.
 func AllStatuses() []Status {
-	return []Status{StatusNew, StatusDraft, StatusPlanning, StatusReady, StatusInProgress, StatusBlocked, StatusDone, StatusCompleted, StatusCancelled, StatusArchived}
+	return []Status{StatusNew, StatusDraft, StatusPlanning, StatusReady, StatusInProgress, StatusBlocked, StatusDone, StatusCompleted, StatusCancelled, StatusArchived, StatusFailed}
 }
 
 // SessionStatus represents the connection state of an agent session.
@@ -54,10 +55,13 @@ func (s SessionStatus) String() string { return string(s) }
 type TaskType string
 
 const (
-	TaskTypeCode     TaskType = "code"
-	TaskTypeBuild    TaskType = "build"
-	TaskTypeReview   TaskType = "review"
-	TaskTypePlanning TaskType = "planning"
+	TaskTypeCode           TaskType = "code"
+	TaskTypeBuild          TaskType = "build"
+	TaskTypeReview         TaskType = "review"
+	TaskTypePlanning       TaskType = "planning"
+	TaskTypeSecurity       TaskType = "security"
+	TaskTypeRelease        TaskType = "release"
+	TaskTypeWorkspaceSetup TaskType = "workspace_setup"
 )
 
 func (t TaskType) String() string { return string(t) }
@@ -129,21 +133,24 @@ type Project struct {
 
 // Story represents a user story on the Kanban board.
 type Story struct {
-	ID             string       `json:"id"`
-	NumericID      int          `json:"numeric_id"`
-	Title          string       `json:"title"`
-	Description    string       `json:"description,omitempty"`
-	Status         Status       `json:"status"`
-	RequiresBuild  bool         `json:"requires_build"`
-	RequiresReview bool         `json:"requires_review"`
-	AssignedTo     string       `json:"assigned_to,omitempty"`
-	AssigneeType   AssigneeType `json:"assignee_type,omitempty"`
-	ProjectID      string       `json:"project_id,omitempty"`
-	AgentSessionID string       `json:"agent_session_id,omitempty"`
-	AgentType      string       `json:"agent_type,omitempty"`
-	SortOrder      int          `json:"sort_order"`
-	CreatedAt      time.Time    `json:"created_at"`
-	UpdatedAt      time.Time    `json:"updated_at"`
+	ID               string       `json:"id"`
+	NumericID        int          `json:"numeric_id"`
+	Title            string       `json:"title"`
+	Description      string       `json:"description,omitempty"`
+	Status           Status       `json:"status"`
+	RequiresBuild    bool         `json:"requires_build"`
+	RequiresReview   bool         `json:"requires_review"`
+	RequiresSecurity bool         `json:"requires_security"`
+	FailureCount     int          `json:"failure_count"`
+	BranchName       string       `json:"branch_name,omitempty"`
+	AssignedTo       string       `json:"assigned_to,omitempty"`
+	AssigneeType     AssigneeType `json:"assignee_type,omitempty"`
+	ProjectID        string       `json:"project_id,omitempty"`
+	AgentSessionID   string       `json:"agent_session_id,omitempty"`
+	AgentType        string       `json:"agent_type,omitempty"`
+	SortOrder        int          `json:"sort_order"`
+	CreatedAt        time.Time    `json:"created_at"`
+	UpdatedAt        time.Time    `json:"updated_at"`
 }
 
 // Task represents a task (child of a story) on the Kanban board.
@@ -161,6 +168,7 @@ type Task struct {
 	AgentType      string       `json:"agent_type,omitempty"`
 	SortOrder      int          `json:"sort_order"`
 	Instructions   string       `json:"instructions,omitempty"`
+	TargetFiles    string       `json:"target_files,omitempty"` // JSON string array
 	IsStale        bool         `json:"is_stale"`
 	CreatedAt      time.Time    `json:"created_at"`
 	UpdatedAt      time.Time    `json:"updated_at"`
