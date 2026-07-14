@@ -17,6 +17,7 @@ const ALL_STATUSES: StatusType[] = [
   Status.Completed,
   Status.Done,
   Status.Blocked,
+  Status.Failed,
   Status.New,
   Status.Canceled,
   Status.Archived,
@@ -24,8 +25,8 @@ const ALL_STATUSES: StatusType[] = [
 
 describe('status', () => {
   describe('STATUS_ORDER', () => {
-  it('contains exactly 10 status entries', () => {
-    expect(STATUS_ORDER).toHaveLength(10)
+  it('contains exactly 11 status entries', () => {
+    expect(STATUS_ORDER).toHaveLength(11)
   })
 
     it('contains all status values in the correct order', () => {
@@ -36,7 +37,7 @@ describe('status', () => {
   describe('VALID_TRANSITIONS', () => {
   it('has an entry for every status', () => {
     const keys = Object.keys(VALID_TRANSITIONS) as StatusType[]
-    expect(keys).toHaveLength(10)
+    expect(keys).toHaveLength(11)
     ALL_STATUSES.forEach((status) => {
       expect(VALID_TRANSITIONS).toHaveProperty(status)
     })

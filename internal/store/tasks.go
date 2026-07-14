@@ -62,7 +62,7 @@ func (s *TaskStore) Transact(ctx context.Context, fn func(context.Context) error
 // scanTask is a helper to scan a task row from a *sql.Row or *sql.Rows.
 func scanTask(scanner interface{ Scan(...any) error }) (*models.Task, error) {
 	t := &models.Task{}
-	var desc, assignedTo, instructions sql.NullString
+	var desc, assignedTo, instructions, targetFiles sql.NullString
 	var statusStr, taskTypeStr, assigneeTypeStr sql.NullString
 	var agentSessionID, agentType sql.NullString
 	var createdAt, updatedAt sql.NullTime
@@ -72,7 +72,7 @@ func scanTask(scanner interface{ Scan(...any) error }) (*models.Task, error) {
 		&t.ID, &numericID, &t.StoryID, &t.Title, &desc, &statusStr, &taskTypeStr,
 		&assignedTo, &assigneeTypeStr, &agentSessionID, &agentType,
 		&t.SortOrder,
-		&instructions, &t.IsStale, &createdAt, &updatedAt,
+		&instructions, &targetFiles, &t.IsStale, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -86,6 +86,7 @@ func scanTask(scanner interface{ Scan(...any) error }) (*models.Task, error) {
 	t.AgentSessionID = stringOrZero(agentSessionID)
 	t.AgentType = stringOrZero(agentType)
 	t.Instructions = stringOrZero(instructions)
+	t.TargetFiles = stringOrZero(targetFiles)
 	t.NumericID = intOrZero(numericID)
 	t.CreatedAt = timeOrZero(createdAt)
 	t.UpdatedAt = timeOrZero(updatedAt)
@@ -136,12 +137,12 @@ func (s *TaskStore) Create(ctx context.Context, t *models.Task) error {
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO tasks (id, numeric_id, story_id, title, description, status, task_type,
 		 assigned_to, assignee_type, agent_session_id, agent_type,
-		 sort_order, instructions, is_stale, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 sort_order, instructions, target_files, is_stale, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.NumericID, t.StoryID, t.Title, t.Description, t.Status, t.TaskType,
 		t.AssignedTo, t.AssigneeType, nullStr(t.AgentSessionID), nullStr(t.AgentType),
 		t.SortOrder,
-		t.Instructions, t.IsStale, t.CreatedAt, t.UpdatedAt,
+		t.Instructions, t.TargetFiles, t.IsStale, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -174,12 +175,12 @@ func (s *TaskStore) createTx(ctx context.Context, tx *sql.Tx, t *models.Task) er
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO tasks (id, numeric_id, story_id, title, description, status, task_type,
 		 assigned_to, assignee_type, agent_session_id, agent_type,
-		 sort_order, instructions, is_stale, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 sort_order, instructions, target_files, is_stale, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.NumericID, t.StoryID, t.Title, t.Description, t.Status, t.TaskType,
 		t.AssignedTo, t.AssigneeType, nullStr(t.AgentSessionID), nullStr(t.AgentType),
 		t.SortOrder,
-		t.Instructions, t.IsStale, t.CreatedAt, t.UpdatedAt,
+		t.Instructions, t.TargetFiles, t.IsStale, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -192,7 +193,7 @@ func (s *TaskStore) GetByID(ctx context.Context, id string) (*models.Task, error
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, numeric_id, story_id, title, description, status, task_type,
 		        assigned_to, assignee_type, agent_session_id, agent_type,
-		        sort_order, instructions, is_stale, created_at, updated_at
+		        sort_order, instructions, target_files, is_stale, created_at, updated_at
 		 FROM tasks WHERE id = ?`, id)
 
 	t, err := scanTask(row)
@@ -210,7 +211,7 @@ func (s *TaskStore) GetByNumericID(ctx context.Context, numID int) (*models.Task
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, numeric_id, story_id, title, description, status, task_type,
 		        assigned_to, assignee_type, agent_session_id, agent_type,
-		        sort_order, instructions, is_stale, created_at, updated_at
+		        sort_order, instructions, target_files, is_stale, created_at, updated_at
 		 FROM tasks WHERE numeric_id = ?`, numID)
 
 	t, err := scanTask(row)
@@ -247,7 +248,7 @@ func (s *TaskStore) List(ctx context.Context, filter TaskFilter) ([]*models.Task
 
 	query := `SELECT id, numeric_id, story_id, title, description, status, task_type,
 	                 assigned_to, assignee_type, agent_session_id, agent_type,
-	                 sort_order, instructions, is_stale, created_at, updated_at
+	                 sort_order, instructions, target_files, is_stale, created_at, updated_at
 	          FROM tasks`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
@@ -274,12 +275,12 @@ func (s *TaskStore) Update(ctx context.Context, t *models.Task) error {
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET story_id=?, title=?, description=?, status=?, task_type=?,
 		 assigned_to=?, assignee_type=?, agent_session_id=?, agent_type=?,
-		 sort_order=?, instructions=?,
+		 sort_order=?, instructions=?, target_files=?,
 		 is_stale=?, updated_at=?
 		 WHERE id=?`,
 		t.StoryID, t.Title, t.Description, t.Status, t.TaskType,
 		t.AssignedTo, t.AssigneeType, nullStr(t.AgentSessionID), nullStr(t.AgentType),
-		t.SortOrder, t.Instructions,
+		t.SortOrder, t.Instructions, t.TargetFiles,
 		t.IsStale, t.UpdatedAt, t.ID,
 	)
 	if err != nil {
@@ -296,12 +297,12 @@ func (s *TaskStore) BatchUpdate(ctx context.Context, tasks []*models.Task) error
 		result, err := tx.ExecContext(ctx,
 			`UPDATE tasks SET story_id=?, title=?, description=?, status=?, task_type=?,
 			 assigned_to=?, assignee_type=?, agent_session_id=?, agent_type=?,
-			 sort_order=?, instructions=?,
+			 sort_order=?, instructions=?, target_files=?,
 			 is_stale=?, updated_at=?
 			 WHERE id=?`,
 			t.StoryID, t.Title, t.Description, t.Status, t.TaskType,
 			t.AssignedTo, t.AssigneeType, nullStr(t.AgentSessionID), nullStr(t.AgentType),
-			t.SortOrder, t.Instructions,
+			t.SortOrder, t.Instructions, t.TargetFiles,
 			t.IsStale, t.UpdatedAt, t.ID,
 		)
 		if err != nil {
@@ -441,7 +442,7 @@ func (s *TaskStore) GetBlockers(ctx context.Context, taskID string) ([]*models.T
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT t.id, t.numeric_id, t.story_id, t.title, t.description, t.status, t.task_type,
 		        t.assigned_to, t.assignee_type, t.agent_session_id, t.agent_type,
-		        t.sort_order, t.instructions, t.is_stale, t.created_at, t.updated_at
+		        t.sort_order, t.instructions, t.target_files, t.is_stale, t.created_at, t.updated_at
 		 FROM tasks t
 		 JOIN task_dependencies td ON td.depends_on_task_id = t.id
 		 WHERE td.task_id = ? AND t.status != ?`, taskID, models.StatusDone)
@@ -552,7 +553,7 @@ func (s *TaskStore) GetDependents(ctx context.Context, taskID string) ([]*models
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT t.id, t.numeric_id, t.story_id, t.title, t.description, t.status, t.task_type,
 			t.assigned_to, t.assignee_type, t.agent_session_id, t.agent_type,
-			t.sort_order, t.instructions, t.is_stale, t.created_at, t.updated_at
+			t.sort_order, t.instructions, t.target_files, t.is_stale, t.created_at, t.updated_at
 		FROM tasks t
 		JOIN task_dependencies td ON td.task_id = t.id
 		WHERE td.depends_on_task_id = ?`, taskID)

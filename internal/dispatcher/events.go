@@ -16,4 +16,6 @@ const (
 	EventSessionStale      = "session_stale"
 	EventTaskStale         = "task_stale"
 	EventTasksGenerated    = "tasks_generated"
+	EventStoryFailed       = "story_failed"
+	EventStoryCompleted    = "story_completed"
 )

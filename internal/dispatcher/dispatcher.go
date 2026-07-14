@@ -261,7 +261,8 @@ func (d *Dispatcher) processEvent(event Event) {
 
 // handleTaskStatusChanged processes a task status change event. When a task
 // transitions to "done", it resolves dependencies and checks gate conditions
-// for the parent story.
+// for the parent story. For gate task completions, it also detects failures
+// and applies the circuit breaker.
 func (d *Dispatcher) handleTaskStatusChanged(ctx context.Context, event Event) {
 	if event.TaskID == "" {
 		return
@@ -275,6 +276,19 @@ func (d *Dispatcher) handleTaskStatusChanged(ctx context.Context, event Event) {
 	}
 
 	if task.Status == models.StatusDone {
+		// When a gate task completes (build, review, security, release),
+		// check if it was a failure by looking for remediation code tasks.
+		if isGateTask(task) {
+			if d.detectGateFailure(ctx, task) {
+				if d.incrementFailureCount(ctx, task.StoryID) {
+					// Circuit breaker tripped — story marked as failed.
+					// Skip gate conditions and story completion processing.
+					d.runAssignmentPass(ctx)
+					return
+				}
+			}
+		}
+
 		d.resolveDependencies(ctx, event.TaskID)
 		d.checkGateConditions(ctx, task.StoryID)
 		d.checkStoryCompletion(ctx, task.StoryID)
@@ -282,6 +296,39 @@ func (d *Dispatcher) handleTaskStatusChanged(ctx context.Context, event Event) {
 
 	// Also attempt assignment in case a freed session can pick up new work.
 	d.runAssignmentPass(ctx)
+}
+
+// isGateTask returns true if the task type is a gate task (build, review,
+// security, or release).
+func isGateTask(task *models.Task) bool {
+	switch task.TaskType {
+	case models.TaskTypeBuild, models.TaskTypeReview, models.TaskTypeSecurity, models.TaskTypeRelease:
+		return true
+	default:
+		return false
+	}
+}
+
+// detectGateFailure checks whether a gate task completion was a failure by
+// looking for remediation code tasks (code-type tasks in a non-terminal
+// state) for the same story. Returns true if a gate failure is detected.
+func (d *Dispatcher) detectGateFailure(ctx context.Context, gateTask *models.Task) bool {
+	tasks, err := d.tasks.GetByStory(ctx, gateTask.StoryID)
+	if err != nil {
+		slog.Error("dispatcher: failed to get story tasks for gate failure detection",
+			"story_id", gateTask.StoryID, "error", err)
+		return false
+	}
+
+	for _, t := range tasks {
+		// A remediation task is a code-type task that is not Done or Canceled.
+		if t.TaskType == models.TaskTypeCode &&
+			t.Status != models.StatusDone &&
+			t.Status != models.StatusCancelled {
+			return true
+		}
+	}
+	return false
 }
 
 // handleTaskBlocked processes a task-blocked event. When a task is blocked,

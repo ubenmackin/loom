@@ -114,7 +114,7 @@ func validStatus(s string) bool {
 	case models.StatusNew, models.StatusDraft, models.StatusPlanning,
 		models.StatusReady, models.StatusInProgress,
 		models.StatusBlocked, models.StatusDone, models.StatusCompleted,
-		models.StatusCancelled, models.StatusArchived:
+		models.StatusCancelled, models.StatusArchived, models.StatusFailed:
 		return true
 	}
 	return false
@@ -123,7 +123,7 @@ func validStatus(s string) bool {
 // validTaskType returns true if the task type is a known value.
 func validTaskType(s string) bool {
 	switch models.TaskType(s) {
-	case models.TaskTypeCode, models.TaskTypeBuild, models.TaskTypeReview, models.TaskTypePlanning:
+	case models.TaskTypeCode, models.TaskTypeBuild, models.TaskTypeReview, models.TaskTypePlanning, models.TaskTypeSecurity, models.TaskTypeRelease, models.TaskTypeWorkspaceSetup:
 		return true
 	}
 	return false

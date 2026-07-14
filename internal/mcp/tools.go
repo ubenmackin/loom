@@ -205,11 +205,16 @@ func (s *Server) registerTools() {
 					"story_id":    map[string]any{"type": "string", "description": "The parent story ID"},
 					"title":       map[string]any{"type": "string", "description": "The task title"},
 					"description": map[string]any{"type": "string", "description": "The task description"},
-					"task_type":   map[string]any{"type": "string", "description": "The task type (code, build, review)", "enum": []string{"code", "build", "review"}},
+					"task_type":   map[string]any{"type": "string", "description": "The task type (code, build, review, security, release, workspace_setup)", "enum": []string{"code", "build", "review", "security", "release", "workspace_setup"}},
 					"status": map[string]any{
 						"type":        "string",
 						"description": "Optional initial status for the task ('new' or 'ready'). Default: 'new'",
 						"enum":        []string{"new", "ready"},
+					},
+					"target_files": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Required for code tasks. List of file paths this task will modify",
 					},
 					"depends_on": map[string]any{
 						"type":        "array",
@@ -760,6 +765,19 @@ func (s *Server) handleCreateTask(ctx context.Context, params map[string]any) (*
 		Description: description,
 		TaskType:    models.TaskType(taskType),
 		Status:      status,
+	}
+
+	// Require target_files for code tasks.
+	if models.TaskType(taskType) == models.TaskTypeCode {
+		targetFiles := getOptionalJSONStringSlice(params, "target_files")
+		if len(targetFiles) == 0 {
+			return nil, fmt.Errorf("target_files is required for code tasks")
+		}
+		targetFilesJSON, err := json.Marshal(targetFiles)
+		if err != nil {
+			return nil, fmt.Errorf("marshal target_files: %w", err)
+		}
+		task.TargetFiles = string(targetFilesJSON)
 	}
 
 	if err := s.tasks.Create(ctx, task); err != nil {

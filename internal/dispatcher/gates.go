@@ -36,6 +36,13 @@ func (d *Dispatcher) checkGateConditions(ctx context.Context, storyID string) {
 		return
 	}
 
+	// Circuit breaker: do not create new gates for failed stories.
+	if story.Status == models.StatusFailed {
+		slog.Warn("dispatcher: skipping gate check for failed story",
+			"story_id", storyID)
+		return
+	}
+
 	tasks, err := d.tasks.GetByStory(ctx, storyID)
 	if err != nil {
 		slog.Error("dispatcher: failed to get tasks for gate check",
@@ -43,8 +50,8 @@ func (d *Dispatcher) checkGateConditions(ctx context.Context, storyID string) {
 		return
 	}
 
-	var hasBuildTask, hasReviewTask bool
-	var buildTask *models.Task
+	var hasBuildTask, hasReviewTask, hasSecurityTask, hasReleaseTask bool
+	var buildTask, securityTask, reviewTask *models.Task
 	var allCodeTasksDone = true
 
 	for _, t := range tasks {
@@ -54,6 +61,12 @@ func (d *Dispatcher) checkGateConditions(ctx context.Context, storyID string) {
 			buildTask = t
 		case models.TaskTypeReview:
 			hasReviewTask = true
+			reviewTask = t
+		case models.TaskTypeSecurity:
+			hasSecurityTask = true
+			securityTask = t
+		case models.TaskTypeRelease:
+			hasReleaseTask = true
 		default:
 			// Non-gate tasks (code, custom, etc.)
 			if t.Status != models.StatusDone {
@@ -70,16 +83,53 @@ func (d *Dispatcher) checkGateConditions(ctx context.Context, storyID string) {
 		}
 	}
 
+	// Check if a Security gate task should be created.
+	if story.RequiresSecurity && !hasSecurityTask {
+		// Security requires that the Build task (if exists) is Done
+		if buildTask != nil && buildTask.Status == models.StatusDone {
+			if err := d.createSecurityTask(ctx, story, buildTask); err != nil {
+				slog.Error("dispatcher: failed to create security task",
+					"story_id", story.ID, "error", err)
+			}
+		} else if !story.RequiresBuild && allCodeTasksDone {
+			if err := d.createSecurityTask(ctx, story, nil); err != nil {
+				slog.Error("dispatcher: failed to create security task",
+					"story_id", story.ID, "error", err)
+			}
+		}
+	}
+
 	// Check if a Review gate task should be created.
 	if story.RequiresReview && !hasReviewTask {
 		// Review requires that the Build task (if exists) is Done, or that
 		// all code tasks are Done if there is no Build task.
 		// If we just created a build task above, it's in "ready" status,
 		// so the review won't be created yet.
+		// If RequiresSecurity is true, Review also waits for Security to be Done.
 		if buildTask != nil && buildTask.Status == models.StatusDone {
-			d.createReviewTask(ctx, story, buildTask)
+			if !story.RequiresSecurity || (securityTask != nil && securityTask.Status == models.StatusDone) {
+				d.createReviewTask(ctx, story, buildTask)
+			}
 		} else if !story.RequiresBuild && allCodeTasksDone {
-			d.createReviewTask(ctx, story, nil)
+			if !story.RequiresSecurity || (securityTask != nil && securityTask.Status == models.StatusDone) {
+				d.createReviewTask(ctx, story, nil)
+			}
+		}
+	}
+
+	// Check if a Release gate task should be created.
+	// Release requires Review to be Done.
+	if !hasReleaseTask && hasReviewTask && reviewTask != nil && reviewTask.Status == models.StatusDone {
+		// All non-release tasks should be done
+		allOthersDone := true
+		for _, t := range tasks {
+			if t.TaskType != models.TaskTypeRelease && t.Status != models.StatusDone {
+				allOthersDone = false
+				break
+			}
+		}
+		if allOthersDone {
+			d.createReleaseTask(ctx, story, reviewTask)
 		}
 	}
 }
@@ -185,6 +235,83 @@ func (d *Dispatcher) createReviewTask(ctx context.Context, story *models.Story, 
 	}
 }
 
+// createSecurityTask creates a new Security gate task for the given story,
+// optionally depending on the Build task.
+func (d *Dispatcher) createSecurityTask(ctx context.Context, story *models.Story, buildTask *models.Task) error {
+	return d.createGateTask(ctx, story, models.TaskTypeSecurity, "Security Audit", 9050, func(taskID string) error {
+		if buildTask != nil {
+			if err := d.tasks.AddDependency(ctx, taskID, buildTask.ID); err != nil {
+				return fmt.Errorf("add dependency on build task: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+// createReleaseTask creates a new Release gate task for the given story,
+// depending on the Review task.
+func (d *Dispatcher) createReleaseTask(ctx context.Context, story *models.Story, reviewTask *models.Task) {
+	err := d.createGateTask(ctx, story, models.TaskTypeRelease, "Release", 9200, func(taskID string) error {
+		if reviewTask != nil {
+			if err := d.tasks.AddDependency(ctx, taskID, reviewTask.ID); err != nil {
+				return fmt.Errorf("add dependency on review task: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		slog.Error("dispatcher: failed to create release task",
+			"story_id", story.ID, "error", err)
+	}
+}
+
+// incrementFailureCount increments the story's failure_count and checks
+// whether the circuit breaker should trip (≥3 failures).
+// Returns true if the circuit breaker tripped (story moved to "failed").
+func (d *Dispatcher) incrementFailureCount(ctx context.Context, storyID string) bool {
+	story, err := d.stories.GetByID(ctx, storyID)
+	if err != nil {
+		slog.Error("dispatcher: failed to get story for failure count increment",
+			"story_id", storyID, "error", err)
+		return false
+	}
+
+	story.FailureCount++
+
+	if err := d.stories.Update(ctx, story); err != nil {
+		slog.Error("dispatcher: failed to update story failure_count",
+			"story_id", storyID, "error", err)
+		return false
+	}
+
+	slog.Warn("dispatcher: gate failure recorded",
+		"story_id", storyID, "failure_count", story.FailureCount)
+
+	if story.FailureCount >= 3 {
+		// Circuit breaker tripped — transition story to "failed".
+		if err := d.stories.UpdateStatus(ctx, storyID, models.StatusFailed); err != nil {
+			slog.Error("dispatcher: failed to trip circuit breaker",
+				"story_id", storyID, "error", err)
+			return false
+		}
+
+		d.hub.Broadcast(EventStoryFailed, map[string]string{
+			"story_id":      storyID,
+			"failure_count": fmt.Sprintf("%d", story.FailureCount),
+			"reason":        "Circuit breaker tripped: 3 consecutive gate failures",
+		})
+
+		slog.Error("dispatcher: circuit breaker tripped",
+			"story_id", storyID,
+			"failure_count", story.FailureCount,
+			"reason", "3 consecutive gate failures")
+
+		return true
+	}
+
+	return false
+}
+
 // resolveDependencies finds all tasks that depend on the just-completed task
 // and attempts to unblock any that are no longer blocked.
 func (d *Dispatcher) resolveDependencies(ctx context.Context, completedTaskID string) {
@@ -218,7 +345,21 @@ func (d *Dispatcher) resolveDependencies(ctx context.Context, completedTaskID st
 
 // checkStoryCompletion evaluates whether all tasks for a story are
 // done and all gates have passed. If so, transitions the story to "completed".
+// Stories in "failed" status are skipped — they have tripped the circuit breaker.
 func (d *Dispatcher) checkStoryCompletion(ctx context.Context, storyID string) {
+	// Get the story first to check its status.
+	story, err := d.stories.GetByID(ctx, storyID)
+	if err != nil {
+		slog.Error("dispatcher: failed to get story for completion check",
+			"story_id", storyID, "error", err)
+		return
+	}
+
+	// Circuit breaker: do not mark failed stories as completed.
+	if story.Status == models.StatusFailed {
+		return
+	}
+
 	// Get all tasks for this story
 	tasks, err := d.tasks.GetByStory(ctx, storyID)
 	if err != nil {
@@ -227,10 +368,28 @@ func (d *Dispatcher) checkStoryCompletion(ctx context.Context, storyID string) {
 		return
 	}
 
-	// Check if all tasks are done
-	for _, task := range tasks {
-		if task.Status != models.StatusDone && task.Status != models.StatusCancelled {
-			return // Not all tasks are done
+	// Check if a Release task exists and is Done — that is the final gate.
+	var hasReleaseTask bool
+	var releaseTask *models.Task
+	for _, t := range tasks {
+		if t.TaskType == models.TaskTypeRelease {
+			hasReleaseTask = true
+			releaseTask = t
+			break
+		}
+	}
+
+	if hasReleaseTask {
+		// If a Release task exists, only transition to completed when it is Done.
+		if releaseTask.Status != models.StatusDone {
+			return
+		}
+	} else {
+		// No Release task exists — fall back to checking all tasks (backward compatibility).
+		for _, task := range tasks {
+			if task.Status != models.StatusDone && task.Status != models.StatusCancelled {
+				return // Not all tasks are done
+			}
 		}
 	}
 
@@ -246,5 +405,15 @@ func (d *Dispatcher) checkStoryCompletion(ctx context.Context, storyID string) {
 
 	d.hub.Broadcast("story_completed", map[string]string{
 		"story_id": storyID,
+	})
+
+	// Forward the completion to the Gateway so it can clean up the story's
+	// git worktree. Unlike the websocket broadcast above, this event flows
+	// through the gateway's event loop.
+	d.submitToGateway(Event{
+		Type: EventStoryCompleted,
+		Payload: map[string]string{
+			"story_id": storyID,
+		},
 	})
 }

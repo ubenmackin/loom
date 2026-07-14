@@ -8,6 +8,7 @@ export const STATUS_ORDER: StatusType[] = [
   Status.Completed,
   Status.Done,
   Status.Blocked,
+  Status.Failed,
   Status.New,
   Status.Canceled,
   Status.Archived,
@@ -21,6 +22,7 @@ export const STATUS_LABELS: Record<string, string> = {
   [Status.Ready]: 'Ready',
   [Status.InProgress]: 'In Progress',
   [Status.Blocked]: 'Blocked',
+  [Status.Failed]: 'Failed',
   [Status.Done]: 'Done',
   [Status.Completed]: 'Completed',
   [Status.Canceled]: 'Canceled',
@@ -34,6 +36,7 @@ export const VALID_TRANSITIONS: Record<StatusType, StatusType[]> = {
   [Status.Ready]: [Status.InProgress, Status.Blocked, Status.Canceled],
   [Status.InProgress]: [Status.Done, Status.Blocked, Status.Canceled],
   [Status.Blocked]: [Status.Ready, Status.InProgress, Status.Canceled],
+  [Status.Failed]: [Status.Ready, Status.Canceled],
   [Status.Done]: [Status.Archived, Status.Canceled],
   [Status.Completed]: [Status.Done],
   [Status.Canceled]: [Status.New],
@@ -45,6 +48,7 @@ export function statusVariant(status: StatusType): 'default' | 'primary' | 'ambe
     case Status.Done:
       return 'success'
     case Status.Blocked:
+    case Status.Failed:
       return 'error'
     case Status.InProgress:
       return 'amber'
@@ -58,6 +62,7 @@ export function statusDotClass(status: StatusType): string {
     case Status.InProgress:
       return 'status-dot status-dot-warning status-dot-pulse'
     case Status.Blocked:
+    case Status.Failed:
       return 'status-dot status-dot-error'
     case Status.Done:
       return 'status-dot status-dot-success'

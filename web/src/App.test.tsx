@@ -54,7 +54,7 @@ vi.mock('./pages/UsersPage', () => ({
 }))
 
 vi.mock('./hooks/useWebSocket', () => ({
-  useWebSocket: vi.fn(),
+  useWebSocket: vi.fn().mockReturnValue({ lastEvent: null }),
 }))
 
 // ── Imports (after mocks) ─────────────────────────────────────────────────

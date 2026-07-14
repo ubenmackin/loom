@@ -10,6 +10,7 @@ const RELEVANT_EVENT_TYPES = new Set([
   'activity_updated',
   'story_created',
   'story_updated',
+  'story_failed',
   'task_created',
   'task_updated',
   'task_deleted',

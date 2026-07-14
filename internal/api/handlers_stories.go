@@ -16,26 +16,29 @@ import (
 // --- Request/Response types ---
 
 type createStoryRequest struct {
-	Title          string `json:"title"`
-	Description    string `json:"description,omitempty"`
-	ProjectID      string `json:"project_id,omitempty"`
-	RequiresBuild  bool   `json:"requires_build,omitempty"`
-	RequiresReview bool   `json:"requires_review,omitempty"`
-	AssignedTo     string `json:"assigned_to,omitempty"`
-	AssigneeType   string `json:"assignee_type,omitempty"`
-	SortOrder      int    `json:"sort_order,omitempty"`
+	Title            string `json:"title"`
+	Description      string `json:"description,omitempty"`
+	ProjectID        string `json:"project_id,omitempty"`
+	RequiresBuild    bool   `json:"requires_build,omitempty"`
+	RequiresReview   bool   `json:"requires_review,omitempty"`
+	RequiresSecurity *bool  `json:"requires_security,omitempty"`
+	AssignedTo       string `json:"assigned_to,omitempty"`
+	AssigneeType     string `json:"assignee_type,omitempty"`
+	SortOrder        int    `json:"sort_order,omitempty"`
 }
 
 type updateStoryRequest struct {
-	Title          *string `json:"title,omitempty"`
-	Description    *string `json:"description,omitempty"`
-	ProjectID      *string `json:"project_id,omitempty"`
-	RequiresBuild  *bool   `json:"requires_build,omitempty"`
-	RequiresReview *bool   `json:"requires_review,omitempty"`
-	AssignedTo     *string `json:"assigned_to,omitempty"`
-	AssigneeType   *string `json:"assignee_type,omitempty"`
-	SortOrder      *int    `json:"sort_order,omitempty"`
-	Status         *string `json:"status,omitempty"`
+	Title            *string `json:"title,omitempty"`
+	Description      *string `json:"description,omitempty"`
+	ProjectID        *string `json:"project_id,omitempty"`
+	RequiresBuild    *bool   `json:"requires_build,omitempty"`
+	RequiresReview   *bool   `json:"requires_review,omitempty"`
+	RequiresSecurity *bool   `json:"requires_security,omitempty"`
+	BranchName       *string `json:"branch_name,omitempty"`
+	AssignedTo       *string `json:"assigned_to,omitempty"`
+	AssigneeType     *string `json:"assignee_type,omitempty"`
+	SortOrder        *int    `json:"sort_order,omitempty"`
+	Status           *string `json:"status,omitempty"`
 }
 
 type updateStatusRequest struct {
@@ -114,6 +117,14 @@ func (h *handlers) createStory(w http.ResponseWriter, r *http.Request) {
 		SortOrder:      req.SortOrder,
 	}
 
+	// Default requires_security to true when not explicitly specified by
+	// the client so the Security gate remains opt-out rather than opt-in.
+	if req.RequiresSecurity != nil {
+		story.RequiresSecurity = *req.RequiresSecurity
+	} else {
+		story.RequiresSecurity = true
+	}
+
 	if err := h.stories.Create(r.Context(), story); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to create story: "+err.Error())
 		return
@@ -185,6 +196,8 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 	oldProjectID := story.ProjectID
 	oldRequiresBuild := story.RequiresBuild
 	oldRequiresReview := story.RequiresReview
+	oldRequiresSecurity := story.RequiresSecurity
+	oldBranchName := story.BranchName
 	oldAssignedTo := story.AssignedTo
 	oldAssigneeType := string(story.AssigneeType)
 	oldSortOrder := story.SortOrder
@@ -215,6 +228,12 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.RequiresReview != nil {
 		story.RequiresReview = *req.RequiresReview
+	}
+	if req.RequiresSecurity != nil {
+		story.RequiresSecurity = *req.RequiresSecurity
+	}
+	if req.BranchName != nil {
+		story.BranchName = *req.BranchName
 	}
 	if req.AssignedTo != nil {
 		story.AssignedTo = *req.AssignedTo
@@ -262,6 +281,12 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 	}
 	if story.RequiresReview != oldRequiresReview {
 		changed = append(changed, "requires_review")
+	}
+	if story.RequiresSecurity != oldRequiresSecurity {
+		changed = append(changed, "requires_security")
+	}
+	if story.BranchName != oldBranchName {
+		changed = append(changed, "branch_name")
 	}
 	if story.AssignedTo != oldAssignedTo {
 		changed = append(changed, "assigned_to")
@@ -502,6 +527,64 @@ func (h *handlers) setStoryStatus(w http.ResponseWriter, r *http.Request) {
 	})
 
 	respondJSON(w, http.StatusOK, story)
+}
+
+// resetStoryFailures handles POST /api/stories/{id}/reset-failures
+// Resets the story's failure_count to 0 and transitions it to "ready" status
+// so it can re-enter the pipeline after a circuit breaker trip.
+func (h *handlers) resetStoryFailures(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	story, err := h.stories.GetByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "story not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to get story: "+err.Error())
+		return
+	}
+
+	// Guard: only allow reset when the story has actually tripped the circuit
+	// breaker (status is "failed"). Without this check, an admin resetting a
+	// story that is still in_progress (failure_count below the breaker
+	// threshold) would have failure_count committed to 0 by Update() below,
+	// and then UpdateStatus() would return ErrInvalidTransition — leaving the
+	// DB in a partially-updated state while returning an error to the client.
+	if story.Status != models.StatusFailed {
+		respondError(w, http.StatusConflict, "story is not in failed status (current="+string(story.Status)+")")
+		return
+	}
+
+	story.FailureCount = 0
+	if err := h.stories.Update(r.Context(), story); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to reset story failures: "+err.Error())
+		return
+	}
+
+	// Transition to ready using state machine validation.
+	if err := h.stories.UpdateStatus(r.Context(), id, models.StatusReady); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "story not found")
+			return
+		}
+		if errors.Is(err, store.ErrInvalidTransition) {
+			respondError(w, http.StatusBadRequest, "invalid status transition: "+err.Error())
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to transition story: "+err.Error())
+		return
+	}
+
+	// Re-fetch the story to return the post-transition state (status="ready",
+	// failure_count=0) rather than the pre-transition in-memory copy.
+	updatedStory, err := h.stories.GetByID(r.Context(), id)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to fetch updated story: "+err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, updatedStory)
 }
 
 // taskIDs extracts the string IDs from a slice of tasks for bulk queries.

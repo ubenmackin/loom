@@ -33,15 +33,16 @@ func NewStoryStore(db *sql.DB) *StoryStore {
 func scanStoryRow(scanner interface{ Scan(...any) error }) (*models.Story, error) {
 	story := &models.Story{}
 	var desc, assignedTo, statusStr, assigneeTypeStr sql.NullString
-	var projectID, agentSessionID, agentType sql.NullString
+	var projectID, agentSessionID, agentType, branchName sql.NullString
 	var createdAt, updatedAt sql.NullTime
-	var numericID sql.NullInt64
+	var numericID, failureCount sql.NullInt64
+	var requiresSecurity sql.NullBool
 
 	err := scanner.Scan(
 		&story.ID, &numericID, &story.Title, &desc, &statusStr,
 		&story.RequiresBuild, &story.RequiresReview, &assignedTo, &assigneeTypeStr,
 		&projectID, &agentSessionID, &agentType,
-		&story.SortOrder, &createdAt, &updatedAt,
+		&story.SortOrder, &failureCount, &requiresSecurity, &branchName, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -52,6 +53,9 @@ func scanStoryRow(scanner interface{ Scan(...any) error }) (*models.Story, error
 	story.AssigneeType = models.AssigneeType(stringOrZero(assigneeTypeStr))
 	story.Status = models.Status(stringOrZero(statusStr))
 	story.NumericID = intOrZero(numericID)
+	story.FailureCount = intOrZero(failureCount)
+	story.RequiresSecurity = requiresSecurity.Bool
+	story.BranchName = stringOrZero(branchName)
 	story.ProjectID = stringOrZero(projectID)
 	story.AgentSessionID = stringOrZero(agentSessionID)
 	story.AgentType = stringOrZero(agentType)
@@ -85,12 +89,12 @@ func (s *StoryStore) Create(ctx context.Context, story *models.Story) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO stories (id, numeric_id, title, description, status, requires_build, requires_review, assigned_to, assignee_type, project_id, agent_session_id, agent_type, sort_order, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO stories (id, numeric_id, title, description, status, requires_build, requires_review, assigned_to, assignee_type, project_id, agent_session_id, agent_type, sort_order, failure_count, requires_security, branch_name, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		story.ID, story.NumericID, story.Title, story.Description, story.Status,
 		story.RequiresBuild, story.RequiresReview, story.AssignedTo, story.AssigneeType,
 		nullStr(story.ProjectID), nullStr(story.AgentSessionID), nullStr(story.AgentType),
-		story.SortOrder, story.CreatedAt, story.UpdatedAt,
+		story.SortOrder, story.FailureCount, story.RequiresSecurity, story.BranchName, story.CreatedAt, story.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert story: %w", err)
@@ -101,7 +105,7 @@ func (s *StoryStore) Create(ctx context.Context, story *models.Story) error {
 // GetByID retrieves a story by its ID.
 func (s *StoryStore) GetByID(ctx context.Context, id string) (*models.Story, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, numeric_id, title, description, status, requires_build, requires_review, assigned_to, assignee_type, project_id, agent_session_id, agent_type, sort_order, created_at, updated_at
+		`SELECT id, numeric_id, title, description, status, requires_build, requires_review, assigned_to, assignee_type, project_id, agent_session_id, agent_type, sort_order, failure_count, requires_security, branch_name, created_at, updated_at
 		 FROM stories WHERE id = ?`, id)
 
 	story, err := scanStoryRow(row)
@@ -118,7 +122,7 @@ func (s *StoryStore) GetByID(ctx context.Context, id string) (*models.Story, err
 // GetByNumericID retrieves a story by its numeric ID.
 func (s *StoryStore) GetByNumericID(ctx context.Context, numID int) (*models.Story, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, numeric_id, title, description, status, requires_build, requires_review, assigned_to, assignee_type, project_id, agent_session_id, agent_type, sort_order, created_at, updated_at
+		`SELECT id, numeric_id, title, description, status, requires_build, requires_review, assigned_to, assignee_type, project_id, agent_session_id, agent_type, sort_order, failure_count, requires_security, branch_name, created_at, updated_at
 		 FROM stories WHERE numeric_id = ?`, numID)
 
 	story, err := scanStoryRow(row)
@@ -151,7 +155,7 @@ func (s *StoryStore) List(ctx context.Context, filter StoryFilter) ([]*models.St
 		args = append(args, filter.ProjectID)
 	}
 
-	query := `SELECT id, numeric_id, title, description, status, requires_build, requires_review, assigned_to, assignee_type, project_id, agent_session_id, agent_type, sort_order, created_at, updated_at
+	query := `SELECT id, numeric_id, title, description, status, requires_build, requires_review, assigned_to, assignee_type, project_id, agent_session_id, agent_type, sort_order, failure_count, requires_security, branch_name, created_at, updated_at
 			  FROM stories`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
@@ -185,12 +189,12 @@ func (s *StoryStore) Update(ctx context.Context, story *models.Story) error {
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE stories SET title=?, description=?, status=?, requires_build=?, requires_review=?,
 		 assigned_to=?, assignee_type=?, project_id=?, agent_session_id=?, agent_type=?,
-		 sort_order=?, updated_at=?
+		 sort_order=?, failure_count=?, requires_security=?, branch_name=?, updated_at=?
 		 WHERE id=?`,
 		story.Title, story.Description, story.Status,
 		story.RequiresBuild, story.RequiresReview, story.AssignedTo, story.AssigneeType,
 		nullStr(story.ProjectID), nullStr(story.AgentSessionID), nullStr(story.AgentType),
-		story.SortOrder, story.UpdatedAt, story.ID,
+		story.SortOrder, story.FailureCount, story.RequiresSecurity, story.BranchName, story.UpdatedAt, story.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update story %q: %w", story.ID, err)
@@ -206,12 +210,12 @@ func (s *StoryStore) BatchUpdate(ctx context.Context, stories []*models.Story) e
 		result, err := tx.ExecContext(ctx,
 			`UPDATE stories SET title=?, description=?, status=?, requires_build=?, requires_review=?,
 			 assigned_to=?, assignee_type=?, project_id=?, agent_session_id=?, agent_type=?,
-			 sort_order=?, updated_at=?
+			 sort_order=?, failure_count=?, requires_security=?, branch_name=?, updated_at=?
 			 WHERE id=?`,
 			story.Title, story.Description, story.Status,
 			story.RequiresBuild, story.RequiresReview, story.AssignedTo, story.AssigneeType,
 			nullStr(story.ProjectID), nullStr(story.AgentSessionID), nullStr(story.AgentType),
-			story.SortOrder, story.UpdatedAt, story.ID,
+			story.SortOrder, story.FailureCount, story.RequiresSecurity, story.BranchName, story.UpdatedAt, story.ID,
 		)
 		if err != nil {
 			return fmt.Errorf("update story %q in batch: %w", story.ID, err)
@@ -288,7 +292,7 @@ func (s *StoryStore) GetWithTasks(ctx context.Context, id string) (*models.Story
 		s.id, s.numeric_id, s.title, s.description, s.status,
 		s.requires_build, s.requires_review, s.assigned_to, s.assignee_type,
 		s.project_id, s.agent_session_id, s.agent_type,
-		s.sort_order, s.created_at, s.updated_at,
+		s.sort_order, s.failure_count, s.requires_security, s.branch_name, s.created_at, s.updated_at,
 		t.id, t.numeric_id, t.story_id, t.title, t.description, t.status,
 		t.task_type, t.assigned_to, t.assignee_type,
 		t.agent_session_id, t.agent_type,
@@ -311,10 +315,10 @@ func (s *StoryStore) GetWithTasks(ctx context.Context, id string) (*models.Story
 		var (
 			// Story columns
 			sID, sTitle, sDesc, sStatusStr, sAssignedTo, sAssigneeTypeStr sql.NullString
-			sProjectID, sAgentSessionID, sAgentType                       sql.NullString
-			sNumID                                                        sql.NullInt64
+			sProjectID, sAgentSessionID, sAgentType, sBranchName          sql.NullString
+			sNumID, sFailureCount                                         sql.NullInt64
 			sSortOrder                                                    int
-			sRequiresBuild, sRequiresReview                               sql.NullBool
+			sRequiresBuild, sRequiresReview, sRequiresSecurity            sql.NullBool
 			sCreatedAt, sUpdatedAt                                        sql.NullTime
 
 			// Task columns
@@ -330,7 +334,7 @@ func (s *StoryStore) GetWithTasks(ctx context.Context, id string) (*models.Story
 			&sID, &sNumID, &sTitle, &sDesc, &sStatusStr,
 			&sRequiresBuild, &sRequiresReview, &sAssignedTo, &sAssigneeTypeStr,
 			&sProjectID, &sAgentSessionID, &sAgentType,
-			&sSortOrder, &sCreatedAt, &sUpdatedAt,
+			&sSortOrder, &sFailureCount, &sRequiresSecurity, &sBranchName, &sCreatedAt, &sUpdatedAt,
 			&tID, &tNumID, &tStoryID, &tTitle, &tDesc, &tStatusStr,
 			&tTaskTypeStr, &tAssignedTo, &tAssigneeTypeStr,
 			&tAgentSessionID, &tAgentType,
@@ -342,21 +346,24 @@ func (s *StoryStore) GetWithTasks(ctx context.Context, id string) (*models.Story
 
 		if story == nil {
 			story = &models.Story{
-				ID:             sID.String,
-				NumericID:      intOrZero(sNumID),
-				Title:          stringOrZero(sTitle),
-				Description:    stringOrZero(sDesc),
-				Status:         models.Status(stringOrZero(sStatusStr)),
-				RequiresBuild:  sRequiresBuild.Bool,
-				RequiresReview: sRequiresReview.Bool,
-				AssignedTo:     stringOrZero(sAssignedTo),
-				AssigneeType:   models.AssigneeType(stringOrZero(sAssigneeTypeStr)),
-				ProjectID:      stringOrZero(sProjectID),
-				AgentSessionID: stringOrZero(sAgentSessionID),
-				AgentType:      stringOrZero(sAgentType),
-				SortOrder:      sSortOrder,
-				CreatedAt:      timeOrZero(sCreatedAt),
-				UpdatedAt:      timeOrZero(sUpdatedAt),
+				ID:               sID.String,
+				NumericID:        intOrZero(sNumID),
+				Title:            stringOrZero(sTitle),
+				Description:      stringOrZero(sDesc),
+				Status:           models.Status(stringOrZero(sStatusStr)),
+				RequiresBuild:    sRequiresBuild.Bool,
+				RequiresReview:   sRequiresReview.Bool,
+				RequiresSecurity: sRequiresSecurity.Bool,
+				FailureCount:     intOrZero(sFailureCount),
+				BranchName:       stringOrZero(sBranchName),
+				AssignedTo:       stringOrZero(sAssignedTo),
+				AssigneeType:     models.AssigneeType(stringOrZero(sAssigneeTypeStr)),
+				ProjectID:        stringOrZero(sProjectID),
+				AgentSessionID:   stringOrZero(sAgentSessionID),
+				AgentType:        stringOrZero(sAgentType),
+				SortOrder:        sSortOrder,
+				CreatedAt:        timeOrZero(sCreatedAt),
+				UpdatedAt:        timeOrZero(sUpdatedAt),
 			}
 		}
 

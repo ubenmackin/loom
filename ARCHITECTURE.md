@@ -452,3 +452,9 @@ All requests use id-based correlation (`JSONRPCRequest.ID` int64 →
 | Date | Entry |
 |---|---|
 | 2026-07-13 | Initial architecture document created. Covers the post-refactor state after: ACP v1 protocol alignment (WebSocket → stdio subprocess, custom methods → standard `initialize`/`session/new`/`session/prompt`); MCP/ACP layer separation (ACP pushes prompts only; MCP is the agent toolbox); agent-first workflow (story lifecycle with auto-spawned planner/executor/builder/reviewer, gate injection, remediation loops); Loom-owned system prompts in `prompts.go`; `MCPServer.Env` schema compliance fix (no `omitempty`). |
+
+## Update History
+
+### 2026-07-14 04:08 (auto-update)
+
+| 2026-07-13 | SDLC Pipeline expansion. Added `TaskTypeSecurity` and `TaskTypeRelease` constants; migration 010 (`stories.requires_security`, `stories.failure_count`, `stories.branch_name`, `tasks.target_files`); three new agent profiles (security-auditor, release-manager, workspace-setup) with corresponding system prompts; 3-stage gate chain in dispatcher (Build → Security → Review → Release); configurable git worktree isolation via `git_worktree_root` setting; file-collision-aware parallel scheduling via in-memory `filesInUse` map in Gateway loop; circuit breaker at story level (3-strikes → `failed` status); extended `opencode_config/opencode.json` with strict bash allowlists per opencode-sdlc port. See session `plan-d955fc`. |
