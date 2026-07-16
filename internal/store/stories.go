@@ -296,7 +296,7 @@ func (s *StoryStore) GetWithTasks(ctx context.Context, id string) (*models.Story
 		t.id, t.numeric_id, t.story_id, t.title, t.description, t.status,
 		t.task_type, t.assigned_to, t.assignee_type,
 		t.agent_session_id, t.agent_type,
-		t.sort_order, t.instructions, t.is_stale, t.created_at, t.updated_at
+		t.sort_order, t.instructions, t.target_files, t.is_stale, t.created_at, t.updated_at
 		FROM stories s
 		LEFT JOIN tasks t ON t.story_id = s.id
 		WHERE s.id = ?
@@ -324,7 +324,7 @@ func (s *StoryStore) GetWithTasks(ctx context.Context, id string) (*models.Story
 			// Task columns
 			tID, tStoryID, tTitle, tDesc, tStatusStr, tAssignedTo, tAssigneeTypeStr sql.NullString
 			tAgentSessionID, tAgentType                                             sql.NullString
-			tTaskTypeStr, tInstructions                                             sql.NullString
+			tTaskTypeStr, tInstructions, tTargetFiles                               sql.NullString
 			tNumID, tSortOrder                                                      sql.NullInt64
 			tCreatedAt, tUpdatedAt                                                  sql.NullTime
 			tIsStale                                                                sql.NullBool
@@ -338,7 +338,7 @@ func (s *StoryStore) GetWithTasks(ctx context.Context, id string) (*models.Story
 			&tID, &tNumID, &tStoryID, &tTitle, &tDesc, &tStatusStr,
 			&tTaskTypeStr, &tAssignedTo, &tAssigneeTypeStr,
 			&tAgentSessionID, &tAgentType,
-			&tSortOrder, &tInstructions, &tIsStale, &tCreatedAt, &tUpdatedAt,
+			&tSortOrder, &tInstructions, &tTargetFiles, &tIsStale, &tCreatedAt, &tUpdatedAt,
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("scan story with tasks: %w", err)
@@ -382,6 +382,7 @@ func (s *StoryStore) GetWithTasks(ctx context.Context, id string) (*models.Story
 				AgentType:      stringOrZero(tAgentType),
 				SortOrder:      int(tSortOrder.Int64),
 				Instructions:   stringOrZero(tInstructions),
+				TargetFiles:    stringOrZero(tTargetFiles),
 				IsStale:        tIsStale.Bool,
 				CreatedAt:      timeOrZero(tCreatedAt),
 				UpdatedAt:      timeOrZero(tUpdatedAt),

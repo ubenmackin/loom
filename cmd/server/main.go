@@ -29,10 +29,11 @@ import (
 
 // serverConfig holds the parsed command-line configuration.
 type serverConfig struct {
-	dbPath string
-	port   int
-	webDir string
-	runMCP bool
+	dbPath   string
+	bindAddr string
+	port     int
+	webDir   string
+	runMCP   bool
 }
 
 // Stores holds all database-backed store instances.
@@ -120,16 +121,18 @@ func run() error {
 // parseFlags reads and returns the command-line configuration.
 func parseFlags() serverConfig {
 	dbPath := flag.String("db-path", "loom.db", "path to SQLite database file")
+	bindAddr := flag.String("bind-addr", "127.0.0.1", "network interface address to bind to (use 127.0.0.1 for local-only development)")
 	port := flag.Int("port", 8080, "HTTP server port")
 	webDir := flag.String("web-dir", "web/dist", "path to frontend static files")
 	runMCP := flag.Bool("mcp", false, "run as MCP server on stdio instead of HTTP")
 	flag.Parse()
 
 	return serverConfig{
-		dbPath: *dbPath,
-		port:   *port,
-		webDir: *webDir,
-		runMCP: *runMCP,
+		dbPath:   *dbPath,
+		bindAddr: *bindAddr,
+		port:     *port,
+		webDir:   *webDir,
+		runMCP:   *runMCP,
 	}
 }
 
@@ -254,17 +257,18 @@ func runHTTP(cfg serverConfig, database *sql.DB, stores *Stores) error {
 	// Mount API routes.
 	r.Mount("/api", apiRouter)
 
-	// Serve static frontend files with SPA fallback.
-	r.Handle("/*", spaHandler(cfg.webDir))
+	// Serve static frontend files with SPA fallback, wrapped with baseline security headers.
+	r.Handle("/*", securityHeadersMiddleware(spaHandler(cfg.webDir)))
 
 	// Start HTTP server.
-	addr := fmt.Sprintf(":%d", cfg.port)
+	addr := fmt.Sprintf("%s:%d", cfg.bindAddr, cfg.port)
 	srv := &http.Server{
-		Addr:         addr,
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:           addr,
+		Handler:        r,
+		ReadTimeout:    15 * time.Second,
+		WriteTimeout:   15 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 1 << 16, // 64KB — defense-in-depth against oversized headers
 	}
 
 	// Graceful shutdown.
@@ -352,6 +356,19 @@ func spaHandler(webDir string) http.Handler {
 
 		// File not found — serve index.html for SPA client-side routing.
 		http.ServeFile(w, r, filepath.Join(absWebDir, "index.html"))
+	})
+}
+
+// securityHeadersMiddleware wraps a handler to set baseline security headers
+// (X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Content-Security-Policy)
+// on every response. This is applied to static file and SPA fallback routes.
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'")
+		next.ServeHTTP(w, r)
 	})
 }
 

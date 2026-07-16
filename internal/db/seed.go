@@ -27,8 +27,6 @@ var defaultTemplateList = []defaultTemplate{
 	{taskType: models.TaskTypeCode, filename: "default-templates/code.md"},
 	{taskType: models.TaskTypeBuild, filename: "default-templates/build.md"},
 	{taskType: models.TaskTypeReview, filename: "default-templates/review.md"},
-	{taskType: models.TaskTypeSecurity, filename: "default-templates/security.md"},
-	{taskType: models.TaskTypeRelease, filename: "default-templates/release.md"},
 }
 
 // TemplateSeeder is the minimal interface needed by SeedDefaults.

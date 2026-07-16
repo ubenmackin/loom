@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -22,6 +23,14 @@ func NewWorktreeManager(root string) *WorktreeManager {
 // CreateWorktree creates a git worktree at {root}/{storyID} and checks out
 // a new branch feature/story-{storyID}-{slug}.
 // Returns the worktree path and branch name, or an error.
+//
+// The method is idempotent: if the worktree directory already exists on disk,
+// CreateWorktree returns immediately with the existing path and branch name
+// (no error).
+//
+// If the branch already exists (the -b flag fails), CreateWorktree falls back
+// to git worktree add {path} without -b, which will check out the existing
+// branch into the worktree.
 func (wm *WorktreeManager) CreateWorktree(repoPath, storyID, branchName string) (worktreePath, actualBranch string, err error) {
 	if branchName == "" {
 		branchName = fmt.Sprintf("feature/story-%s", storyID)
@@ -29,15 +38,31 @@ func (wm *WorktreeManager) CreateWorktree(repoPath, storyID, branchName string) 
 
 	worktreePath = fmt.Sprintf("%s/%s", wm.root, storyID)
 
+	// Idempotent: if the worktree directory already exists, return immediately.
+	if info, statErr := os.Stat(worktreePath); statErr == nil && info.IsDir() {
+		return worktreePath, branchName, nil
+	}
+
 	// git worktree add -b {branch} {path}
 	cmd := exec.Command("git", "worktree", "add", "-b", branchName, worktreePath)
 	cmd.Dir = repoPath
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", "", fmt.Errorf("git worktree add: %w\nOutput: %s", err, string(out))
+	if err == nil {
+		return worktreePath, branchName, nil
 	}
 
-	return worktreePath, branchName, nil
+	// If the branch already exists, fall back to worktree add without -b.
+	if strings.Contains(string(out), "already exists") {
+		cmd2 := exec.Command("git", "worktree", "add", worktreePath)
+		cmd2.Dir = repoPath
+		out2, err2 := cmd2.CombinedOutput()
+		if err2 != nil {
+			return "", "", fmt.Errorf("git worktree add: %w (branch exists, fallback also failed)\nOutput: %s", err2, string(out2))
+		}
+		return worktreePath, branchName, nil
+	}
+
+	return "", "", fmt.Errorf("git worktree add: %w\nOutput: %s", err, string(out))
 }
 
 // RemoveWorktree removes a git worktree at the given path.

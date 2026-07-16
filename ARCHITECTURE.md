@@ -449,12 +449,28 @@ All requests use id-based correlation (`JSONRPCRequest.ID` int64 →
 
 ## 11. Update History
 
-| Date | Entry |
-|---|---|
-| 2026-07-13 | Initial architecture document created. Covers the post-refactor state after: ACP v1 protocol alignment (WebSocket → stdio subprocess, custom methods → standard `initialize`/`session/new`/`session/prompt`); MCP/ACP layer separation (ACP pushes prompts only; MCP is the agent toolbox); agent-first workflow (story lifecycle with auto-spawned planner/executor/builder/reviewer, gate injection, remediation loops); Loom-owned system prompts in `prompts.go`; `MCPServer.Env` schema compliance fix (no `omitempty`). |
+### 2026-07-14 — Session Worktree Pinning Constraint
 
-## Update History
+An executor ACP session is pinned to the **worktree of the first story** it works on.
+The `--cwd` (repository path) is set at session birth during `session/new` negotiation
+and does **not** change for subsequent tasks from different stories assigned to the
+same session. This means a reused session always executes from the worktree it was
+originally spawned for, regardless of which story's tasks it picks up.
 
-### 2026-07-14 04:08 (auto-update)
+**Implication**: Cross-story isolation on reused sessions would require the Gateway
+to re-resolve the target worktree, tear down the existing session, and re-spawn with
+a fresh `session/new` carrying the updated `--cwd`. A lighter-weight approach — not
+currently implemented — would be to re-session/prompt with a `[CONTEXT UPDATE]` that
+includes the new worktree, but the ACP `cwd` itself remains immutable once set.
 
-| 2026-07-13 | SDLC Pipeline expansion. Added `TaskTypeSecurity` and `TaskTypeRelease` constants; migration 010 (`stories.requires_security`, `stories.failure_count`, `stories.branch_name`, `tasks.target_files`); three new agent profiles (security-auditor, release-manager, workspace-setup) with corresponding system prompts; 3-stage gate chain in dispatcher (Build → Security → Review → Release); configurable git worktree isolation via `git_worktree_root` setting; file-collision-aware parallel scheduling via in-memory `filesInUse` map in Gateway loop; circuit breaker at story level (3-strikes → `failed` status); extended `opencode_config/opencode.json` with strict bash allowlists per opencode-sdlc port. See session `plan-d955fc`. |
+### 2026-07-13 — SDLC Pipeline expansion
+
+Added `TaskTypeSecurity` and `TaskTypeRelease` constants; migration 010; agent
+profiles; 3-stage gate chain; worktree isolation; file-collision scheduling; circuit
+breaker. See session `plan-d955fc`.
+
+### 2026-07-13 — Initial architecture document created
+
+Covered the post-refactor state: ACP v1 protocol alignment; MCP/ACP layer separation;
+agent-first workflow; Loom-owned system prompts; `MCPServer.Env` schema compliance
+fix.

@@ -157,12 +157,26 @@ func (h *handlers) UserAuthenticator(next http.Handler) http.Handler {
 }
 
 // agentSecret is the shared secret for agent authentication, read once at init.
+//
+// WARNING: This is a development/demo convenience ONLY. The shared-secret
+// pattern means any agent that knows LOOM_AGENT_SECRET can bypass
+// session-based authentication entirely — this is NOT suitable for
+// production environments where agents from different tenants or
+// untrusted networks coexist.
+//
+// For production deployments, recommended alternatives include:
+//   - Per-agent JWTs or signed tokens with short-lived expiry
+//   - Mutual TLS (mTLS) with agent-specific client certificates
+//   - Disable this fallback entirely by setting LOOM_DISABLE_AGENT_SECRET=true
+//     and rely solely on session-based or token-based authentication
 var (
 	agentSecret     string
 	agentSecretOnce sync.Once
 )
 
-// getAgentSecret returns the shared agent secret, reading it from the environment once.
+// getAgentSecret returns the shared agent secret, reading it from the
+// LOOM_AGENT_SECRET environment variable once. An empty string means
+// no shared secret is configured.
 func getAgentSecret() string {
 	agentSecretOnce.Do(func() {
 		agentSecret = os.Getenv("LOOM_AGENT_SECRET")
@@ -174,16 +188,23 @@ func getAgentSecret() string {
 // the /sessions and /work route groups. It requires either:
 //  1. A valid X-Session-ID header for an existing, active session, OR
 //  2. A shared secret via the LOOM_AGENT_SECRET environment variable,
-//     sent as the X-Agent-Secret header.
+//     sent as the X-Agent-Secret header (DEVELOPMENT / DEMO ONLY —
+//     see getAgentSecret documentation for production guidance).
+//
+// The shared-secret fallback can be disabled entirely for production
+// deployments by setting LOOM_DISABLE_AGENT_SECRET=true (or "1", "yes").
+// When disabled, only session-based authentication is accepted.
 //
 // This prevents unauthenticated clients from registering sessions, claiming
 // tasks, or modifying board state.
 func (h *handlers) SessionAuthenticator(next http.Handler) http.Handler {
 	secret := getAgentSecret()
+	secretDisabled := config.IsAgentSecretDisabled()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Allow requests that present the shared agent secret.
-		if secret != "" {
+		// Allow requests that present the shared agent secret,
+		// unless the feature flag explicitly disables this fallback.
+		if !secretDisabled && secret != "" {
 			if reqSecret := r.Header.Get("X-Agent-Secret"); reqSecret != "" && reqSecret == secret {
 				next.ServeHTTP(w, r)
 				return
@@ -196,7 +217,11 @@ func (h *handlers) SessionAuthenticator(next http.Handler) http.Handler {
 			sessionID = r.URL.Query().Get("session_id")
 		}
 		if sessionID == "" {
-			respondError(w, http.StatusUnauthorized, "X-Session-ID header or X-Agent-Secret required")
+			if secretDisabled {
+				respondError(w, http.StatusUnauthorized, "X-Session-ID header required")
+			} else {
+				respondError(w, http.StatusUnauthorized, "X-Session-ID header or X-Agent-Secret required")
+			}
 			return
 		}
 

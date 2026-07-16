@@ -1082,6 +1082,38 @@ func TestListStories_AssignedToFilter(t *testing.T) {
 	}
 }
 
+func TestCreateStory_DefaultsToRequiresSecurityTrue(t *testing.T) {
+	t.Parallel()
+
+	mux, storyStore, _, _, _, _, _ := newTestRouter(t)
+
+	rr := doRequest(t, mux, "POST", "/api/stories", map[string]any{
+		"title": "Security Default Story",
+	})
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("createStory status = %d, want %d", rr.Code, http.StatusCreated)
+	}
+
+	var resp map[string]any
+	decodeRespJSON(t, rr, &resp)
+
+	id, _ := resp["id"].(string)
+	if id == "" {
+		t.Fatal("createStory response missing ID")
+	}
+
+	// Next, GET the story and assert requires_security is true.
+	story, err := storyStore.GetByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("get story by ID: %v", err)
+	}
+
+	if !story.RequiresSecurity {
+		t.Errorf("createStory requires_security = false, want true (default when omitted)")
+	}
+}
+
 func TestUpdateStoryStatus_MissingStatus(t *testing.T) {
 	t.Parallel()
 

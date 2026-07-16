@@ -3,6 +3,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -38,4 +39,27 @@ func IsOriginAllowed(origin string, allowed []string) bool {
 		}
 	}
 	return false
+}
+
+// IsAgentSecretDisabled reads the LOOM_DISABLE_AGENT_SECRET environment variable.
+// When set to any truthy value ("1", "true", "yes"), the shared-secret
+// authentication fallback (X-Agent-Secret header) is disabled entirely.
+// This is intended for production deployments that rely solely on
+// session-based or token-based authentication.
+func IsAgentSecretDisabled() bool {
+	raw := os.Getenv("LOOM_DISABLE_AGENT_SECRET")
+	if raw == "" {
+		return false
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		// Accept common truthy strings that strconv doesn't handle.
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "yes", "1":
+			return true
+		default:
+			return false
+		}
+	}
+	return v
 }

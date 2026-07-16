@@ -462,11 +462,6 @@ func (g *Gateway) Queue() *JobQueue {
 	return g.queue
 }
 
-// GetWorktreePath returns the worktree path for the given story ID.
-func (g *Gateway) GetWorktreePath(storyID string) string {
-	return fmt.Sprintf("%s/%s", g.worktreeManager.root, storyID)
-}
-
 // logActivity is a helper that logs an activity entry and logs any error.
 func (g *Gateway) logActivity(ctx context.Context, workItemID, workItemType, action, details string) {
 	entry := &models.ActivityLogEntry{

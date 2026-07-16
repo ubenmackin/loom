@@ -289,6 +289,22 @@ func (d *Dispatcher) handleTaskStatusChanged(ctx context.Context, event Event) {
 			}
 		}
 
+		// If a remediation code task just completed, re-open the highest-
+		// priority Done gate task (build > security > review) so it can be
+		// re-run. This is skipped when the circuit breaker has tripped
+		// (story is "failed") — in that case the loop must stop. Re-opening
+		// happens before the dependency/gate/completion checks below so that
+		// the re-opened gate (now Ready) prevents premature story completion.
+		if task.TaskType == models.TaskTypeCode {
+			story, storyErr := d.stories.GetByID(ctx, task.StoryID)
+			if storyErr != nil {
+				slog.Error("dispatcher: failed to get story for gate re-open check",
+					"story_id", task.StoryID, "error", storyErr)
+			} else if story.Status != models.StatusFailed {
+				d.reopenGateTask(ctx, task.StoryID)
+			}
+		}
+
 		d.resolveDependencies(ctx, event.TaskID)
 		d.checkGateConditions(ctx, task.StoryID)
 		d.checkStoryCompletion(ctx, task.StoryID)
