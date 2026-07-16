@@ -15,6 +15,21 @@ import (
 	"github.com/ubenmackin/loom/internal/models"
 )
 
+// gitCommitCmd returns an exec.Cmd for "git commit" with the author/committer
+// env vars set so it works in CI where no global git config exists.
+func gitCommitCmd(dir string, args ...string) *exec.Cmd {
+	cmdArgs := append([]string{"commit"}, args...)
+	cmd := exec.Command("git", cmdArgs...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=CI Test",
+		"GIT_AUTHOR_EMAIL=ci@test.local",
+		"GIT_COMMITTER_NAME=CI Test",
+		"GIT_COMMITTER_EMAIL=ci@test.local",
+	)
+	return cmd
+}
+
 // ---------------------------------------------------------------------------
 // Mock stores for testing
 // ---------------------------------------------------------------------------
@@ -600,8 +615,7 @@ func TestEnsureWorktree_AppliesCwdWithWorktreeRootOverride(t *testing.T) {
 	if err := addCmd.Run(); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	commitCmd := exec.Command("git", "commit", "-m", "initial commit")
-	commitCmd.Dir = repoDir
+	commitCmd := gitCommitCmd(repoDir, "-m", "initial commit")
 	if err := commitCmd.Run(); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
@@ -664,8 +678,7 @@ func TestEnsureWorktree_FallsBackToDefaultRoot(t *testing.T) {
 	if err := addCmd.Run(); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
-	commitCmd := exec.Command("git", "commit", "-m", "initial commit")
-	commitCmd.Dir = repoDir
+	commitCmd := gitCommitCmd(repoDir, "-m", "initial commit")
 	if err := commitCmd.Run(); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
@@ -728,8 +741,7 @@ func TestCreateWorktree_Idempotent(t *testing.T) {
 	if err := addCmd.Run(); err != nil {
 		t.Fatalf("failed to git add: %v", err)
 	}
-	commitCmd := exec.Command("git", "commit", "-m", "initial commit")
-	commitCmd.Dir = repoDir
+	commitCmd := gitCommitCmd(repoDir, "-m", "initial commit")
 	if err := commitCmd.Run(); err != nil {
 		t.Fatalf("failed to git commit: %v", err)
 	}
