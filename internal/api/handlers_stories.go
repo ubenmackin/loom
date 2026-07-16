@@ -117,8 +117,8 @@ func (h *handlers) createStory(w http.ResponseWriter, r *http.Request) {
 		SortOrder:      req.SortOrder,
 	}
 
-	// Default requires_security to true when not explicitly specified by
-	// the client so the Security gate remains opt-out rather than opt-in.
+	// Default requires_security to true when not explicitly specified.
+	// Security is opt-out via the story edit UI or the SECURITY: skip directive.
 	if req.RequiresSecurity != nil {
 		story.RequiresSecurity = *req.RequiresSecurity
 	} else {

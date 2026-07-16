@@ -118,12 +118,12 @@ func Migrate(db *sql.DB) error {
 	return nil
 }
 
-// backfillTable assigns sequential numeric_ids to rows in the given table
-// that have NULL or 0 numeric_id, using the work_item_sequence table.
-func backfillTable(tx *sql.Tx, table, seqType string) error {
-	rows, err := tx.Query(fmt.Sprintf("SELECT id FROM %s WHERE numeric_id IS NULL OR numeric_id = 0 ORDER BY created_at, id", table))
+// backfillStories assigns sequential numeric_ids to unassigned rows in the
+// stories table, using the work_item_sequence table.
+func backfillStories(tx *sql.Tx) error {
+	rows, err := tx.Query("SELECT id FROM stories WHERE numeric_id IS NULL OR numeric_id = 0 ORDER BY created_at, id")
 	if err != nil {
-		return fmt.Errorf("query unassigned %s: %w", table, err)
+		return fmt.Errorf("query unassigned stories: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -135,26 +135,68 @@ func backfillTable(tx *sql.Tx, table, seqType string) error {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return fmt.Errorf("scan unassigned %s id: %w", table, err)
+			return fmt.Errorf("scan unassigned stories id: %w", err)
 		}
 		ids = append(ids, id)
 	}
 	_ = rows.Close()
 
 	for _, id := range ids {
-		res, err := tx.Exec("INSERT INTO work_item_sequence (type) VALUES (?)", seqType)
+		res, err := tx.Exec("INSERT INTO work_item_sequence (type) VALUES (?)", "story")
 		if err != nil {
-			return fmt.Errorf("insert work item sequence for %s: %w", table, err)
+			return fmt.Errorf("insert work item sequence for stories: %w", err)
 		}
 		numID, err := res.LastInsertId()
 		if err != nil {
-			return fmt.Errorf("get last insert id for %s: %w", table, err)
+			return fmt.Errorf("get last insert id for stories: %w", err)
 		}
-		_, err = tx.Exec(fmt.Sprintf("UPDATE %s SET numeric_id = ? WHERE id = ?", table), numID, id)
+		_, err = tx.Exec("UPDATE stories SET numeric_id = ? WHERE id = ?", numID, id)
 		if err != nil {
-			return fmt.Errorf("update %s numeric id: %w", table, err)
+			return fmt.Errorf("update stories numeric id: %w", err)
 		}
-		log.Printf("Backfilled %s %s with numeric_id %d", table, id, numID)
+		log.Printf("Backfilled stories %s with numeric_id %d", id, numID)
+	}
+
+	return nil
+}
+
+// backfillTasks assigns sequential numeric_ids to unassigned rows in the
+// tasks table, using the work_item_sequence table.
+func backfillTasks(tx *sql.Tx) error {
+	rows, err := tx.Query("SELECT id FROM tasks WHERE numeric_id IS NULL OR numeric_id = 0 ORDER BY created_at, id")
+	if err != nil {
+		return fmt.Errorf("query unassigned tasks: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("rows close error: %v", err)
+		}
+	}()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("scan unassigned tasks id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	_ = rows.Close()
+
+	for _, id := range ids {
+		res, err := tx.Exec("INSERT INTO work_item_sequence (type) VALUES (?)", "task")
+		if err != nil {
+			return fmt.Errorf("insert work item sequence for tasks: %w", err)
+		}
+		numID, err := res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("get last insert id for tasks: %w", err)
+		}
+		_, err = tx.Exec("UPDATE tasks SET numeric_id = ? WHERE id = ?", numID, id)
+		if err != nil {
+			return fmt.Errorf("update tasks numeric id: %w", err)
+		}
+		log.Printf("Backfilled tasks %s with numeric_id %d", id, numID)
 	}
 
 	return nil
@@ -169,10 +211,10 @@ func BackfillNumericIDs(db *sql.DB) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := backfillTable(tx, "stories", "story"); err != nil {
+	if err := backfillStories(tx); err != nil {
 		return err
 	}
-	if err := backfillTable(tx, "tasks", "task"); err != nil {
+	if err := backfillTasks(tx); err != nil {
 		return err
 	}
 

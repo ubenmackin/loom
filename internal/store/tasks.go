@@ -134,6 +134,11 @@ func (s *TaskStore) Create(ctx context.Context, t *models.Task) error {
 		t.Status = models.StatusNew
 	}
 
+	// TODO: migration 013 defines target_files DEFAULT '[]', but this INSERT
+	// always supplies an explicit value — empty string ("") for non-code tasks.
+	// The DEFAULT would only apply if target_files were omitted from the column
+	// list. parseTargetFiles handles both "" and "[]" identically, so there is
+	// no functional bug; this note exists to reduce future surprise.
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO tasks (id, numeric_id, story_id, title, description, status, task_type,
 		 assigned_to, assignee_type, agent_session_id, agent_type,
@@ -172,6 +177,11 @@ func (s *TaskStore) createTx(ctx context.Context, tx *sql.Tx, t *models.Task) er
 		t.Status = models.StatusNew
 	}
 
+	// TODO: migration 013 defines target_files DEFAULT '[]', but this INSERT
+	// always supplies an explicit value — empty string ("") for non-code tasks.
+	// The DEFAULT would only apply if target_files were omitted from the column
+	// list. parseTargetFiles handles both "" and "[]" identically, so there is
+	// no functional bug; this note exists to reduce future surprise.
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO tasks (id, numeric_id, story_id, title, description, status, task_type,
 		 assigned_to, assignee_type, agent_session_id, agent_type,

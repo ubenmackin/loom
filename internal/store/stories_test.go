@@ -367,3 +367,65 @@ func TestGetWithTasks(t *testing.T) {
 		t.Fatalf("GetWithTasks() returned %d tasks, want 2", len(tasks))
 	}
 }
+
+// TestGetWithTasks_ScansTargetFiles verifies that GetWithTasks populates the
+// TargetFiles field on tasks that have target_files set.
+func TestGetWithTasks_ScansTargetFiles(t *testing.T) {
+	t.Parallel()
+
+	dbConn := testhelpers.SetupTestDB(t)
+	storyStore := NewStoryStore(dbConn)
+	taskStore := NewTaskStore(dbConn)
+	ctx := context.Background()
+
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Target Files Story"
+		s.Status = models.StatusReady
+	})
+
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task With Files"
+		ts.Status = models.StatusReady
+		ts.TaskType = models.TaskTypeCode
+		ts.TargetFiles = `["foo.go", "bar.go"]`
+	})
+
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Task Without Files"
+		ts.Status = models.StatusNew
+		ts.TaskType = models.TaskTypeBuild
+	})
+
+	gotStory, tasks, err := storyStore.GetWithTasks(ctx, story.ID)
+	if err != nil {
+		t.Fatalf("GetWithTasks() error = %v", err)
+	}
+
+	if gotStory.ID != story.ID {
+		t.Errorf("GetWithTasks() story ID = %q, want %q", gotStory.ID, story.ID)
+	}
+
+	if len(tasks) != 2 {
+		t.Fatalf("GetWithTasks() returned %d tasks, want 2", len(tasks))
+	}
+
+	// Verify target files are scanned from the database.
+	foundWithFiles := false
+	foundWithoutFiles := false
+	for _, task := range tasks {
+		if task.TargetFiles == `["foo.go", "bar.go"]` {
+			foundWithFiles = true
+		}
+		if task.TargetFiles == "" && task.TaskType == models.TaskTypeBuild {
+			foundWithoutFiles = true
+		}
+	}
+	if !foundWithFiles {
+		t.Error("GetWithTasks() did not return a task with TargetFiles = [\"foo.go\", \"bar.go\"]")
+	}
+	if !foundWithoutFiles {
+		t.Error("GetWithTasks() did not return a task with empty TargetFiles")
+	}
+}

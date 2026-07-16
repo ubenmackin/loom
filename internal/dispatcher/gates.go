@@ -69,7 +69,7 @@ func (d *Dispatcher) checkGateConditions(ctx context.Context, storyID string) {
 			hasReleaseTask = true
 		default:
 			// Non-gate tasks (code, custom, etc.)
-			if t.Status != models.StatusDone {
+			if t.Status != models.StatusDone && t.Status != models.StatusCancelled {
 				allCodeTasksDone = false
 			}
 		}
@@ -123,7 +123,7 @@ func (d *Dispatcher) checkGateConditions(ctx context.Context, storyID string) {
 		// All non-release tasks should be done
 		allOthersDone := true
 		for _, t := range tasks {
-			if t.TaskType != models.TaskTypeRelease && t.Status != models.StatusDone {
+			if t.TaskType != models.TaskTypeRelease && t.Status != models.StatusDone && t.Status != models.StatusCancelled {
 				allOthersDone = false
 				break
 			}
@@ -310,6 +310,107 @@ func (d *Dispatcher) incrementFailureCount(ctx context.Context, storyID string) 
 	}
 
 	return false
+}
+
+// gateTaskTypePriority defines the relative priority of gate task types
+// when selecting which Done gate to re-open after a remediation code task
+// completes. A lower rank means higher priority: Build is re-opened before
+// Security, which is re-opened before Review. Release gates are never
+// re-opened by this flow.
+var gateTaskTypePriority = map[models.TaskType]int{
+	models.TaskTypeBuild:    0,
+	models.TaskTypeSecurity: 1,
+	models.TaskTypeReview:   2,
+}
+
+// reopenGateTask re-opens the highest-priority Done gate task (excluding
+// release) for the given story after a remediation code task has completed.
+// It transitions the selected gate task back to StatusReady (via StatusFailed,
+// since Done -> Ready is not a valid transition) and re-submits an
+// EventWorkRequested event to the Gateway so the gate is re-run. It returns
+// the ID of the re-opened task, or an empty string if no Done gate task was
+// found.
+func (d *Dispatcher) reopenGateTask(ctx context.Context, storyID string) string {
+	tasks, err := d.tasks.GetByStory(ctx, storyID)
+	if err != nil {
+		slog.Error("dispatcher: failed to get story tasks for gate re-open",
+			"story_id", storyID, "error", err)
+		return ""
+	}
+
+	// Find the highest-priority Done gate task (excluding release). "Highest
+	// priority" means the lowest rank in gateTaskTypePriority.
+	var best *models.Task
+	bestRank := -1
+	for _, t := range tasks {
+		if t.Status != models.StatusDone {
+			continue
+		}
+		rank, ok := gateTaskTypePriority[t.TaskType]
+		if !ok {
+			continue // release and non-gate tasks are excluded.
+		}
+		if best == nil || rank < bestRank {
+			best = t
+			bestRank = rank
+		}
+	}
+	if best == nil {
+		return ""
+	}
+
+	// Done -> Ready is not a valid transition, so step through StatusFailed
+	// (Done -> Failed is valid, and Failed -> Ready is valid).
+	if err := d.tasks.UpdateStatus(ctx, best.ID, models.StatusFailed); err != nil {
+		slog.Error("dispatcher: failed to transition gate task to failed for re-open",
+			"task_id", best.ID, "story_id", storyID, "error", err)
+		return ""
+	}
+	if err := d.tasks.UpdateStatus(ctx, best.ID, models.StatusReady); err != nil {
+		slog.Error("dispatcher: failed to transition gate task to ready for re-open",
+			"task_id", best.ID, "story_id", storyID, "error", err)
+		return ""
+	}
+
+	details, err := json.Marshal(map[string]string{
+		"story_id":  storyID,
+		"task_id":   best.ID,
+		"task_type": string(best.TaskType),
+	})
+	if err != nil {
+		slog.Error("dispatcher: failed to marshal gate re-open details", "error", err)
+	} else {
+		d.logActivity(ctx, best.ID, string(models.WorkItemTypeTask), "gate_reopened", string(details))
+	}
+
+	d.hub.Broadcast(EventGateTaskCreated, map[string]string{
+		"task_id":   best.ID,
+		"story_id":  storyID,
+		"task_type": string(best.TaskType),
+		"status":    string(models.StatusReady),
+	})
+
+	// Forward the re-opened gate task to the Gateway for ACP session creation.
+	projectID := ""
+	if story, err := d.stories.GetByID(ctx, storyID); err == nil {
+		projectID = story.ProjectID
+	} else {
+		slog.Error("dispatcher: failed to get story for gate re-open payload",
+			"story_id", storyID, "error", err)
+	}
+	d.submitToGateway(Event{
+		Type:   EventWorkRequested,
+		TaskID: best.ID,
+		Payload: map[string]string{
+			"story_id":   storyID,
+			"project_id": projectID,
+		},
+	})
+
+	slog.Info("dispatcher: re-opened gate task after remediation",
+		"task_id", best.ID, "story_id", storyID, "task_type", best.TaskType)
+
+	return best.ID
 }
 
 // resolveDependencies finds all tasks that depend on the just-completed task

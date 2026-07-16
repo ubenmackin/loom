@@ -3,6 +3,10 @@ package gateway
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -87,6 +91,7 @@ func newTestGateway(profiles []*models.AgentProfile) *Gateway {
 		acpClients:        make(map[string]*acp.Client),
 		sessionIDtoClient: make(map[string]*acp.Client),
 		profileTaskTypes:  make(map[string][]string),
+		filesInUse:        make(map[string]string),
 		profileStore:      &mockProfileStore{profiles: profiles},
 		taskStore:         &mockTaskStore{tasks: make(map[string]*models.Task)},
 		sessionStore:      &mockSessionStore{},
@@ -483,5 +488,288 @@ func TestReloadProfiles_PicksUpChanges(t *testing.T) {
 	agentType = g.resolveAgentType(context.Background(), event)
 	if agentType != "CodeAgent" {
 		t.Errorf("after reload: resolveAgentType() = %q, want %q", agentType, "CodeAgent")
+	}
+}
+
+type mockStoryStore struct {
+	mu      sync.Mutex
+	stories map[string]*models.Story
+}
+
+func (m *mockStoryStore) GetByID(_ context.Context, id string) (*models.Story, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.stories[id]
+	if !ok {
+		return nil, fmt.Errorf("story %q not found", id)
+	}
+	return s, nil
+}
+
+func (m *mockStoryStore) Update(_ context.Context, story *models.Story) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stories[story.ID] = story
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// File collision tests
+// ---------------------------------------------------------------------------
+
+// TestFileCollision_DeferOnOverlap verifies that when two tasks claim the same
+// file, the second task cannot acquire the file and is not dequeued until the
+// first releases it.
+func TestFileCollision_DeferOnOverlap(t *testing.T) {
+	g := newTestGateway(nil)
+
+	// Task 1 acquires foo.go.
+	if !g.acquireFiles("task-1", []string{"foo.go"}) {
+		t.Fatal("acquireFiles(task-1, [foo.go]) should succeed")
+	}
+
+	// Task 2 tries to acquire the same file — must fail.
+	if g.acquireFiles("task-2", []string{"foo.go"}) {
+		t.Fatal("acquireFiles(task-2, [foo.go]) should fail (collision)")
+	}
+
+	// Verify foo.go is still held by task-1.
+	g.mu.Lock()
+	holder := g.filesInUse["foo.go"]
+	g.mu.Unlock()
+	if holder != "task-1" {
+		t.Errorf("foo.go held by %q, want %q", holder, "task-1")
+	}
+}
+
+// TestFileCollision_ReleaseOnCompletion verifies that when a task holding a
+// file completes and releases it, another task claiming the same file can
+// acquire it.
+func TestFileCollision_ReleaseOnCompletion(t *testing.T) {
+	g := newTestGateway(nil)
+
+	// Task 1 acquires foo.go.
+	if !g.acquireFiles("task-1", []string{"foo.go"}) {
+		t.Fatal("acquireFiles(task-1, [foo.go]) should succeed")
+	}
+
+	// Release files (simulating task completion).
+	g.releaseFiles("task-1", []string{"foo.go"})
+
+	// Verify foo.go is released.
+	g.mu.Lock()
+	_, ok := g.filesInUse["foo.go"]
+	g.mu.Unlock()
+	if ok {
+		t.Fatal("foo.go should be released after releaseFiles")
+	}
+
+	// Task 2 should now be able to acquire foo.go.
+	if !g.acquireFiles("task-2", []string{"foo.go"}) {
+		t.Fatal("acquireFiles(task-2, [foo.go]) should succeed after release")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Worktree tests
+// ---------------------------------------------------------------------------
+
+// TestEnsureWorktree_AppliesCwdWithWorktreeRootOverride verifies that when a
+// custom git_worktree_root setting is provided, ensureWorktree uses it as the
+// worktree root path.
+func TestEnsureWorktree_AppliesCwdWithWorktreeRootOverride(t *testing.T) {
+	// Create a temp git repository.
+	repoDir, err := os.MkdirTemp("", "loom-worktree-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp repo dir: %v", err)
+	}
+	defer os.RemoveAll(repoDir)
+
+	initCmd := exec.Command("git", "init")
+	initCmd.Dir = repoDir
+	if err := initCmd.Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	writeFile := filepath.Join(repoDir, "README.md")
+	if err := os.WriteFile(writeFile, []byte("# test"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	addCmd := exec.Command("git", "add", "README.md")
+	addCmd.Dir = repoDir
+	if err := addCmd.Run(); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	commitCmd := exec.Command("git", "commit", "-m", "initial commit")
+	commitCmd.Dir = repoDir
+	if err := commitCmd.Run(); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+
+	// Custom worktree root via the setting store.
+	customRoot := filepath.Join(repoDir, "custom-worktrees")
+
+	ss := &mockSettingStore{
+		data: map[string]string{SettingKeyGitWorktreeRoot: customRoot},
+	}
+
+	g := &Gateway{
+		worktreeManager: NewWorktreeManager(filepath.Join(repoDir, ".loom", "worktrees")),
+		settingStore:    ss,
+		storyStore: &mockStoryStore{
+			stories: map[string]*models.Story{
+				"story-1": {
+					ID:     "story-1",
+					Title:  "Test Story",
+					Status: models.StatusReady,
+				},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	if err := g.ensureWorktree(ctx, "story-1", repoDir); err != nil {
+		t.Fatalf("ensureWorktree() error = %v", err)
+	}
+
+	// Verify the worktree was created at the custom root.
+	expectedPath := filepath.Join(customRoot, "story-1")
+	if info, err := os.Stat(expectedPath); err != nil || !info.IsDir() {
+		t.Fatalf("worktree path %q does not exist after ensureWorktree", expectedPath)
+	}
+}
+
+// TestEnsureWorktree_FallsBackToDefaultRoot verifies that when no override is
+// set, ensureWorktree uses the default .loom/worktrees/{storyID} path.
+func TestEnsureWorktree_FallsBackToDefaultRoot(t *testing.T) {
+	// Create a temp git repository.
+	repoDir, err := os.MkdirTemp("", "loom-worktree-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp repo dir: %v", err)
+	}
+	defer os.RemoveAll(repoDir)
+
+	initCmd := exec.Command("git", "init")
+	initCmd.Dir = repoDir
+	if err := initCmd.Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	writeFile := filepath.Join(repoDir, "README.md")
+	if err := os.WriteFile(writeFile, []byte("# test"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	addCmd := exec.Command("git", "add", "README.md")
+	addCmd.Dir = repoDir
+	if err := addCmd.Run(); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	commitCmd := exec.Command("git", "commit", "-m", "initial commit")
+	commitCmd.Dir = repoDir
+	if err := commitCmd.Run(); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+
+	defaultRoot := filepath.Join(repoDir, ".loom", "worktrees")
+
+	g := &Gateway{
+		worktreeManager: NewWorktreeManager(defaultRoot),
+		storyStore: &mockStoryStore{
+			stories: map[string]*models.Story{
+				"story-1": {
+					ID:     "story-1",
+					Title:  "Test Story",
+					Status: models.StatusReady,
+				},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	if err := g.ensureWorktree(ctx, "story-1", repoDir); err != nil {
+		t.Fatalf("ensureWorktree() error = %v", err)
+	}
+
+	// Verify the worktree was created at the default root.
+	expectedPath := filepath.Join(defaultRoot, "story-1")
+	if info, err := os.Stat(expectedPath); err != nil || !info.IsDir() {
+		t.Fatalf("worktree path %q does not exist after ensureWorktree", expectedPath)
+	}
+}
+
+// TestCreateWorktree_Idempotent calls CreateWorktree twice with the same
+// storyID and expects both calls to succeed without error. It creates a
+// temporary git repository, creates a worktree on the first call, and
+// verifies that the second call returns immediately because the directory
+// already exists.
+func TestCreateWorktree_Idempotent(t *testing.T) {
+	// Create a temporary directory for the git repository.
+	repoDir, err := os.MkdirTemp("", "loom-worktree-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp repo dir: %v", err)
+	}
+	defer os.RemoveAll(repoDir)
+
+	// Initialize a git repo in the temp directory.
+	initCmd := exec.Command("git", "init")
+	initCmd.Dir = repoDir
+	if err := initCmd.Run(); err != nil {
+		t.Fatalf("failed to git init: %v", err)
+	}
+
+	// Create an initial commit so that worktree add has a HEAD to branch from.
+	// git worktree add requires at least one commit on the current branch.
+	writeFile := filepath.Join(repoDir, "README.md")
+	if err := os.WriteFile(writeFile, []byte("# test"), 0o644); err != nil {
+		t.Fatalf("failed to create README.md: %v", err)
+	}
+	addCmd := exec.Command("git", "add", "README.md")
+	addCmd.Dir = repoDir
+	if err := addCmd.Run(); err != nil {
+		t.Fatalf("failed to git add: %v", err)
+	}
+	commitCmd := exec.Command("git", "commit", "-m", "initial commit")
+	commitCmd.Dir = repoDir
+	if err := commitCmd.Run(); err != nil {
+		t.Fatalf("failed to git commit: %v", err)
+	}
+
+	// Create a worktree manager rooted inside the repo's own temp area.
+	wmRoot := filepath.Join(repoDir, "worktrees")
+	wm := NewWorktreeManager(wmRoot)
+
+	storyID := "test-story-id"
+	branchName := "feature/story-test-story-id"
+
+	// First call — should create the worktree successfully.
+	path1, branch1, err1 := wm.CreateWorktree(repoDir, storyID, branchName)
+	if err1 != nil {
+		t.Fatalf("CreateWorktree (first call): unexpected error: %v", err1)
+	}
+	if path1 == "" {
+		t.Fatal("CreateWorktree (first call): returned empty path")
+	}
+	if branch1 != branchName {
+		t.Fatalf("CreateWorktree (first call): branch = %q, want %q", branch1, branchName)
+	}
+
+	// Verify the worktree directory actually exists on disk.
+	if info, err := os.Stat(path1); err != nil || !info.IsDir() {
+		t.Fatalf("CreateWorktree (first call): worktree path %q is not a directory", path1)
+	}
+
+	// Second call — should be idempotent and return immediately.
+	path2, branch2, err2 := wm.CreateWorktree(repoDir, storyID, branchName)
+	if err2 != nil {
+		t.Fatalf("CreateWorktree (second call): unexpected error: %v", err2)
+	}
+	if path2 == "" {
+		t.Fatal("CreateWorktree (second call): returned empty path")
+	}
+	if path2 != path1 {
+		t.Fatalf("CreateWorktree (second call): path = %q, want %q", path2, path1)
+	}
+	if branch2 != branch1 {
+		t.Fatalf("CreateWorktree (second call): branch = %q, want %q", branch2, branch1)
 	}
 }

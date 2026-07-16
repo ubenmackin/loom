@@ -1278,3 +1278,658 @@ func TestJSONCapabilities(t *testing.T) {
 		t.Error("capSet missing 'review'")
 	}
 }
+
+func TestReleaseGateCreation_SkipsCancelledTasks(t *testing.T) {
+	t.Parallel()
+
+	t.Run("story with cancelled code task plus done code tasks produces Release gate", func(t *testing.T) {
+		t.Parallel()
+
+		d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+			s.Title = "Release With Cancelled Story"
+			s.Status = models.StatusReady
+		})
+		story.RequiresReview = true
+		if err := storyStore.Update(ctx, story); err != nil {
+			t.Fatalf("update story: %v", err)
+		}
+
+		// Two code tasks: one Done, one Cancelled.
+		testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+			ts.StoryID = story.ID
+			ts.Title = "Code Task Done"
+			ts.Status = models.StatusDone
+			ts.TaskType = models.TaskTypeCode
+		})
+		testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+			ts.StoryID = story.ID
+			ts.Title = "Code Task Cancelled"
+			ts.Status = models.StatusCancelled
+			ts.TaskType = models.TaskTypeCode
+		})
+
+		// First pass: creates Review task (all code tasks terminal).
+		d.checkGateConditions(ctx, story.ID)
+
+		tasks, err := taskStore.GetByStory(ctx, story.ID)
+		if err != nil {
+			t.Fatalf("GetByStory() error = %v", err)
+		}
+
+		var reviewTask *models.Task
+		for _, tsk := range tasks {
+			if tsk.TaskType == models.TaskTypeReview {
+				reviewTask = tsk
+				break
+			}
+		}
+		if reviewTask == nil {
+			t.Fatal("Review task should be created when all code tasks are Done or Cancelled")
+		}
+
+		// Complete the Review task (ready → in_progress → done).
+		if err := taskStore.UpdateStatus(ctx, reviewTask.ID, models.StatusInProgress); err != nil {
+			t.Fatalf("update review task status to in_progress: %v", err)
+		}
+		if err := taskStore.UpdateStatus(ctx, reviewTask.ID, models.StatusDone); err != nil {
+			t.Fatalf("update review task status to done: %v", err)
+		}
+
+		// Second pass: should create Release task (cancelled code task treated as terminal).
+		d.checkGateConditions(ctx, story.ID)
+
+		tasks, err = taskStore.GetByStory(ctx, story.ID)
+		if err != nil {
+			t.Fatalf("GetByStory() error = %v", err)
+		}
+
+		var releaseTask *models.Task
+		for _, tsk := range tasks {
+			if tsk.TaskType == models.TaskTypeRelease {
+				releaseTask = tsk
+				break
+			}
+		}
+
+		if releaseTask == nil {
+			t.Fatal("Release gate should be created when all non-release tasks are Done or Cancelled")
+		}
+	})
+
+	t.Run("story with pending uncancelled code task does not produce Release gate", func(t *testing.T) {
+		t.Parallel()
+
+		d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+			s.Title = "Release Blocked By Pending Story"
+			s.Status = models.StatusReady
+		})
+		story.RequiresReview = true
+		if err := storyStore.Update(ctx, story); err != nil {
+			t.Fatalf("update story: %v", err)
+		}
+
+		// One done code task, one still pending (not cancelled).
+		testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+			ts.StoryID = story.ID
+			ts.Title = "Code Task Done"
+			ts.Status = models.StatusDone
+			ts.TaskType = models.TaskTypeCode
+		})
+		testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+			ts.StoryID = story.ID
+			ts.Title = "Code Task InProgress"
+			ts.Status = models.StatusInProgress
+			ts.TaskType = models.TaskTypeCode
+		})
+
+		// First pass: should NOT create Review because not all code tasks are terminal.
+		d.checkGateConditions(ctx, story.ID)
+
+		tasks, err := taskStore.GetByStory(ctx, story.ID)
+		if err != nil {
+			t.Fatalf("GetByStory() error = %v", err)
+		}
+
+		for _, tsk := range tasks {
+			if tsk.TaskType == models.TaskTypeReview {
+				t.Fatal("Review task should not be created when a code task is still pending")
+			}
+			if tsk.TaskType == models.TaskTypeRelease {
+				t.Fatal("Release task should not be created when a code task is still pending")
+			}
+		}
+	})
+}
+
+// TestGateReopensAfterRemediation_BuildTask verifies that when a remediation
+// code task completes (Done), the highest-priority Done gate task — Build — is
+// transitioned back to Ready so it can be re-run.
+func TestGateReopensAfterRemediation_BuildTask(t *testing.T) {
+	t.Parallel()
+
+	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Reopen Build Story"
+		s.Status = models.StatusReady
+	})
+	story.RequiresBuild = true
+	story.FailureCount = 1 // below the circuit breaker threshold (3)
+	if err := storyStore.Update(ctx, story); err != nil {
+		t.Fatalf("update story: %v", err)
+	}
+
+	// The original code task is Done.
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Original Code Task"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
+
+	// The Build gate task is Done (the failing gate we want to re-open).
+	buildTask := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Build Gate"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeBuild
+	})
+
+	// A remediation code task is in progress and now completes.
+	remediationTask := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Remediation Code"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeCode
+	})
+	if err := taskStore.UpdateStatus(ctx, remediationTask.ID, models.StatusDone); err != nil {
+		t.Fatalf("UpdateStatus(remediation, Done) error = %v", err)
+	}
+
+	d.handleTaskStatusChanged(ctx, Event{Type: EventTaskCompleted, TaskID: remediationTask.ID})
+
+	gotBuild, err := taskStore.GetByID(ctx, buildTask.ID)
+	if err != nil {
+		t.Fatalf("GetByID(build) error = %v", err)
+	}
+	if gotBuild.Status != models.StatusReady {
+		t.Errorf("Build task status = %q, want %q (re-opened after remediation)",
+			gotBuild.Status, models.StatusReady)
+	}
+}
+
+// TestGateReopensAfterRemediation_SecurityTask verifies that when the Build
+// gate is not Done but the Security gate is, completing a remediation code
+// task re-opens the Security gate.
+func TestGateReopensAfterRemediation_SecurityTask(t *testing.T) {
+	t.Parallel()
+
+	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Reopen Security Story"
+		s.Status = models.StatusReady
+	})
+	story.RequiresSecurity = true
+	story.RequiresBuild = false // no build gate — security is the highest priority Done gate
+	story.FailureCount = 1
+	if err := storyStore.Update(ctx, story); err != nil {
+		t.Fatalf("update story: %v", err)
+	}
+
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Original Code Task"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
+
+	securityTask := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Security Gate"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeSecurity
+	})
+
+	remediationTask := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Remediation Code"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeCode
+	})
+	if err := taskStore.UpdateStatus(ctx, remediationTask.ID, models.StatusDone); err != nil {
+		t.Fatalf("UpdateStatus(remediation, Done) error = %v", err)
+	}
+
+	d.handleTaskStatusChanged(ctx, Event{Type: EventTaskCompleted, TaskID: remediationTask.ID})
+
+	gotSecurity, err := taskStore.GetByID(ctx, securityTask.ID)
+	if err != nil {
+		t.Fatalf("GetByID(security) error = %v", err)
+	}
+	if gotSecurity.Status != models.StatusReady {
+		t.Errorf("Security task status = %q, want %q (re-opened after remediation)",
+			gotSecurity.Status, models.StatusReady)
+	}
+}
+
+// TestGateReopensAfterRemediation_CircuitBreakerStopsLoop verifies that when
+// the circuit breaker has tripped (story is "failed" after the 3rd gate
+// failure), completing a remediation code task does NOT re-open the gate —
+// the loop must stop.
+func TestGateReopensAfterRemediation_CircuitBreakerStopsLoop(t *testing.T) {
+	t.Parallel()
+
+	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Breaker Story"
+		s.Status = models.StatusReady
+	})
+	story.RequiresBuild = true
+	story.FailureCount = 3 // circuit breaker already tripped
+	story.Status = models.StatusFailed
+	if err := storyStore.Update(ctx, story); err != nil {
+		t.Fatalf("update story: %v", err)
+	}
+
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Original Code Task"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
+
+	buildTask := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Build Gate"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeBuild
+	})
+
+	// A remediation code task completes after the breaker tripped.
+	remediationTask := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Remediation Code"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeCode
+	})
+	if err := taskStore.UpdateStatus(ctx, remediationTask.ID, models.StatusDone); err != nil {
+		t.Fatalf("UpdateStatus(remediation, Done) error = %v", err)
+	}
+
+	d.handleTaskStatusChanged(ctx, Event{Type: EventTaskCompleted, TaskID: remediationTask.ID})
+
+	gotBuild, err := taskStore.GetByID(ctx, buildTask.ID)
+	if err != nil {
+		t.Fatalf("GetByID(build) error = %v", err)
+	}
+	if gotBuild.Status != models.StatusDone {
+		t.Errorf("Build task status = %q, want %q (circuit breaker should prevent re-open)",
+			gotBuild.Status, models.StatusDone)
+	}
+}
+
+// TestGateReopensOnlyForCodeRemediation verifies that completing a non-code
+// task (e.g., a gate task itself) does NOT trigger the gate re-open flow.
+func TestGateReopensOnlyForCodeRemediation(t *testing.T) {
+	t.Parallel()
+
+	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "No Reopen For Non-Code Story"
+		s.Status = models.StatusReady
+	})
+	story.RequiresBuild = true
+	story.RequiresReview = true
+	story.FailureCount = 1
+	if err := storyStore.Update(ctx, story); err != nil {
+		t.Fatalf("update story: %v", err)
+	}
+
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Original Code Task"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
+
+	buildTask := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Build Gate"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeBuild
+	})
+
+	// A Review gate task completes. Since it is NOT a code task, the
+	// re-open flow must not run, and the Build gate must stay Done.
+	reviewTask := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Review Gate"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeReview
+	})
+	if err := taskStore.UpdateStatus(ctx, reviewTask.ID, models.StatusDone); err != nil {
+		t.Fatalf("UpdateStatus(review, Done) error = %v", err)
+	}
+
+	d.handleTaskStatusChanged(ctx, Event{Type: EventTaskCompleted, TaskID: reviewTask.ID})
+
+	gotBuild, err := taskStore.GetByID(ctx, buildTask.ID)
+	if err != nil {
+		t.Fatalf("GetByID(build) error = %v", err)
+	}
+	if gotBuild.Status != models.StatusDone {
+		t.Errorf("Build task status = %q, want %q (non-code completion should not re-open gates)",
+			gotBuild.Status, models.StatusDone)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Circuit breaker tests
+// ---------------------------------------------------------------------------
+
+// TestCircuitBreaker_TripsAtThreeFailures verifies that when FailureCount
+// reaches 3, the story transitions to StatusFailed and EventStoryFailed is
+// broadcast.
+func TestCircuitBreaker_TripsAtThreeFailures(t *testing.T) {
+	t.Parallel()
+
+	d, broadcaster, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Breaker Trips Story"
+		s.Status = models.StatusReady
+	})
+	story.RequiresBuild = true
+	story.FailureCount = 2
+	if err := storyStore.Update(ctx, story); err != nil {
+		t.Fatalf("update story: %v", err)
+	}
+
+	// A remediation code task that is still InProgress — this causes
+	// detectGateFailure to return true when a gate task completes.
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Remediation Code"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeCode
+	})
+
+	// Create a Build gate task and complete it to trigger the failure.
+	buildTask := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Build Gate"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeBuild
+	})
+	if err := taskStore.UpdateStatus(ctx, buildTask.ID, models.StatusDone); err != nil {
+		t.Fatalf("UpdateStatus(build, Done) error = %v", err)
+	}
+
+	d.handleTaskStatusChanged(ctx, Event{Type: EventTaskCompleted, TaskID: buildTask.ID})
+
+	// Story should be failed.
+	gotStory, err := storyStore.GetByID(ctx, story.ID)
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if gotStory.Status != models.StatusFailed {
+		t.Errorf("Story status = %q, want %q", gotStory.Status, models.StatusFailed)
+	}
+	if gotStory.FailureCount != 3 {
+		t.Errorf("Story FailureCount = %d, want 3", gotStory.FailureCount)
+	}
+
+	// Verify EventStoryFailed was broadcast.
+	events := broadcaster.Events()
+	var foundStoryFailed bool
+	for _, e := range events {
+		if e.EventType == EventStoryFailed {
+			foundStoryFailed = true
+			break
+		}
+	}
+	if !foundStoryFailed {
+		t.Error("EventStoryFailed broadcast not found")
+	}
+}
+
+// TestCircuitBreaker_DoesNotTripBelowThreshold verifies that when FailureCount
+// is below 3, completing a gate task increments the count but does not fail
+// the story.
+func TestCircuitBreaker_DoesNotTripBelowThreshold(t *testing.T) {
+	t.Parallel()
+
+	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Below Threshold Story"
+		s.Status = models.StatusReady
+	})
+	story.RequiresBuild = true
+	story.FailureCount = 1
+	if err := storyStore.Update(ctx, story); err != nil {
+		t.Fatalf("update story: %v", err)
+	}
+
+	// A remediation code task that is still InProgress.
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Remediation Code"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeCode
+	})
+
+	// Create a Build gate task and complete it.
+	buildTask := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Build Gate"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeBuild
+	})
+	if err := taskStore.UpdateStatus(ctx, buildTask.ID, models.StatusDone); err != nil {
+		t.Fatalf("UpdateStatus(build, Done) error = %v", err)
+	}
+
+	d.handleTaskStatusChanged(ctx, Event{Type: EventTaskCompleted, TaskID: buildTask.ID})
+
+	gotStory, err := storyStore.GetByID(ctx, story.ID)
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if gotStory.FailureCount != 2 {
+		t.Errorf("Story FailureCount = %d, want 2", gotStory.FailureCount)
+	}
+	if gotStory.Status == models.StatusFailed {
+		t.Error("Story should not be failed with FailureCount < 3")
+	}
+}
+
+// TestCircuitBreaker_ResetAndRetry verifies that a failed story can be reset
+// (transitioned to StatusReady with FailureCount reset to 0) and then gate
+// creation works normally.
+func TestCircuitBreaker_ResetAndRetry(t *testing.T) {
+	t.Parallel()
+
+	d, _, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Start with a failed story (circuit breaker tripped).
+	story := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Reset And Retry Story"
+		s.Status = models.StatusFailed
+	})
+	story.RequiresBuild = true
+	story.FailureCount = 3
+	if err := storyStore.Update(ctx, story); err != nil {
+		t.Fatalf("update story: %v", err)
+	}
+
+	// Reset: transition StatusFailed → StatusReady and clear failure count.
+	if err := storyStore.UpdateStatus(ctx, story.ID, models.StatusReady); err != nil {
+		t.Fatalf("UpdateStatus(failed -> ready) error = %v", err)
+	}
+	// Re-fetch the story to get the fresh status before updating other fields.
+	freshStory, err := storyStore.GetByID(ctx, story.ID)
+	if err != nil {
+		t.Fatalf("GetByID() after status update error = %v", err)
+	}
+	freshStory.FailureCount = 0
+	freshStory.RequiresBuild = true
+	if err := storyStore.Update(ctx, freshStory); err != nil {
+		t.Fatalf("update story failure_count: %v", err)
+	}
+
+	// Verify the story is ready again.
+	gotStory, err := storyStore.GetByID(ctx, story.ID)
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if gotStory.Status != models.StatusReady {
+		t.Errorf("After reset: Story status = %q, want %q", gotStory.Status, models.StatusReady)
+	}
+	if gotStory.FailureCount != 0 {
+		t.Errorf("After reset: Story FailureCount = %d, want 0", gotStory.FailureCount)
+	}
+
+	// Run a gate cycle: add a Done code task, then check conditions.
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = story.ID
+		ts.Title = "Code Task"
+		ts.Status = models.StatusDone
+		ts.TaskType = models.TaskTypeCode
+	})
+
+	d.checkGateConditions(ctx, story.ID)
+
+	tasks, err := taskStore.GetByStory(ctx, story.ID)
+	if err != nil {
+		t.Fatalf("GetByStory() error = %v", err)
+	}
+
+	var buildTask *models.Task
+	for _, tsk := range tasks {
+		if tsk.TaskType == models.TaskTypeBuild {
+			buildTask = tsk
+			break
+		}
+	}
+	if buildTask == nil {
+		t.Fatal("checkGateConditions() did not create a Build task after reset")
+	}
+	if buildTask.Status != models.StatusReady {
+		t.Errorf("Build task status = %q, want %q", buildTask.Status, models.StatusReady)
+	}
+}
+
+// TestCircuitBreaker_AffectsOnlyItsStory verifies that when the circuit
+// breaker trips for one story, other stories are unaffected.
+func TestCircuitBreaker_AffectsOnlyItsStory(t *testing.T) {
+	t.Parallel()
+
+	d, broadcaster, _, storyStore, taskStore, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Story A: close to tripping (FailureCount=2).
+	storyA := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Story A"
+		s.Status = models.StatusReady
+	})
+	storyA.RequiresBuild = true
+	storyA.FailureCount = 2
+	if err := storyStore.Update(ctx, storyA); err != nil {
+		t.Fatalf("update story A: %v", err)
+	}
+
+	// Story B: clean (FailureCount=0).
+	storyB := testhelpers.CreateTestStory(t, storyStore, func(s *models.Story) {
+		s.Title = "Story B"
+		s.Status = models.StatusReady
+	})
+	storyB.RequiresBuild = true
+	storyB.FailureCount = 0
+	if err := storyStore.Update(ctx, storyB); err != nil {
+		t.Fatalf("update story B: %v", err)
+	}
+
+	// Add remediation code tasks (InProgress) for both stories.
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = storyA.ID
+		ts.Title = "Remediation A"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeCode
+	})
+	testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = storyB.ID
+		ts.Title = "Remediation B"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeCode
+	})
+
+	// Create Build gate tasks for both stories.
+	buildA := testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = storyA.ID
+		ts.Title = "Build A"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeBuild
+	})
+	_ = testhelpers.CreateTestTask(t, taskStore, func(ts *models.Task) {
+		ts.StoryID = storyB.ID
+		ts.Title = "Build B"
+		ts.Status = models.StatusInProgress
+		ts.TaskType = models.TaskTypeBuild
+	})
+
+	// Complete Story A's Build task — should trip circuit breaker.
+	if err := taskStore.UpdateStatus(ctx, buildA.ID, models.StatusDone); err != nil {
+		t.Fatalf("UpdateStatus(buildA, Done) error = %v", err)
+	}
+	d.handleTaskStatusChanged(ctx, Event{Type: EventTaskCompleted, TaskID: buildA.ID})
+
+	// Story A should be failed.
+	gotA, err := storyStore.GetByID(ctx, storyA.ID)
+	if err != nil {
+		t.Fatalf("GetByID(storyA) error = %v", err)
+	}
+	if gotA.Status != models.StatusFailed {
+		t.Errorf("Story A status = %q, want %q", gotA.Status, models.StatusFailed)
+	}
+
+	// Story B should be unaffected.
+	gotB, err := storyStore.GetByID(ctx, storyB.ID)
+	if err != nil {
+		t.Fatalf("GetByID(storyB) error = %v", err)
+	}
+	if gotB.Status == models.StatusFailed {
+		t.Error("Story B should not be failed")
+	}
+	if gotB.FailureCount != 0 {
+		t.Errorf("Story B FailureCount = %d, want 0 (unaffected)", gotB.FailureCount)
+	}
+
+	// Only one EventStoryFailed should have been broadcast (for story A).
+	events := broadcaster.Events()
+	storyFailedCount := 0
+	for _, e := range events {
+		if e.EventType == EventStoryFailed {
+			storyFailedCount++
+		}
+	}
+	if storyFailedCount != 1 {
+		t.Errorf("EventStoryFailed broadcast count = %d, want 1", storyFailedCount)
+	}
+}
