@@ -53,9 +53,13 @@ vi.mock('./pages/UsersPage', () => ({
   default: () => <div data-testid="users-page">Users</div>,
 }))
 
-vi.mock('./hooks/useWebSocket', () => ({
-  useWebSocket: vi.fn().mockReturnValue({ lastEvent: null }),
-}))
+vi.mock('./hooks/useWebSocket', () => {
+  const ctx = { Provider: ({ children }: { children: React.ReactNode }) => children }
+  return {
+    useWebSocket: vi.fn().mockReturnValue({ lastEvent: null }),
+    WebSocketContext: ctx,
+  }
+})
 
 // ── Imports (after mocks) ─────────────────────────────────────────────────
 

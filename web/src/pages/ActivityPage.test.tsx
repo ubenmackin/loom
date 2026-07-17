@@ -27,6 +27,9 @@ const mockEntries: ActivityLogEntry[] = [
     work_item_type: 'story',
     action: 'created',
     details: 'Created a new story',
+    project_id: '',
+    work_item_title: '',
+    project_name: '',
     created_at: '2025-05-26T10:00:00Z',
   },
   {
@@ -35,6 +38,9 @@ const mockEntries: ActivityLogEntry[] = [
     work_item_type: 'task',
     action: 'updated',
     details: 'Updated the task',
+    project_id: '',
+    work_item_title: '',
+    project_name: '',
     created_at: '2025-05-26T10:05:00Z',
   },
   {
@@ -42,6 +48,9 @@ const mockEntries: ActivityLogEntry[] = [
     work_item_id: 'story-def',
     work_item_type: 'story',
     action: 'status_changed',
+    project_id: '',
+    work_item_title: '',
+    project_name: '',
     created_at: '2025-05-26T10:10:00Z',
   },
 ]
@@ -137,14 +146,16 @@ describe('ActivityPage', () => {
       render(<ActivityPage />)
 
       // Story work_item_ids are rendered as buttons (clickable)
-      const storyButtons = screen.getAllByText('story-abc')
+      // formatWorkItemLabel produces "STO-{shortId}: {title}" (shortId = first 8 chars)
+      const storyButtons = screen.getAllByText(/STO-story-ab/)
       expect(storyButtons.length).toBeGreaterThanOrEqual(1)
       storyButtons.forEach((btn) => {
         expect(btn.tagName).toBe('BUTTON')
       })
 
       // Task work_item_id is rendered as plain text (not a button)
-      const taskId = screen.getByText('task-xyz')
+      // formatWorkItemLabel produces "TSK-task-xyz: " (8 chars, not truncated)
+      const taskId = screen.getByText(/TSK-task-xyz/)
       expect(taskId.tagName).not.toBe('BUTTON')
     })
 
@@ -188,8 +199,8 @@ describe('ActivityPage', () => {
 
       render(<ActivityPage />)
 
-      // Click the story-abc button
-      const storyButton = screen.getByText('story-abc')
+      // Click the formatted story label button
+      const storyButton = screen.getByText(/STO-story-ab/)
       await user.click(storyButton)
 
       expect(screen.getByTestId('story-detail')).toBeInTheDocument()

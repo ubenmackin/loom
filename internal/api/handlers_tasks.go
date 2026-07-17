@@ -434,6 +434,14 @@ func (h *handlers) generateTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the parent story once so we can stamp project_id on every
+	// activity entry written below.
+	story, storyErr := h.stories.GetByID(r.Context(), storyID)
+	projectID := ""
+	if storyErr == nil && story != nil {
+		projectID = story.ProjectID
+	}
+
 	// Activity logging (outside transaction — separate store).
 	for _, task := range created {
 		currentUser := GetUser(r)
@@ -446,7 +454,7 @@ func (h *handlers) generateTasks(w http.ResponseWriter, r *http.Request) {
 			WorkItemType: models.WorkItemTypeTask,
 			Action:       "task_created",
 			Details:      details,
-		})
+		}, projectID)
 	}
 
 	// Broadcast "tasks_generated" WebSocket event via the dispatcher.
@@ -469,7 +477,7 @@ func (h *handlers) generateTasks(w http.ResponseWriter, r *http.Request) {
 		WorkItemType: models.WorkItemTypeStory,
 		Action:       "tasks_generated",
 		Details:      batchDetails,
-	})
+	}, projectID)
 
 	respondJSON(w, http.StatusCreated, generateTasksResponse{Tasks: created})
 }

@@ -409,6 +409,14 @@ func (s *Server) handleStartWork(ctx context.Context, params map[string]any) (*T
 		return nil, fmt.Errorf("start work on task %q: %w", taskID, err)
 	}
 
+	// Resolve project_id for the activity log via the task's parent story.
+	projectID := ""
+	if task.StoryID != "" {
+		if story, storyErr := s.stories.GetByID(ctx, task.StoryID); storyErr == nil && story != nil {
+			projectID = story.ProjectID
+		}
+	}
+
 	// Log activity.
 	if s.activities != nil {
 		if err := s.activities.Log(ctx, &models.ActivityLogEntry{
@@ -416,6 +424,7 @@ func (s *Server) handleStartWork(ctx context.Context, params map[string]any) (*T
 			WorkItemType: models.WorkItemTypeTask,
 			Action:       "started",
 			Details:      fmt.Sprintf(`{"session_id":%q}`, sessionID),
+			ProjectID:    projectID,
 		}); err != nil {
 			slog.Error("mcp: failed to log activity", "error", err, "task_id", taskID)
 		}

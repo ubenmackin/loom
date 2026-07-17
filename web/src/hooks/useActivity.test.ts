@@ -17,6 +17,9 @@ const mockActivityData: ActivityLogEntry[] = [
     work_item_id: 'task-1',
     work_item_type: 'task',
     action: 'created',
+    project_id: '',
+    work_item_title: '',
+    project_name: '',
     created_at: '2024-01-01T00:00:00Z',
   },
 ]

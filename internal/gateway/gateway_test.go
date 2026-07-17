@@ -282,6 +282,7 @@ func TestNewGateway_LoadsGlobalMaxConcurrency(t *testing.T) {
 		nil, // activityStore
 		&mockProfileStore{},
 		ss,
+		nil, // hub — no WebSocket broadcasts in tests
 	)
 
 	// With maxTotal=3, we should be able to increment 3 distinct
@@ -316,6 +317,7 @@ func TestNewGateway_NoSettingStore_UsesDefaultMaxTotal(t *testing.T) {
 		nil, // activityStore
 		&mockProfileStore{},
 		nil, // settingStore — nil, so default should be used
+		nil, // hub — no WebSocket broadcasts in tests
 	)
 
 	// With maxTotal=5 (default), we should be able to increment 5
@@ -348,6 +350,7 @@ func TestNewGateway_SettingStoreReturnsError_UsesDefaultMaxTotal(t *testing.T) {
 		nil, // activityStore
 		&mockProfileStore{},
 		ss,
+		nil, // hub — no WebSocket broadcasts in tests
 	)
 
 	// With maxTotal=5 (default), we should be able to increment 5
@@ -381,6 +384,7 @@ func TestNewGateway_ZeroMaxTotalIsUnlimited(t *testing.T) {
 		nil, // activityStore
 		&mockProfileStore{},
 		ss,
+		nil, // hub — no WebSocket broadcasts in tests
 	)
 
 	// With maxTotal=0 (unlimited), HasCapacity should always return true
@@ -413,6 +417,7 @@ func TestNewGateway_InvalidSettingValue_UsesDefaultMaxTotal(t *testing.T) {
 		nil, // activityStore
 		&mockProfileStore{},
 		ss,
+		nil, // hub — no WebSocket broadcasts in tests
 	)
 
 	// With maxTotal=5 (default), we should be able to increment 5

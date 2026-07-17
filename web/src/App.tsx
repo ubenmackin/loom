@@ -12,18 +12,18 @@ import ProfilePage from './pages/ProfilePage'
 import ProfilesPage from './pages/ProfilesPage'
 import ProjectsPage from './pages/ProjectsPage'
 import UsersPage from './pages/UsersPage'
-import { useWebSocket } from './hooks/useWebSocket'
+import { useWebSocket, WebSocketContext } from './hooks/useWebSocket'
 import StoryFailedBanner from './components/StoryFailedBanner'
 import type { FailedStoryInfo } from './components/StoryFailedBanner'
 
 export default function App() {
-  const { lastEvent } = useWebSocket() // activate real-time invalidation
+  const ws = useWebSocket() // activate real-time invalidation
   const [failedStories, setFailedStories] = useState<FailedStoryInfo[]>([])
 
   // Listen for story_failed WebSocket events
   useEffect(() => {
-    if (!lastEvent || lastEvent.type !== 'story_failed') return
-    const data = lastEvent.data as { story_id?: string; title?: string; failure_count?: number }
+    if (!ws.lastEvent || ws.lastEvent.type !== 'story_failed') return
+    const data = ws.lastEvent.data as { story_id?: string; title?: string; failure_count?: number }
     const storyId = data.story_id
     const title = data.title
     const failureCount = data.failure_count
@@ -40,13 +40,14 @@ export default function App() {
         },
       ]
     })
-  }, [lastEvent])
+  }, [ws.lastEvent])
 
   const handleDismissBanner = useCallback((storyId: string) => {
     setFailedStories((prev) => prev.filter((f) => f.storyId !== storyId))
   }, [])
 
   return (
+    <WebSocketContext.Provider value={{ isConnected: ws.isConnected, lastEvent: ws.lastEvent }}>
     <>
       {/* Global notification banners */}
       {failedStories.length > 0 && (
@@ -80,5 +81,6 @@ export default function App() {
         </Route>
       </Routes>
     </>
+    </WebSocketContext.Provider>
   )
 }

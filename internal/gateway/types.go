@@ -58,3 +58,40 @@ type GatewayEvent struct {
 	SessionID string
 	Payload   interface{}
 }
+
+// ---------------------------------------------------------------------------
+// WebSocket broadcast payload types for gateway status events.
+// ---------------------------------------------------------------------------
+
+// SessionProjectEntry holds a session count for a project with its resolved
+// name, replacing the raw map[string]int for WebSocket broadcasts.
+type SessionProjectEntry struct {
+	ProjectID   string `json:"project_id"`
+	ProjectName string `json:"project_name"`
+	Count       int    `json:"count"`
+}
+
+// QueueJobEntry holds a queued job with the resolved project name.
+type QueueJobEntry struct {
+	ID          string `json:"id"`
+	ProjectID   string `json:"project_id"`
+	ProjectName string `json:"project_name"`
+	AgentType   string `json:"agent_type"`
+	TaskID      string `json:"task_id"`
+	EventRef    string `json:"event_ref"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// GatewayStatusBroadcast is the payload for periodic gateway_status
+// WebSocket broadcasts. It carries resolved project names for both
+// session counts and queued jobs.
+type GatewayStatusBroadcast struct {
+	Running           bool                  `json:"running"`
+	ActiveSessions    int                   `json:"active_sessions"`
+	QueueDepth        int                   `json:"queue_depth"`
+	EventsProcessed   int64                 `json:"events_processed"`
+	UptimeSeconds     int64                 `json:"uptime_seconds"`
+	SessionsByProject []SessionProjectEntry `json:"sessions_by_project"`
+	SessionsByAgent   map[string]int        `json:"sessions_by_agent"`
+	QueueJobs         []QueueJobEntry       `json:"queue_jobs"`
+}

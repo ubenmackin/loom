@@ -24,6 +24,8 @@ const (
 	EventCommentAdded      = "comment_added"
 	EventTaskStale         = "task_stale"
 	EventBoardRefresh      = "board_refresh"
+	EventGatewayStatus     = "gateway_status"
+	EventDispatcherStatus  = "dispatcher_status"
 )
 
 // BroadcastEvent is the JSON structure sent to all connected clients.

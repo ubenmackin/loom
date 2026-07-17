@@ -141,7 +141,7 @@ func (h *handlers) createStory(w http.ResponseWriter, r *http.Request) {
 		WorkItemType: models.WorkItemTypeStory,
 		Action:       "story_created",
 		Details:      details,
-	})
+	}, story.ProjectID)
 
 	respondJSON(w, http.StatusCreated, story)
 }
@@ -310,7 +310,7 @@ func (h *handlers) updateStory(w http.ResponseWriter, r *http.Request) {
 		WorkItemType: models.WorkItemTypeStory,
 		Action:       "story_updated",
 		Details:      details,
-	})
+	}, story.ProjectID)
 
 	respondJSON(w, http.StatusOK, story)
 }
@@ -409,7 +409,7 @@ func (h *handlers) planStory(w http.ResponseWriter, r *http.Request) {
 		WorkItemType: models.WorkItemTypeStory,
 		Action:       "story_planning_started",
 		Details:      details,
-	})
+	}, story.ProjectID)
 
 	respondJSON(w, http.StatusOK, story)
 }
@@ -524,7 +524,7 @@ func (h *handlers) setStoryStatus(w http.ResponseWriter, r *http.Request) {
 		WorkItemType: models.WorkItemTypeStory,
 		Action:       "status_changed",
 		Details:      details,
-	})
+	}, story.ProjectID)
 
 	respondJSON(w, http.StatusOK, story)
 }

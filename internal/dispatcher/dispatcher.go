@@ -60,8 +60,10 @@ type Dispatcher struct {
 	stopped atomic.Bool
 	started atomic.Bool
 
-	startedAt       time.Time
-	eventsProcessed map[string]*atomic.Int64
+	startedAt          time.Time
+	lastAssignPass     atomic.Pointer[time.Time]
+	lastStalenessCheck atomic.Pointer[time.Time]
+	eventsProcessed    map[string]*atomic.Int64
 }
 
 // DispatcherDeps groups all dependencies required by the Dispatcher.
@@ -80,11 +82,18 @@ type DispatcherDeps struct {
 // returned by Dispatcher.Status(). All fields are safe to read without
 // blocking the event loop.
 type DispatcherStatus struct {
-	Running         bool
-	StartedAt       time.Time
-	Uptime          time.Duration
-	EventQueueDepth int
-	EventsProcessed map[string]int64
+	Running            bool
+	StartedAt          time.Time
+	Uptime             time.Duration
+	EventQueueDepth    int
+	EventsProcessed    map[string]int64
+	ReadyTasks         int        // count of tasks in "ready" status
+	ActiveSessions     int        // count of active sessions
+	PendingBuildGates  int        // build gate tasks in ready or in_progress
+	PendingReviewGates int        // review gate tasks in ready or in_progress
+	StaleSessions      int        // count of stale sessions (last seen > threshold)
+	LastAssignPass     *time.Time // timestamp of most recent assignment pass
+	LastStalenessCheck *time.Time // timestamp of most recent staleness check
 }
 
 // NewDispatcher creates a new Dispatcher with the given dependencies.
@@ -144,7 +153,10 @@ func (d *Dispatcher) Stop() {
 
 // Status returns a snapshot of the dispatcher's runtime state. It never
 // blocks the event loop — all values are read atomically or from immutable
-// fields.
+// fields. Count queries use a short-lived background context; if they fail,
+// the corresponding fields are left at their zero values (0/nil) to keep the
+// snapshot always available even when the database is temporarily
+// unavailable.
 func (d *Dispatcher) Status() DispatcherStatus {
 	s := DispatcherStatus{
 		Running:         !d.stopped.Load(),
@@ -158,6 +170,46 @@ func (d *Dispatcher) Status() DispatcherStatus {
 	for typ, ctr := range d.eventsProcessed {
 		s.EventsProcessed[typ] = ctr.Load()
 	}
+
+	// Pipeline metrics: populate counts via lightweight store queries.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if count, err := d.tasks.CountByFilter(ctx, store.TaskFilter{Status: models.StatusReady}); err == nil {
+		s.ReadyTasks = count
+	}
+
+	if active, err := d.sessions.ListActive(ctx); err == nil {
+		s.ActiveSessions = len(active)
+	}
+
+	if count, err := d.tasks.CountByTypesAndStatuses(ctx,
+		[]models.TaskType{models.TaskTypeBuild},
+		[]models.Status{models.StatusReady, models.StatusInProgress},
+	); err == nil {
+		s.PendingBuildGates = count
+	}
+
+	if count, err := d.tasks.CountByTypesAndStatuses(ctx,
+		[]models.TaskType{models.TaskTypeReview},
+		[]models.Status{models.StatusReady, models.StatusInProgress},
+	); err == nil {
+		s.PendingReviewGates = count
+	}
+
+	if count, err := d.sessions.CountStale(ctx, d.stalenessThreshold); err == nil {
+		s.StaleSessions = count
+	}
+
+	if p := d.lastAssignPass.Load(); p != nil && !p.IsZero() {
+		t := *p
+		s.LastAssignPass = &t
+	}
+	if p := d.lastStalenessCheck.Load(); p != nil && !p.IsZero() {
+		t := *p
+		s.LastStalenessCheck = &t
+	}
+
 	return s
 }
 
@@ -210,6 +262,9 @@ func (d *Dispatcher) run() {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
+	statusTicker := time.NewTicker(3 * time.Second)
+	defer statusTicker.Stop()
+
 	slog.Info("dispatcher started")
 
 	for {
@@ -224,6 +279,11 @@ func (d *Dispatcher) run() {
 		case <-ticker.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			d.checkStaleness(ctx)
+			cancel()
+
+		case <-statusTicker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			d.broadcastDispatcherStatus(ctx)
 			cancel()
 		}
 	}
@@ -421,7 +481,7 @@ func (d *Dispatcher) tryUnblockTask(ctx context.Context, taskID string) {
 		slog.Error("dispatcher: failed to unblock task", "task_id", taskID, "error", err)
 		return
 	}
-	d.logActivity(ctx, taskID, string(models.WorkItemTypeTask), "unblocked", "")
+	d.logActivity(ctx, taskID, string(models.WorkItemTypeTask), "unblocked", "", d.resolveProjectIDFromTask(ctx, taskID))
 	d.hub.Broadcast(EventTaskCompleted, map[string]string{
 		"task_id": taskID,
 		"status":  string(models.StatusReady),
@@ -429,12 +489,15 @@ func (d *Dispatcher) tryUnblockTask(ctx context.Context, taskID string) {
 }
 
 // logActivity is a helper that logs an activity entry and logs any error.
-func (d *Dispatcher) logActivity(ctx context.Context, workItemID, workItemType, action, details string) {
+// The projectID argument scopes the entry to a project so activity can be
+// filtered by project without joining through the work item.
+func (d *Dispatcher) logActivity(ctx context.Context, workItemID, workItemType, action, details, projectID string) {
 	entry := &models.ActivityLogEntry{
 		WorkItemID:   workItemID,
 		WorkItemType: models.WorkItemType(workItemType),
 		Action:       action,
 		Details:      details,
+		ProjectID:    projectID,
 	}
 	if err := d.activities.Log(ctx, entry); err != nil {
 		slog.Error("dispatcher: failed to log activity",
@@ -442,4 +505,85 @@ func (d *Dispatcher) logActivity(ctx context.Context, workItemID, workItemType, 
 			"action", action,
 			"error", err)
 	}
+}
+
+// broadcastDispatcherStatus gathers the current dispatcher runtime state and
+// broadcasts it to all connected WebSocket clients via the hub. If the hub is
+// nil (e.g., MCP-only mode), the method is a no-op.
+func (d *Dispatcher) broadcastDispatcherStatus(ctx context.Context) {
+	if d.hub == nil {
+		return
+	}
+
+	s := d.Status()
+
+	type dispatcherStatusBroadcast struct {
+		Running            bool             `json:"running"`
+		StartedAt          string           `json:"started_at"`
+		UptimeSeconds      float64          `json:"uptime_seconds"`
+		EventQueueDepth    int              `json:"event_queue_depth"`
+		EventsProcessed    map[string]int64 `json:"events_processed"`
+		ReadyTasks         int              `json:"ready_tasks"`
+		ActiveSessions     int              `json:"active_sessions"`
+		PendingBuildGates  int              `json:"pending_build_gates"`
+		PendingReviewGates int              `json:"pending_review_gates"`
+		StaleSessions      int              `json:"stale_sessions"`
+		LastAssignPass     *string          `json:"last_assign_pass"`
+		LastStalenessCheck *string          `json:"last_staleness_check"`
+	}
+
+	payload := dispatcherStatusBroadcast{
+		Running:            s.Running,
+		StartedAt:          s.StartedAt.Format(time.RFC3339),
+		UptimeSeconds:      s.Uptime.Seconds(),
+		EventQueueDepth:    s.EventQueueDepth,
+		EventsProcessed:    s.EventsProcessed,
+		ReadyTasks:         s.ReadyTasks,
+		ActiveSessions:     s.ActiveSessions,
+		PendingBuildGates:  s.PendingBuildGates,
+		PendingReviewGates: s.PendingReviewGates,
+		StaleSessions:      s.StaleSessions,
+	}
+
+	if s.LastAssignPass != nil {
+		str := s.LastAssignPass.Format(time.RFC3339)
+		payload.LastAssignPass = &str
+	}
+	if s.LastStalenessCheck != nil {
+		str := s.LastStalenessCheck.Format(time.RFC3339)
+		payload.LastStalenessCheck = &str
+	}
+
+	d.hub.Broadcast(EventDispatcherStatus, payload)
+}
+
+// resolveProjectIDFromTask performs the two-hop lookup (task → story →
+// project) and returns the project_id for the given task. Returns an empty
+// string if the task or its story cannot be found, or if the story has no
+// project set. Errors from the underlying store calls are logged but
+// suppressed so the caller can safely use the result for activity logging
+// even when the lookup fails.
+func (d *Dispatcher) resolveProjectIDFromTask(ctx context.Context, taskID string) string {
+	if taskID == "" {
+		return ""
+	}
+	task, err := d.tasks.GetByID(ctx, taskID)
+	if err != nil {
+		slog.Debug("dispatcher: failed to load task for project_id lookup",
+			"task_id", taskID, "error", err)
+		return ""
+	}
+	if task == nil || task.StoryID == "" {
+		return ""
+	}
+	story, err := d.stories.GetByID(ctx, task.StoryID)
+	if err != nil {
+		slog.Debug("dispatcher: failed to load story for project_id lookup",
+			"task_id", taskID, "story_id", task.StoryID, "error", err)
+		return ""
+	}
+	if story == nil {
+		return ""
+	}
+	return story.ProjectID
 }

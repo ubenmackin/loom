@@ -102,6 +102,22 @@ func (s *SessionStore) Disconnect(ctx context.Context, id string) error {
 	return requireOneRow(result, nil, "session", id)
 }
 
+// CountStale returns the count of active sessions whose last_seen_at is older
+// than the given threshold from now. This is a lightweight COUNT query
+// suitable for status snapshots.
+func (s *SessionStore) CountStale(ctx context.Context, threshold time.Duration) (int, error) {
+	cutoff := time.Now().UTC().Add(-threshold)
+
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sessions
+		 WHERE last_seen_at < ? AND status = ?`, cutoff, models.SessionStatusActive).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count stale sessions: %w", err)
+	}
+	return count, nil
+}
+
 // GetStaleSessions returns active sessions whose last_seen_at is older than
 // the given threshold from now.
 func (s *SessionStore) GetStaleSessions(ctx context.Context, threshold time.Duration) ([]*models.Session, error) {

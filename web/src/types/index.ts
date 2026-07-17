@@ -143,6 +143,9 @@ export interface ActivityLogEntry {
   work_item_type: WorkItemTypeType
   action: string
   details?: string
+  project_id: string
+  work_item_title: string
+  project_name: string
   created_at: string
 }
 
@@ -188,6 +191,13 @@ export interface DispatcherStatus {
   event_queue_depth: number
   events_processed: Record<string, number>
   started_at: string
+  ready_tasks: number
+  active_sessions: number
+  pending_build_gates: number
+  pending_review_gates: number
+  stale_sessions: number
+  last_assign_pass: string | null
+  last_staleness_check: string | null
 }
 
 // ── WebSocket Events ────────────────────────────────────────────────────

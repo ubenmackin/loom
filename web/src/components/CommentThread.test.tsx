@@ -19,7 +19,7 @@ const mockComments: Comment[] = [
 ]
 
 const mockActivities: ActivityLogEntry[] = [
-  { id: 'a1', work_item_id: 'story-1', work_item_type: 'story', action: 'created', details: 'Story created', created_at: '2025-01-01T11:00:00Z' },
+  { id: 'a1', work_item_id: 'story-1', work_item_type: 'story', action: 'created', details: 'Story created', project_id: '', work_item_title: '', project_name: '', created_at: '2025-01-01T11:00:00Z' },
 ]
 
 const mockAgentComment: Comment = {
