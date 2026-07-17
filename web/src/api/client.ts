@@ -242,13 +242,14 @@ export interface GatewayStatus {
   queue_depth: number
   events_processed: number
   uptime_seconds: number
-  sessions_by_project: Record<string, number>
+  sessions_by_project: Array<{ project_id: string; project_name: string; count: number }>
   sessions_by_agent: Record<string, number>
 }
 
 export interface GatewayJob {
   id: string
   project_id: string
+  project_name?: string
   agent_type: string
   task_id: string
   event_ref: string

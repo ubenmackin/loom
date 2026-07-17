@@ -26,17 +26,19 @@ func NewActivityStore(db *sql.DB) *ActivityStore {
 func scanActivityRow(scanner interface{ Scan(...any) error }) (*models.ActivityLogEntry, error) {
 	entry := &models.ActivityLogEntry{}
 	var details sql.NullString
+	var projectID sql.NullString
 	var createdAt sql.NullTime
 
 	err := scanner.Scan(
 		&entry.ID, &entry.WorkItemID, &entry.WorkItemType,
-		&entry.Action, &details, &createdAt,
+		&entry.Action, &details, &projectID, &createdAt,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	entry.Details = stringOrZero(details)
+	entry.ProjectID = stringOrZero(projectID)
 	entry.CreatedAt = timeOrZero(createdAt)
 
 	return entry, nil
@@ -51,10 +53,10 @@ func (s *ActivityStore) Log(ctx context.Context, entry *models.ActivityLogEntry)
 	entry.CreatedAt = time.Now().UTC()
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO activity_log (id, work_item_id, work_item_type, action, details, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO activity_log (id, work_item_id, work_item_type, action, details, project_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		entry.ID, entry.WorkItemID, entry.WorkItemType, entry.Action,
-		entry.Details, entry.CreatedAt,
+		entry.Details, entry.ProjectID, entry.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert activity log: %w", err)
@@ -70,7 +72,7 @@ func (s *ActivityStore) GetByWorkItem(ctx context.Context, workItemID string, wo
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, work_item_id, work_item_type, action, details, created_at
+		`SELECT id, work_item_id, work_item_type, action, details, project_id, created_at
 		 FROM activity_log
 		 WHERE work_item_id = ? AND work_item_type = ?
 		 ORDER BY created_at DESC
@@ -91,7 +93,7 @@ func (s *ActivityStore) GetByWorkItem(ctx context.Context, workItemID string, wo
 // GetByID retrieves a single activity log entry by ID.
 func (s *ActivityStore) GetByID(ctx context.Context, id string) (*models.ActivityLogEntry, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, work_item_id, work_item_type, action, details, created_at
+		`SELECT id, work_item_id, work_item_type, action, details, project_id, created_at
 		 FROM activity_log WHERE id = ?`, id)
 
 	entry, err := scanActivityRow(row)
@@ -113,7 +115,7 @@ func (s *ActivityStore) GetByAction(ctx context.Context, limit, offset int, acti
 		limit = 50
 	}
 
-	query := `SELECT id, work_item_id, work_item_type, action, details, created_at
+	query := `SELECT id, work_item_id, work_item_type, action, details, project_id, created_at
 		 FROM activity_log`
 	args := make([]any, 0)
 
@@ -149,7 +151,7 @@ func (s *ActivityStore) GetRecent(ctx context.Context, limit int) ([]*models.Act
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, work_item_id, work_item_type, action, details, created_at
+		`SELECT id, work_item_id, work_item_type, action, details, project_id, created_at
 		FROM activity_log
 		ORDER BY created_at DESC
 		LIMIT ?`, limit)

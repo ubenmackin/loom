@@ -590,6 +590,79 @@ func (s *TaskStore) Delete(ctx context.Context, id string) error {
 	return requireOneRow(result, nil, "task", id)
 }
 
+// CountByFilter returns the count of tasks matching the given filter.
+// It uses the same filtering logic as List, but performs a lightweight
+// COUNT query instead of fetching full rows.
+func (s *TaskStore) CountByFilter(ctx context.Context, filter TaskFilter) (int, error) {
+	var conditions []string
+	var args []any
+
+	if filter.StoryID != "" {
+		conditions = append(conditions, "story_id = ?")
+		args = append(args, filter.StoryID)
+	}
+	if filter.Status != "" {
+		conditions = append(conditions, "status = ?")
+		args = append(args, filter.Status)
+	}
+	if filter.AssignedTo != "" {
+		conditions = append(conditions, "assigned_to = ?")
+		args = append(args, filter.AssignedTo)
+	}
+	if filter.TaskType != "" {
+		conditions = append(conditions, "task_type = ?")
+		args = append(args, filter.TaskType)
+	}
+
+	query := "SELECT COUNT(*) FROM tasks"
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	var count int
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count tasks: %w", err)
+	}
+	return count, nil
+}
+
+// CountByTypesAndStatuses returns the count of tasks matching any of the
+// given task types AND any of the given statuses (OR semantics within each
+// list, AND between type and status). This is optimized for counting gate
+// tasks in non-terminal states (e.g., build/review in ready/in_progress).
+func (s *TaskStore) CountByTypesAndStatuses(ctx context.Context, taskTypes []models.TaskType, statuses []models.Status) (int, error) {
+	if len(taskTypes) == 0 || len(statuses) == 0 {
+		return 0, nil
+	}
+
+	typePlaceholders := make([]string, len(taskTypes))
+	statusPlaceholders := make([]string, len(statuses))
+	args := make([]any, 0, len(taskTypes)+len(statuses))
+
+	for i, tt := range taskTypes {
+		typePlaceholders[i] = "?"
+		args = append(args, tt)
+	}
+	for i, s := range statuses {
+		statusPlaceholders[i] = "?"
+		args = append(args, s)
+	}
+
+	query := fmt.Sprintf(
+		"SELECT COUNT(*) FROM tasks WHERE task_type IN (%s) AND status IN (%s)",
+		strings.Join(typePlaceholders, ","),
+		strings.Join(statusPlaceholders, ","),
+	)
+
+	var count int
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count tasks by types and statuses: %w", err)
+	}
+	return count, nil
+}
+
 // GetBlockersForTasks batch-fetches blockers for a set of tasks. Returns a
 // map from task ID to its blocker task IDs that are not yet done.
 func (s *TaskStore) GetBlockersForTasks(ctx context.Context, taskIDs []string) (map[string][]string, error) {

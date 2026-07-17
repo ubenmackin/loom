@@ -301,6 +301,9 @@ const handlers = [
       work_item_type: 'task',
       action: 'status_change',
       details: 'changed from new to in_progress',
+      project_id: '',
+      work_item_title: '',
+      project_name: '',
       created_at: '2025-01-01T00:00:00Z',
     }
     return HttpResponse.json([entry])
@@ -312,6 +315,9 @@ const handlers = [
       work_item_id: 'story-1',
       work_item_type: 'story',
       action: 'created',
+      project_id: '',
+      work_item_title: '',
+      project_name: '',
       created_at: '2025-01-01T00:00:00Z',
     }
     return HttpResponse.json([entry])
@@ -326,6 +332,9 @@ const handlers = [
         work_item_id: 'task-1',
         work_item_type: 'task',
         action: 'status_change',
+        project_id: '',
+        work_item_title: '',
+        project_name: '',
         created_at: '2025-01-01T00:00:00Z',
       },
     ]

@@ -209,6 +209,7 @@ type ActivityLogEntry struct {
 	WorkItemType WorkItemType `json:"work_item_type"`
 	Action       string       `json:"action"`
 	Details      string       `json:"details,omitempty"` // JSON as text
+	ProjectID    string       `json:"project_id"`
 	CreatedAt    time.Time    `json:"created_at"`
 }
 

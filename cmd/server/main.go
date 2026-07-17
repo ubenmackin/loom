@@ -226,6 +226,7 @@ func runHTTP(cfg serverConfig, database *sql.DB, stores *Stores) error {
 		stores.Activity,
 		stores.Profile,
 		stores.Setting,
+		hub,
 	)
 	d.SetGateway(gw)
 	gw.Start()

@@ -126,7 +126,7 @@ describe('useWebSocket', () => {
     expect(result.current.lastEvent).toEqual(event)
   })
 
-  it('invalidates board, activity, and sessions queries on message (debounced)', () => {
+  it('invalidates targeted queries based on event type (debounced)', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
@@ -143,21 +143,63 @@ describe('useWebSocket', () => {
     const ws = FakeWebSocket.instances[0]
     act(() => {
       ws.triggerOpen()
+    })
+
+    // board_updated should only invalidate 'board'
+    act(() => {
       ws.triggerMessage(JSON.stringify({ type: 'board_updated' }))
     })
 
-    // Invalidation is debounced by 500ms, so it hasn't fired yet
     expect(spy).not.toHaveBeenCalled()
 
-    // Advance past the debounce window
     act(() => {
       vi.advanceTimersByTime(500)
     })
 
-    expect(spy).toHaveBeenCalledTimes(3)
+    expect(spy).toHaveBeenCalledTimes(1)
     expect(spy).toHaveBeenCalledWith({ queryKey: ['board'] })
+
+    spy.mockClear()
+
+    // activity_updated should only invalidate 'activity'
+    act(() => {
+      ws.triggerMessage(JSON.stringify({ type: 'activity_updated' }))
+    })
+
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+
+    expect(spy).toHaveBeenCalledTimes(1)
     expect(spy).toHaveBeenCalledWith({ queryKey: ['activity'] })
+
+    spy.mockClear()
+
+    // session_updated should only invalidate 'sessions'
+    act(() => {
+      ws.triggerMessage(JSON.stringify({ type: 'session_updated' }))
+    })
+
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+
+    expect(spy).toHaveBeenCalledTimes(1)
     expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+
+    spy.mockClear()
+
+    // gateway_status should invalidate 'gateway-status'
+    act(() => {
+      ws.triggerMessage(JSON.stringify({ type: 'gateway_status' }))
+    })
+
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy).toHaveBeenCalledWith({ queryKey: ['gateway-status'] })
   })
 
   it('does not call invalidateQueries for irrelevant messages (e.g. ping)', () => {

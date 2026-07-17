@@ -13,6 +13,7 @@ import (
 	"github.com/ubenmackin/loom/internal/acp"
 	"github.com/ubenmackin/loom/internal/dispatcher"
 	"github.com/ubenmackin/loom/internal/models"
+	"github.com/ubenmackin/loom/internal/ws"
 )
 
 // ---------------------------------------------------------------------------
@@ -27,6 +28,11 @@ const stalenessThreshold = 5 * time.Minute
 // stalenessCheckInterval controls how often the gateway checks for stale
 // sessions.
 const stalenessCheckInterval = 30 * time.Second
+
+// gatewayStatusBroadcastInterval controls how often the gateway broadcasts
+// its status via the WebSocket hub. Set to 2–3 seconds for near-realtime
+// updates without saturating the broadcast channel.
+const gatewayStatusBroadcastInterval = 2500 * time.Millisecond
 
 // ---------------------------------------------------------------------------
 // File-collision-aware parallel scheduling
@@ -103,10 +109,14 @@ func (g *Gateway) releaseFilesForTask(ctx context.Context, taskID string) {
 // ---------------------------------------------------------------------------
 
 // run is the main gateway event loop. It processes events from the event
-// channel and performs periodic staleness checks.
+// channel and performs periodic staleness checks and gateway status
+// broadcasts.
 func (g *Gateway) run() {
-	ticker := time.NewTicker(stalenessCheckInterval)
-	defer ticker.Stop()
+	staleTicker := time.NewTicker(stalenessCheckInterval)
+	defer staleTicker.Stop()
+
+	statusTicker := time.NewTicker(gatewayStatusBroadcastInterval)
+	defer statusTicker.Stop()
 
 	slog.Info("gateway: event loop started")
 
@@ -119,9 +129,14 @@ func (g *Gateway) run() {
 		case event := <-g.eventCh:
 			g.processEvent(context.Background(), event)
 
-		case <-ticker.C:
+		case <-staleTicker.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			g.checkStaleness(ctx)
+			cancel()
+
+		case <-statusTicker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			g.broadcastGatewayStatus(ctx)
 			cancel()
 		}
 	}
@@ -299,7 +314,8 @@ func (g *Gateway) processCreateSession(ctx context.Context, event dispatcher.Eve
 			"agent_type", agentType,
 			"error", err)
 		g.logActivity(ctx, projectID, "project", "gateway_session_create_failed",
-			fmt.Sprintf("agent_type=%s project=%s error=%v", agentType, projectName, err))
+			fmt.Sprintf("agent_type=%s project=%s error=%v", agentType, projectName, err),
+			projectID)
 		return
 	}
 
@@ -312,7 +328,8 @@ func (g *Gateway) processCreateSession(ctx context.Context, event dispatcher.Eve
 	}
 
 	g.logActivity(ctx, projectID, "project", "gateway_session_created",
-		fmt.Sprintf("agent_type=%s project=%s", agentType, projectName))
+		fmt.Sprintf("agent_type=%s project=%s", agentType, projectName),
+		projectID)
 }
 
 // processAssignTask handles the assign_task action. It finds an available
@@ -348,7 +365,8 @@ func (g *Gateway) processAssignTask(ctx context.Context, event dispatcher.Event,
 				g.queue.Enqueue(projectID, agentType, taskID, event.Type)
 				g.logActivity(ctx, taskID, string(models.WorkItemTypeTask),
 					"gateway_task_queued",
-					fmt.Sprintf("agent_type=%s reason=file_collision", agentType))
+					fmt.Sprintf("agent_type=%s reason=file_collision", agentType),
+					projectID)
 				return
 			}
 		}
@@ -374,7 +392,8 @@ func (g *Gateway) processAssignTask(ctx context.Context, event dispatcher.Event,
 			g.queue.Enqueue(projectID, agentType, taskID, event.Type)
 			g.logActivity(ctx, taskID, string(models.WorkItemTypeTask),
 				"gateway_task_queued",
-				fmt.Sprintf("agent_type=%s reason=%v", agentType, assignErr))
+				fmt.Sprintf("agent_type=%s reason=%v", agentType, assignErr),
+				projectID)
 		}
 	} else {
 		// No capacity — queue the job.
@@ -386,7 +405,8 @@ func (g *Gateway) processAssignTask(ctx context.Context, event dispatcher.Event,
 		g.queue.Enqueue(projectID, agentType, taskID, event.Type)
 		g.logActivity(ctx, taskID, string(models.WorkItemTypeTask),
 			"gateway_task_queued",
-			fmt.Sprintf("agent_type=%s reason=no_capacity", agentType))
+			fmt.Sprintf("agent_type=%s reason=no_capacity", agentType),
+			projectID)
 	}
 }
 
@@ -1056,7 +1076,8 @@ func (g *Gateway) checkStaleness(ctx context.Context) {
 			g.logActivity(ctx, s.SessionID, "session",
 				"gateway_session_stale",
 				fmt.Sprintf("project_id=%s agent_type=%s last_heartbeat=%s",
-					s.ProjectID, s.AgentType, s.LastHeartbeat.Format(time.RFC3339)))
+					s.ProjectID, s.AgentType, s.LastHeartbeat.Format(time.RFC3339)),
+				s.ProjectID)
 
 			// Broadcast a staleness event through the dispatcher.
 			g.dispatcher.Submit(ctx, dispatcher.Event{
@@ -1069,4 +1090,89 @@ func (g *Gateway) checkStaleness(ctx context.Context) {
 			})
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Gateway status broadcast
+// ---------------------------------------------------------------------------
+
+// broadcastGatewayStatus gathers the current gateway runtime state, resolves
+// project IDs to human-readable names, and broadcasts it to all connected
+// WebSocket clients via the hub's Broadcast method. If the hub is nil (e.g.,
+// MCP-only mode), the method is a no-op.
+func (g *Gateway) broadcastGatewayStatus(ctx context.Context) {
+	if g.hub == nil {
+		return
+	}
+
+	// Snapshot all tracked sessions.
+	sessions := g.tracker.ListAll()
+
+	// Build sessions-by-project with resolved project names.
+	projectCounts := make(map[string]int)
+	for _, s := range sessions {
+		projectCounts[s.ProjectID]++
+	}
+
+	// Build sessions-by-agent.
+	sessionsByAgent := make(map[string]int)
+	for _, s := range sessions {
+		sessionsByAgent[s.AgentType]++
+	}
+
+	// Resolve project names for session counts.
+	sessionsByProject := make([]SessionProjectEntry, 0, len(projectCounts))
+	for projectID, count := range projectCounts {
+		name := projectID // fallback
+		if g.projectStore != nil {
+			if p, err := g.projectStore.GetByID(ctx, projectID); err == nil && p != nil && p.Name != "" {
+				name = p.Name
+			}
+		}
+		sessionsByProject = append(sessionsByProject, SessionProjectEntry{
+			ProjectID:   projectID,
+			ProjectName: name,
+			Count:       count,
+		})
+	}
+
+	// Snapshot queued jobs with resolved project names.
+	queueJobs := g.queue.ListAll()
+	queueJobEntries := make([]QueueJobEntry, 0, len(queueJobs))
+	for _, job := range queueJobs {
+		name := job.ProjectID // fallback
+		if g.projectStore != nil {
+			if p, err := g.projectStore.GetByID(ctx, job.ProjectID); err == nil && p != nil && p.Name != "" {
+				name = p.Name
+			}
+		}
+		queueJobEntries = append(queueJobEntries, QueueJobEntry{
+			ID:          job.ID,
+			ProjectID:   job.ProjectID,
+			ProjectName: name,
+			AgentType:   job.AgentType,
+			TaskID:      job.TaskID,
+			EventRef:    job.EventRef,
+			CreatedAt:   job.CreatedAt.Format(time.RFC3339),
+		})
+	}
+
+	now := time.Now()
+	uptime := int64(0)
+	if !g.startedAt.IsZero() {
+		uptime = int64(now.Sub(g.startedAt).Seconds())
+	}
+
+	payload := GatewayStatusBroadcast{
+		Running:           !g.stopped.Load(),
+		ActiveSessions:    g.tracker.Count(),
+		QueueDepth:        g.queue.TotalLen(),
+		EventsProcessed:   g.eventsProcessed.Load(),
+		UptimeSeconds:     uptime,
+		SessionsByProject: sessionsByProject,
+		SessionsByAgent:   sessionsByAgent,
+		QueueJobs:         queueJobEntries,
+	}
+
+	g.hub.Broadcast(ws.EventGatewayStatus, payload)
 }

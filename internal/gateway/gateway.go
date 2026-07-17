@@ -104,6 +104,8 @@ type Gateway struct {
 	activityStore ActivityStore
 	profileStore  AgentProfileStore
 
+	hub dispatcher.EventBroadcaster // WebSocket hub for status broadcasts
+
 	mu      sync.RWMutex
 	eventCh chan dispatcher.Event
 	done    chan struct{}
@@ -138,6 +140,7 @@ func NewGateway(
 	activityStore ActivityStore,
 	profileStore AgentProfileStore,
 	settingStore SettingStore,
+	hub dispatcher.EventBroadcaster,
 ) *Gateway {
 	q := NewJobQueue()
 	q.SetMaxTotal(maxTotal)
@@ -173,6 +176,7 @@ func NewGateway(
 		commentStore:      commentStore,
 		activityStore:     activityStore,
 		profileStore:      profileStore,
+		hub:               hub,
 		eventCh:           make(chan dispatcher.Event, 256),
 		done:              make(chan struct{}),
 		acpCommand:        acpCommand,
@@ -462,13 +466,16 @@ func (g *Gateway) Queue() *JobQueue {
 	return g.queue
 }
 
-// logActivity is a helper that logs an activity entry and logs any error.
-func (g *Gateway) logActivity(ctx context.Context, workItemID, workItemType, action, details string) {
+// logActivity is a helper that logs an activity entry and logs any error. The
+// projectID argument scopes the entry to a project so activity can be
+// filtered by project without joining through the work item.
+func (g *Gateway) logActivity(ctx context.Context, workItemID, workItemType, action, details, projectID string) {
 	entry := &models.ActivityLogEntry{
 		WorkItemID:   workItemID,
 		WorkItemType: models.WorkItemType(workItemType),
 		Action:       action,
 		Details:      details,
+		ProjectID:    projectID,
 	}
 	if err := g.activityStore.Log(ctx, entry); err != nil {
 		slog.Error("gateway: failed to log activity",

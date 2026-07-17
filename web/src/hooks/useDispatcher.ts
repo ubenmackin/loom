@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import { fetchDispatcherStatus } from '../api/client'
 import type { DispatcherStatus, WebSocketEvent } from '../types'
 
 export interface DispatcherEvent {
@@ -19,29 +18,15 @@ export function useDispatcher(lastWsEvent?: WebSocketEvent | null): UseDispatche
   const [dispatcherEvents, setDispatcherEvents] = useState<DispatcherEvent[]>([])
   const [isConnected, setIsConnected] = useState(false)
 
-  // Poll status every 2s
-  useEffect(() => {
-    let cancelled = false
-    const poll = async () => {
-      try {
-        const data = await fetchDispatcherStatus()
-        if (!cancelled) setStatus(data)
-      } catch {
-        // ignore
-      }
-    }
-    poll()
-    const interval = setInterval(poll, 2000)
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [])
-
-  // Process WebSocket events for dispatcher events
+  // Process WebSocket events for dispatcher status + events
   useEffect(() => {
     if (!lastWsEvent) return
-    if (lastWsEvent.type === 'dispatcher_event' && lastWsEvent.data) {
+
+    if (lastWsEvent.type === 'dispatcher_status' && lastWsEvent.data) {
+      // Full dispatcher status snapshot from WebSocket broadcast
+      setIsConnected(true)
+      setStatus(lastWsEvent.data as DispatcherStatus)
+    } else if (lastWsEvent.type === 'dispatcher_event' && lastWsEvent.data) {
       setIsConnected(true)
       const evt = lastWsEvent.data as DispatcherEvent
       setDispatcherEvents(prev => {

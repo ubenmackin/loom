@@ -212,14 +212,14 @@ func (h *handlers) workStart(w http.ResponseWriter, r *http.Request) {
 	details, err := json.Marshal(map[string]string{"session_id": req.SessionID})
 	if err != nil {
 		slog.Error("failed to marshal activity details", "error", err)
-		details = []byte(`{"session_id":"` + req.SessionID + `"}`)
+		details = []byte(`{}`)
 	}
 	h.logActivity(r.Context(), &models.ActivityLogEntry{
 		WorkItemID:   req.TaskID,
 		WorkItemType: models.WorkItemTypeTask,
 		Action:       "work_started",
 		Details:      string(details),
-	})
+	}, h.resolveProjectIDFromTask(r.Context(), req.TaskID))
 	h.updateSessionSeen(r.Context(), req.SessionID)
 
 	updated, err := h.tasks.GetByID(r.Context(), req.TaskID)
@@ -277,14 +277,14 @@ func (h *handlers) workComplete(w http.ResponseWriter, r *http.Request) {
 	details, err := json.Marshal(map[string]string{"session_id": req.SessionID})
 	if err != nil {
 		slog.Error("failed to marshal activity details", "error", err)
-		details = []byte(`{"session_id":"` + req.SessionID + `"}`)
+		details = []byte(`{}`)
 	}
 	h.logActivity(r.Context(), &models.ActivityLogEntry{
 		WorkItemID:   req.TaskID,
 		WorkItemType: models.WorkItemTypeTask,
 		Action:       "work_completed",
 		Details:      string(details),
-	})
+	}, h.resolveProjectIDFromTask(r.Context(), req.TaskID))
 	h.updateSessionSeen(r.Context(), req.SessionID)
 
 	h.dispatch.Submit(r.Context(), dispatcher.Event{
@@ -347,14 +347,14 @@ func (h *handlers) workBlock(w http.ResponseWriter, r *http.Request) {
 	details, err := json.Marshal(map[string]string{"session_id": req.SessionID, "reason": req.Reason})
 	if err != nil {
 		slog.Error("failed to marshal activity details", "error", err)
-		details = []byte(`{"session_id":"` + req.SessionID + `","reason":"` + req.Reason + `"}`)
+		details = []byte(`{}`)
 	}
 	h.logActivity(r.Context(), &models.ActivityLogEntry{
 		WorkItemID:   req.TaskID,
 		WorkItemType: models.WorkItemTypeTask,
 		Action:       "work_blocked",
 		Details:      string(details),
-	})
+	}, h.resolveProjectIDFromTask(r.Context(), req.TaskID))
 	h.updateSessionSeen(r.Context(), req.SessionID)
 
 	h.dispatch.Submit(r.Context(), dispatcher.Event{

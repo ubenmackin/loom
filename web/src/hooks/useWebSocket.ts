@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, createContext, useContext } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { WebSocketEvent } from '../types'
 
 const API_URL = import.meta.env.VITE_API_URL || '/api'
 
-// Only invalidate for events that signal data changes
+// Events that signal data changes and need query invalidation
 const RELEVANT_EVENT_TYPES = new Set([
   'board_updated',
   'activity_updated',
@@ -17,7 +17,27 @@ const RELEVANT_EVENT_TYPES = new Set([
   'comment_added',
   'session_updated',
   'sessions_updated',
+  'gateway_status',
+  'dispatcher_status',
+  'dispatcher_event',
 ])
+
+// Map event types to the query keys they should invalidate
+const EVENT_QUERY_KEY_MAP: Record<string, string[]> = {
+  board_updated: ['board'],
+  story_created: ['board'],
+  story_updated: ['board'],
+  story_failed: ['board'],
+  task_created: ['board'],
+  task_updated: ['board'],
+  task_deleted: ['board'],
+  activity_updated: ['activity'],
+  session_updated: ['sessions'],
+  sessions_updated: ['sessions'],
+  gateway_status: ['gateway-status'],
+  dispatcher_status: ['dispatcher-status'],
+  dispatcher_event: ['dispatcher-status'],
+}
 
 function getWsUrl(): string {
   if (API_URL.startsWith('http')) {
@@ -28,10 +48,25 @@ function getWsUrl(): string {
   return `${protocol}//${host}${API_URL}/ws`
 }
 
-interface UseWebSocketReturn {
+export interface UseWebSocketReturn {
   isConnected: boolean
   lastEvent: WebSocketEvent | null
 }
+
+// ── Context ────────────────────────────────────────────────────────────
+// Allows child components (e.g. OperationsPage) to consume WebSocket
+// events without calling useWebSocket() directly (avoids duplicate connections).
+
+const WebSocketContext = createContext<UseWebSocketReturn>({
+  isConnected: false,
+  lastEvent: null,
+})
+
+export const useWebSocketEvents = () => useContext(WebSocketContext)
+
+export { WebSocketContext }
+
+// ── Hook ───────────────────────────────────────────────────────────────
 
 export function useWebSocket(): UseWebSocketReturn {
   const [isConnected, setIsConnected] = useState(false)
@@ -81,9 +116,15 @@ export function useWebSocket(): UseWebSocketReturn {
           const parsed: WebSocketEvent = JSON.parse(event.data)
           setLastEvent(parsed)
           if (RELEVANT_EVENT_TYPES.has(parsed.type)) {
-            debouncedInvalidate('board')
-            debouncedInvalidate('activity')
-            debouncedInvalidate('sessions')
+            const keys = EVENT_QUERY_KEY_MAP[parsed.type]
+            if (keys) {
+              keys.forEach(debouncedInvalidate)
+            } else {
+              // Fallback: invalidate common keys for recognized but unmapped events
+              debouncedInvalidate('board')
+              debouncedInvalidate('activity')
+              debouncedInvalidate('sessions')
+            }
           }
         } catch {
           // ignore malformed messages

@@ -18,4 +18,5 @@ const (
 	EventTasksGenerated    = "tasks_generated"
 	EventStoryFailed       = "story_failed"
 	EventStoryCompleted    = "story_completed"
+	EventDispatcherStatus  = "dispatcher_status"
 )

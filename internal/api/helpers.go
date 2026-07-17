@@ -95,11 +95,46 @@ func (h *handlers) getWorkItemActivity(w http.ResponseWriter, r *http.Request, i
 	respondJSON(w, http.StatusOK, entries)
 }
 
-// logActivity safely logs an activity entry, logging errors via slog.
-func (h *handlers) logActivity(ctx context.Context, entry *models.ActivityLogEntry) {
+// logActivity safely logs an activity entry, logging errors via slog. The
+// projectID argument scopes the entry to a project so activity can be filtered
+// by project without joining through the work item; pass "" when no project
+// is in scope.
+func (h *handlers) logActivity(ctx context.Context, entry *models.ActivityLogEntry, projectID string) {
+	entry.ProjectID = projectID
 	if err := h.activity.Log(ctx, entry); err != nil {
 		slog.Error("activity log failed", "error", err)
 	}
+}
+
+// resolveProjectIDFromTask performs the two-hop lookup (task → story → project)
+// and returns the project_id for the given task. Returns an empty string if
+// the task or its story cannot be found, or if the story has no project set.
+// Errors from the underlying store calls are logged but suppressed so the
+// caller can safely use the result for activity logging even when the lookup
+// fails.
+func (h *handlers) resolveProjectIDFromTask(ctx context.Context, taskID string) string {
+	if taskID == "" {
+		return ""
+	}
+	task, err := h.tasks.GetByID(ctx, taskID)
+	if err != nil {
+		slog.Debug("activity: failed to load task for project_id lookup",
+			"task_id", taskID, "error", err)
+		return ""
+	}
+	if task == nil || task.StoryID == "" {
+		return ""
+	}
+	story, err := h.stories.GetByID(ctx, task.StoryID)
+	if err != nil {
+		slog.Debug("activity: failed to load story for project_id lookup",
+			"task_id", taskID, "story_id", task.StoryID, "error", err)
+		return ""
+	}
+	if story == nil {
+		return ""
+	}
+	return story.ProjectID
 }
 
 // decodeJSON reads the request body with a 1MB limit and decodes JSON.

@@ -29,6 +29,8 @@ func (d *Dispatcher) fetchUnassignedTaskBlockers(ctx context.Context, readyTasks
 // Ready task. Tasks are processed in the order returned by List,
 // so that all eligible tasks are assigned in a single pass.
 func (d *Dispatcher) runAssignmentPass(ctx context.Context) {
+	now := time.Now()
+	d.lastAssignPass.Store(&now)
 	d.hub.Broadcast(EventDispatcherAction, map[string]string{
 		"type":      "assignment_pass_started",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
@@ -221,7 +223,11 @@ func (d *Dispatcher) assignTaskToSession(ctx context.Context, task *models.Task,
 	if err != nil {
 		slog.Error("dispatcher: failed to marshal assignment details", "error", err)
 	}
-	d.logActivity(ctx, task.ID, string(models.WorkItemTypeTask), "assigned", string(details))
+	projectID := ""
+	if story != nil {
+		projectID = story.ProjectID
+	}
+	d.logActivity(ctx, task.ID, string(models.WorkItemTypeTask), "assigned", string(details), projectID)
 
 	d.hub.Broadcast("task_assigned", map[string]string{
 		"task_id":    task.ID,

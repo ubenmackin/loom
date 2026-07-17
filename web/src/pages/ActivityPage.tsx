@@ -30,7 +30,28 @@ function ActionBadge({ action }: { action: string }) {
   )
 }
 
+// Format a work item reference as "STO-{id}: {title}" or "TSK-{id}: {title}".
+// Uses a short slice of the UUID as the id portion (the API does not expose
+// the numeric id in the activity response, so we fall back to a stable short
+// identifier derived from the work_item_id).
+function formatWorkItemLabel(workItemType: string, workItemId: string, title: string): string {
+  const prefix = workItemType === 'story' ? 'STO' : 'TSK'
+  const shortId = workItemId.length >= 8 ? workItemId.slice(0, 8) : workItemId
+  return `${prefix}-${shortId}: ${title}`
+}
+
+function ProjectPill({ name }: { name: string }) {
+  if (!name) return null
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-mono uppercase tracking-wider bg-purple-50 text-purple-700 dark:bg-purple-active/10 dark:text-purple-active border border-purple-200 dark:border-purple-active/30">
+      {name}
+    </span>
+  )
+}
+
 function ActivityItem({ entry, onStoryClick }: { entry: ActivityLogEntry; onStoryClick: (storyId: string) => void }) {
+  const label = formatWorkItemLabel(entry.work_item_type, entry.work_item_id, entry.work_item_title)
+
   return (
     <div className="flex items-start gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-border hover:bg-gray-50 dark:hover:bg-charcoal-darkest transition-colors">
       {/* Timestamp */}
@@ -41,21 +62,22 @@ function ActivityItem({ entry, onStoryClick }: { entry: ActivityLogEntry; onStor
       {/* Action badge */}
       <ActionBadge action={entry.action} />
 
+      {/* Project name pill */}
+      <ProjectPill name={entry.project_name} />
+
       {/* Work item reference */}
       <span className="font-mono text-xs text-neutral-600 dark:text-light-neutral">
-        <span className="text-neutral-400 dark:text-neutral-500">
-          {entry.work_item_type}
-        </span>{' '}
         {entry.work_item_type === 'story' ? (
           <button
             onClick={() => onStoryClick(entry.work_item_id)}
             className="text-purple-active cursor-pointer hover:underline font-bold"
+            title={entry.work_item_id}
           >
-            {entry.work_item_id}
+            {label}
           </button>
         ) : (
-          <span className="text-purple-active">
-            {entry.work_item_id}
+          <span className="text-purple-active" title={entry.work_item_id}>
+            {label}
           </span>
         )}
       </span>

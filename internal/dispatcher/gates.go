@@ -175,7 +175,7 @@ func (d *Dispatcher) createGateTask(ctx context.Context, story *models.Story, ta
 	if err != nil {
 		slog.Error("dispatcher: failed to marshal gate task details", "error", err)
 	} else {
-		d.logActivity(ctx, task.ID, string(models.WorkItemTypeTask), "gate_created", string(details))
+		d.logActivity(ctx, task.ID, string(models.WorkItemTypeTask), "gate_created", string(details), story.ProjectID)
 	}
 
 	d.hub.Broadcast(EventGateTaskCreated, map[string]string{
@@ -380,7 +380,7 @@ func (d *Dispatcher) reopenGateTask(ctx context.Context, storyID string) string 
 	if err != nil {
 		slog.Error("dispatcher: failed to marshal gate re-open details", "error", err)
 	} else {
-		d.logActivity(ctx, best.ID, string(models.WorkItemTypeTask), "gate_reopened", string(details))
+		d.logActivity(ctx, best.ID, string(models.WorkItemTypeTask), "gate_reopened", string(details), d.resolveProjectIDFromTask(ctx, best.ID))
 	}
 
 	d.hub.Broadcast(EventGateTaskCreated, map[string]string{
@@ -436,7 +436,7 @@ func (d *Dispatcher) resolveDependencies(ctx context.Context, completedTaskID st
 		if err != nil {
 			slog.Error("dispatcher: failed to marshal resolution details", "error", err)
 		} else {
-			d.logActivity(ctx, dep.ID, string(models.WorkItemTypeTask), "unblocked", string(details))
+			d.logActivity(ctx, dep.ID, string(models.WorkItemTypeTask), "unblocked", string(details), d.resolveProjectIDFromTask(ctx, dep.ID))
 		}
 
 		slog.Info("dispatcher: resolved dependency, task unblocked",
