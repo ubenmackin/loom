@@ -214,13 +214,20 @@ func (g *Gateway) resolveAgentType(ctx context.Context, event dispatcher.Event) 
 						}
 					}
 				}
-				g.mu.RUnlock()
 
 				if len(candidates) > 0 {
 					// Sort for deterministic behavior (first alphabetically).
 					sort.Strings(candidates)
-					return candidates[0]
+					// Resolve the agent role key for the chosen profile. A
+					// profile's AgentRole (or Name if blank) is the key into
+					// the system-prompt switch in prompts.go. The lookup
+					// happens under the same RLock as the candidate
+					// collection above.
+					role := g.profileRoles[candidates[0]]
+					g.mu.RUnlock()
+					return role
 				}
+				g.mu.RUnlock()
 			}
 
 			// Fall back to the task's agent_type field.

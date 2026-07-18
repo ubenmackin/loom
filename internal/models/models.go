@@ -234,6 +234,7 @@ type AgentProfile struct {
 	Name           string    `json:"name"`
 	Description    string    `json:"description,omitempty"`
 	MaxConcurrency int       `json:"max_concurrency"`
+	AgentRole      string    `json:"agent_role,omitempty"`
 	TaskTypes      []string  `json:"task_types,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`

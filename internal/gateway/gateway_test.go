@@ -106,6 +106,7 @@ func newTestGateway(profiles []*models.AgentProfile) *Gateway {
 		acpClients:        make(map[string]*acp.Client),
 		sessionIDtoClient: make(map[string]*acp.Client),
 		profileTaskTypes:  make(map[string][]string),
+		profileRoles:      make(map[string]string),
 		filesInUse:        make(map[string]string),
 		profileStore:      &mockProfileStore{profiles: profiles},
 		taskStore:         &mockTaskStore{tasks: make(map[string]*models.Task)},
@@ -261,6 +262,65 @@ func TestResolveAgentType_DeterministicPickWhenMultipleMatch(t *testing.T) {
 	agentType := g.resolveAgentType(context.Background(), event)
 	if agentType != "AlphaAgent" {
 		t.Errorf("resolveAgentType() = %q, want %q (first alphabetically)", agentType, "AlphaAgent")
+	}
+}
+
+func TestResolveAgentType_PrefersAgentRoleOverName(t *testing.T) {
+	// A profile named "renamed-executor" declares AgentRole: "executor".
+	// resolveAgentType should return the AgentRole ("executor"), not the
+	// profile name — the AgentRole is the key into the system-prompt
+	// switch in prompts.go.
+	profiles := []*models.AgentProfile{
+		{ID: "1", Name: "renamed-executor", AgentRole: "executor", TaskTypes: []string{"code"}, MaxConcurrency: 1},
+	}
+
+	g := newTestGateway(profiles)
+	err := g.loadProfiles(context.Background())
+	if err != nil {
+		t.Fatalf("loadProfiles() returned error: %v", err)
+	}
+
+	g.taskStore.(*mockTaskStore).tasks["task-1"] = &models.Task{
+		ID:       "task-1",
+		TaskType: models.TaskTypeCode,
+	}
+
+	event := dispatcher.Event{
+		TaskID: "task-1",
+	}
+
+	agentType := g.resolveAgentType(context.Background(), event)
+	if agentType != "executor" {
+		t.Errorf("resolveAgentType() = %q, want %q (AgentRole, not profile Name)", agentType, "executor")
+	}
+}
+
+func TestResolveAgentType_BlankRoleFallsBackToName(t *testing.T) {
+	// A profile named "custom-bot" with a blank AgentRole should fall
+	// back to its Name as the prompt key (back-compat with
+	// pre-migration-015 rows).
+	profiles := []*models.AgentProfile{
+		{ID: "1", Name: "custom-bot", AgentRole: "", TaskTypes: []string{"code"}, MaxConcurrency: 1},
+	}
+
+	g := newTestGateway(profiles)
+	err := g.loadProfiles(context.Background())
+	if err != nil {
+		t.Fatalf("loadProfiles() returned error: %v", err)
+	}
+
+	g.taskStore.(*mockTaskStore).tasks["task-1"] = &models.Task{
+		ID:       "task-1",
+		TaskType: models.TaskTypeCode,
+	}
+
+	event := dispatcher.Event{
+		TaskID: "task-1",
+	}
+
+	agentType := g.resolveAgentType(context.Background(), event)
+	if agentType != "custom-bot" {
+		t.Errorf("resolveAgentType() = %q, want %q (profile Name on blank AgentRole)", agentType, "custom-bot")
 	}
 }
 

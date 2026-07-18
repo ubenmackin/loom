@@ -1,8 +1,6 @@
 # Loom — Architecture
 
 > Source of truth for Loom's design, protocols, and component responsibilities.
-> Update via append entries under **Update History** when significant architectural
-> changes are made.
 
 ## 1. Project Soul
 
@@ -127,7 +125,7 @@ HTTP paths via dependency injection.
 | Enum | Values |
 |---|---|
 | `Status` | new, draft, planning, ready, in_progress, blocked, done, completed, canceled, archived |
-| `TaskType` | code, build, review, planning |
+| `TaskType` | code, build, review, planning, security, release, workspace_setup (workspace_setup is ephemeral — spawned by the Gateway, has no profile task-type mapping; see §7) |
 | `SessionStatus` | active, stale, disconnected |
 | `AssigneeType` | human, session |
 | `WorkItemType` | story, task |
@@ -210,7 +208,7 @@ sessions. It is the sole bridge between Loom's internal event bus and external a
   builder/reviewer. Builds the prompt context via `buildACPContext` (assembles
   `SystemPrompt(agentType)` + MCP server hint + story/tasks/comments + task details,
   optional `[CONTEXT UPDATE]` prefix). Maintains a staleness ticker (30s check,
-  5min threshold). Drains the per-(project,agent) job queue respecting concurrency
+  5min threshold). Drains the per-(project, agent) job queue respecting concurrency
   limits.
 - **`prompts.go`**: `SystemPrompt(agentType)` returns Loom-owned system prompts for
   `planner`, `executor`, `builder`, `reviewer`, `default`. Each prompt describes
@@ -221,6 +219,14 @@ sessions. It is the sole bridge between Loom's internal event bus and external a
   enforced via `AgentProfile.max_concurrency` plus a global `maxTotal` cap from
   settings.
 - **`types.go`**: `GatewaySession`, `GatewayStatus`, `GatewayEvent`.
+
+**Agent type / prompt routing.** `Gateway` resolves the agent type via
+`resolveAgentType` (`internal/gateway/loop.go`). Resolution walks `profile_task_types`
+to find profiles whose `TaskTypes` include the task's `TaskType`; the
+alphabetically-first matching profile's `AgentRole` (or `Name` if `AgentRole` is
+blank) is returned. That string is the key into `SystemPrompt()`
+(`internal/gateway/prompts.go`), which switches on a hardcoded list of 7 role
+strings plus `default`. See constraint §8.11.
 
 **ACP session lifecycle**:
 
@@ -277,7 +283,7 @@ Gateway).
 | `get_unread_comments` | List unread comments for current session |
 | `get_my_tasks` | List tasks assigned to current session |
 | `add_dependency` | Declare that one task depends on another |
-| `create_task` | Planner creates a child task on a story |
+| `create_task` | Planner creates a child task on a story (the `task_type` enum advertises `code, build, review, security, release, workspace_setup` at `mcp/tools.go:208` — `planning` is intentionally omitted: planners don't plan planning tasks) |
 | `get_story` | Fetch story + its tasks (used by planner) |
 
 The MCP server has a reference to the Dispatcher (for event submission on
@@ -353,6 +359,10 @@ Dispatcher creates [build] + [review] gate tasks (if story requires)
 All gates pass → Dispatcher checks story completion → [completed]
 ```
 
+The full gate chain is `build → security → review → release`, with
+`workspace_setup` as a pre-execution ephemeral step spawned by the Gateway rather
+than by the Dispatcher (per `internal/dispatcher/gates.go:53-134`).
+
 **Concurrency**: Per-(project, agentType) concurrency is limited by
 `AgentProfile.max_concurrency`. A global `maxTotal` cap (from settings, 0 = unlimited)
 applies across all agent types. Surplus events enqueue on the `JobQueue` and drain
@@ -362,17 +372,27 @@ as capacity frees up.
 
 Seeded via `internal/db/seed.go`:
 
-| Profile | TaskTypes | max_concurrency |
-|---|---|---|
-| planner | planning | (default) |
-| executor | code | (default) |
-| builder | build | 2 |
-| reviewer | review | (default) |
+| Profile | TaskTypes | AgentRole | max_concurrency |
+|---|---|---|---|
+| planner | planning | planner | 2 |
+| executor | code | executor | 5 |
+| builder | build | builder | 2 |
+| reviewer | review | reviewer | 3 |
+| security-auditor | security | security-auditor | 2 |
+| release-manager | release | release-manager | 1 |
+| workspace-setup | (none — ephemeral) | workspace-setup | 1 |
 
 `AgentProfileStore.Create()` automatically inserts `profile_task_types` rows when
 `TaskTypes` is populated. The Gateway loads these at startup via `loadProfiles()`
 and maintains a `profileTaskTypes map[string][]string` for capability-based agent
 type resolution.
+
+**Profile name and AgentRole.** A profile's `Name` is a free-form operator label;
+its `AgentRole` is the key into the system-prompt switch in
+`internal/gateway/prompts.go`. The seed sets them equal, but the two are decoupled —
+renaming a profile does not change its prompt as long as `AgentRole` is set; if
+`AgentRole` is blank, the profile `Name` is used as the prompt key (back-compat with
+pre-migration-015 data).
 
 ## 8. Key Architectural Decisions & Constraints
 
@@ -418,6 +438,21 @@ type resolution.
     context updates via `session/prompt` re-send to an existing session rather
     than spawning fresh sessions.
 
+11. **Agent role/prompt coupling is explicit.** The profile's `AgentRole` column
+    (migration 015) is the sole source of truth for which system prompt an agent
+    receives. `resolveAgentType` returns `AgentRole` if set, else `Name`;
+    `SystemPrompt()` switches on that string. Profile rename no longer decouples a
+    profile from its prompt. The 7 supported role strings are a closed set
+    (`planner`, `executor`, `builder`, `reviewer`, `security-auditor`,
+    `release-manager`, `workspace-setup`); everything else maps to `defaultPrompt`.
+    Adding a new prompt requires a code change to `prompts.go`, not just a DB row.
+
+12. **Session worktree pinning.** An executor ACP session is pinned to the worktree
+    of the first story it works on. The `--cwd` is set at `session/new` and does not
+    change for subsequent tasks from other stories. Cross-story isolation on reused
+    sessions would require re-resolving the worktree, tearing down the session, and
+    re-spawning with a fresh `--cwd`. Not currently implemented.
+
 ## 9. ACP v1 Protocol Conformance
 
 Loom's ACP client implements the official Agent Communication Protocol v1
@@ -446,31 +481,3 @@ All requests use id-based correlation (`JSONRPCRequest.ID` int64 →
 | `go test ./...` | Run all Go tests |
 | `cd web && npm run build` | Build frontend |
 | `cd web && npm test` | Run frontend tests |
-
-## 11. Update History
-
-### 2026-07-14 — Session Worktree Pinning Constraint
-
-An executor ACP session is pinned to the **worktree of the first story** it works on.
-The `--cwd` (repository path) is set at session birth during `session/new` negotiation
-and does **not** change for subsequent tasks from different stories assigned to the
-same session. This means a reused session always executes from the worktree it was
-originally spawned for, regardless of which story's tasks it picks up.
-
-**Implication**: Cross-story isolation on reused sessions would require the Gateway
-to re-resolve the target worktree, tear down the existing session, and re-spawn with
-a fresh `session/new` carrying the updated `--cwd`. A lighter-weight approach — not
-currently implemented — would be to re-session/prompt with a `[CONTEXT UPDATE]` that
-includes the new worktree, but the ACP `cwd` itself remains immutable once set.
-
-### 2026-07-13 — SDLC Pipeline expansion
-
-Added `TaskTypeSecurity` and `TaskTypeRelease` constants; migration 010; agent
-profiles; 3-stage gate chain; worktree isolation; file-collision scheduling; circuit
-breaker. See session `plan-d955fc`.
-
-### 2026-07-13 — Initial architecture document created
-
-Covered the post-refactor state: ACP v1 protocol alignment; MCP/ACP layer separation;
-agent-first workflow; Loom-owned system prompts; `MCPServer.Env` schema compliance
-fix.

@@ -276,6 +276,7 @@ export interface AgentProfile {
   name: string
   description?: string
   max_concurrency: number
+  agent_role?: string
   task_types?: string[]
   created_at: string
   updated_at: string
@@ -289,7 +290,7 @@ export async function fetchProfile(id: string): Promise<AgentProfile> {
   return request<AgentProfile>(`/profiles/${id}`)
 }
 
-export async function createProfile(data: { name: string; description?: string; max_concurrency?: number; task_types?: string[] }): Promise<AgentProfile> {
+export async function createProfile(data: { name: string; description?: string; max_concurrency?: number; agent_role?: string; task_types?: string[] }): Promise<AgentProfile> {
   return request<AgentProfile>('/profiles', { method: 'POST', body: JSON.stringify(data) })
 }
 
