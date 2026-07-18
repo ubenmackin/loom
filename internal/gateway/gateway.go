@@ -118,6 +118,7 @@ type Gateway struct {
 
 	acpCommand       string              // e.g., "opencode acp"
 	profileTaskTypes map[string][]string // profile name -> task types (protected by mu)
+	profileRoles     map[string]string   // profile name -> agent role key (protected by mu)
 	filesInUse       map[string]string   // file path → taskID (protected by mu)
 
 	worktreeManager *WorktreeManager // git worktree management for story isolation
@@ -181,6 +182,7 @@ func NewGateway(
 		done:              make(chan struct{}),
 		acpCommand:        acpCommand,
 		profileTaskTypes:  make(map[string][]string),
+		profileRoles:      make(map[string]string),
 		filesInUse:        make(map[string]string),
 		worktreeManager:   NewWorktreeManager(".loom/worktrees"),
 		settingStore:      settingStore,
@@ -503,13 +505,23 @@ func (g *Gateway) loadProfiles(ctx context.Context) error {
 	g.mu.Lock()
 	// Clear and rebuild the profile task types map.
 	g.profileTaskTypes = make(map[string][]string, len(profiles))
+	g.profileRoles = make(map[string]string, len(profiles))
 	for _, p := range profiles {
 		g.queue.SetConcurrency(p.Name, p.MaxConcurrency)
 		g.profileTaskTypes[p.Name] = p.TaskTypes
+		// AgentRole is the key into the system-prompt switch in prompts.go.
+		// Blank means "use the profile name" for back-compat with
+		// pre-migration-015 rows.
+		if p.AgentRole == "" {
+			g.profileRoles[p.Name] = p.Name
+		} else {
+			g.profileRoles[p.Name] = p.AgentRole
+		}
 		slog.Info("gateway: configured concurrency from profile",
 			"agent_type", p.Name,
 			"max_concurrency", p.MaxConcurrency,
-			"task_types", p.TaskTypes)
+			"task_types", p.TaskTypes,
+			"agent_role", p.AgentRole)
 	}
 	g.mu.Unlock()
 

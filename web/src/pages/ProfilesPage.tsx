@@ -10,12 +10,13 @@ import {
   setGlobalMaxConcurrency,
   type AgentProfile,
 } from '../api/client'
-import { TaskType, type Project } from '../types'
+import { TaskType, type Project, type TaskTypeType } from '../types'
 
 interface ProfileCreatePayload {
   name: string
   description?: string
   max_concurrency?: number
+  agent_role?: string
   task_types?: string[]
 }
 
@@ -63,13 +64,13 @@ export default function ProfilesPage() {
 
   function startCreate() {
     setCreating(true)
-    setEditForm({ name: '', description: '', max_concurrency: 5, task_types: [] })
+    setEditForm({ name: '', description: '', max_concurrency: 5, agent_role: '', task_types: [] })
     setEditingId(null)
   }
 
   function startEdit(profile: AgentProfile) {
     setEditingId(profile.id)
-    setEditForm({ ...profile })
+    setEditForm({ ...profile, agent_role: profile.agent_role || '' })
     setCreating(false)
   }
 
@@ -90,6 +91,7 @@ export default function ProfilesPage() {
           name: editForm.name,
           description: editForm.description,
           max_concurrency: editForm.max_concurrency,
+          agent_role: editForm.agent_role,
           task_types: editForm.task_types,
         }
         await createProfile(payload)
@@ -359,11 +361,25 @@ function ProfileForm({
   form: Partial<AgentProfile>
   onChange: (f: Partial<AgentProfile>) => void
 }) {
-  const taskTypeOptions = [
-    { label: 'Code', value: TaskType.Code },
-    { label: 'Build', value: TaskType.Build },
-    { label: 'Review', value: TaskType.Review },
-    { label: 'Planning', value: TaskType.Planning },
+  const taskTypeOptions: { label: string; value: TaskTypeType }[] = [
+    { label: 'Code',            value: TaskType.Code },
+    { label: 'Build',           value: TaskType.Build },
+    { label: 'Review',          value: TaskType.Review },
+    { label: 'Planning',        value: TaskType.Planning },
+    { label: 'Security',        value: TaskType.Security },
+    { label: 'Release',         value: TaskType.Release },
+    { label: 'Workspace Setup',  value: TaskType.WorkspaceSetup },
+  ]
+
+  const agentRoleOptions: { label: string; value: string }[] = [
+    { label: 'Default (use profile name)', value: '' },
+    { label: 'Planner',          value: 'planner' },
+    { label: 'Executor',         value: 'executor' },
+    { label: 'Builder',          value: 'builder' },
+    { label: 'Reviewer',         value: 'reviewer' },
+    { label: 'Security Auditor', value: 'security-auditor' },
+    { label: 'Release Manager',  value: 'release-manager' },
+    { label: 'Workspace Setup',  value: 'workspace-setup' },
   ]
 
   function toggleTaskType(value: string) {
@@ -396,6 +412,28 @@ function ProfileForm({
           rows={2}
           placeholder="Description of this agent type"
         />
+      </div>
+
+      {/* Agent Role */}
+      <div>
+        <label htmlFor="profile-form-agent-role" className="block text-sm font-medium text-slate-700 dark:text-neutral-300 mb-1">
+          Agent Role
+        </label>
+        <select
+          id="profile-form-agent-role"
+          value={form.agent_role || ''}
+          onChange={(e) => onChange({ ...form, agent_role: e.target.value })}
+          className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-border bg-white dark:bg-charcoal-darkest text-slate-800 dark:text-white rounded-none focus:outline-none focus:ring-1 focus:ring-purple-500"
+        >
+          {agentRoleOptions.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+        <p className="mt-1 text-xs text-slate-500 dark:text-neutral-400">
+          Determines which system prompt this agent receives. Leave as Default to use the profile name.
+        </p>
       </div>
 
       {/* Task Types Section */}

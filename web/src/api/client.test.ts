@@ -128,6 +128,7 @@ const sampleProfile: AgentProfile = {
   name: 'Default Agent',
   description: 'Default agent profile',
   max_concurrency: 3,
+  agent_role: '',
   created_at: '2025-01-01T00:00:00Z',
   updated_at: '2025-01-01T00:00:00Z',
 }
@@ -137,6 +138,7 @@ const sampleProfile2: AgentProfile = {
   name: 'Build Agent',
   description: 'Handles build tasks',
   max_concurrency: 2,
+  agent_role: 'builder',
   created_at: '2025-01-01T00:00:00Z',
   updated_at: '2025-01-01T00:00:00Z',
 }
@@ -1511,6 +1513,31 @@ describe('API Client', () => {
 
       expect(capturedBody).toEqual({ name: 'Minimal Agent' })
       expect(result.max_concurrency).toBe(1)
+    })
+
+    it('createProfile(data) posts agent_role in the JSON body', async () => {
+      let capturedBody: unknown
+      server.use(
+        http.post('/api/profiles', async ({ request }) => {
+          capturedBody = await request.json()
+          const body = capturedBody as { name: string; agent_role?: string }
+          return HttpResponse.json({
+            id: 'profile-role',
+            name: body.name,
+            agent_role: body.agent_role,
+            max_concurrency: 1,
+            created_at: '2025-01-01T00:00:00Z',
+            updated_at: '2025-01-01T00:00:00Z',
+          } satisfies AgentProfile)
+        }),
+      )
+
+      const data = { name: 'x', agent_role: 'executor' }
+      const result = await createProfile(data)
+
+      expect(capturedBody).toEqual(data)
+      expect((capturedBody as { agent_role?: string }).agent_role).toBe('executor')
+      expect(result.agent_role).toBe('executor')
     })
 
     it('updateProfile(id, data) puts to /profiles/{id} with JSON body', async () => {
