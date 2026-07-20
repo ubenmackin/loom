@@ -26,7 +26,8 @@ const (
 type GatewaySession struct {
 	ProjectID      string
 	AgentType      string
-	SessionID      string // ACP session ID
+	SessionID      string   // ACP session ID
+	AvailableModes []string // modes advertised by the agent for session-mode routing (see acp.extractAvailableModes)
 	Status         GatewaySessionStatus
 	AssignedTaskID string
 	StoryID        string // Story being planned (for planner sessions)

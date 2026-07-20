@@ -39,10 +39,10 @@ func (s *AgentProfileStore) Create(ctx context.Context, profile *models.AgentPro
 	defer func() { _ = tx.Rollback() }()
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO agent_profiles (id, name, description, max_concurrency, agent_role, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO agent_profiles (id, name, description, max_concurrency, agent_role, prompt, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		profile.ID, profile.Name, profile.Description,
-		profile.MaxConcurrency, profile.AgentRole, profile.CreatedAt, profile.UpdatedAt)
+		profile.MaxConcurrency, profile.AgentRole, profile.Prompt, profile.CreatedAt, profile.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert agent profile: %w", err)
 	}
@@ -63,7 +63,7 @@ func (s *AgentProfileStore) Create(ctx context.Context, profile *models.AgentPro
 
 func (s *AgentProfileStore) GetByID(ctx context.Context, id string) (*models.AgentProfile, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, description, max_concurrency, agent_role, created_at, updated_at
+		`SELECT id, name, description, max_concurrency, agent_role, prompt, created_at, updated_at
 		 FROM agent_profiles WHERE id = ?`, id)
 	profile, err := scanAgentProfileRow(row)
 	if err != nil {
@@ -82,7 +82,7 @@ func (s *AgentProfileStore) GetByID(ctx context.Context, id string) (*models.Age
 
 func (s *AgentProfileStore) List(ctx context.Context) ([]*models.AgentProfile, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, description, max_concurrency, agent_role, created_at, updated_at
+		`SELECT id, name, description, max_concurrency, agent_role, prompt, created_at, updated_at
 		 FROM agent_profiles ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list agent profiles: %w", err)
@@ -126,10 +126,10 @@ func (s *AgentProfileStore) Update(ctx context.Context, profile *models.AgentPro
 	defer func() { _ = tx.Rollback() }()
 
 	result, err := tx.ExecContext(ctx,
-		`UPDATE agent_profiles SET name=?, description=?, max_concurrency=?, agent_role=?, updated_at=?
+		`UPDATE agent_profiles SET name=?, description=?, max_concurrency=?, agent_role=?, prompt=?, updated_at=?
 		 WHERE id=?`,
 		profile.Name, profile.Description,
-		profile.MaxConcurrency, profile.AgentRole, profile.UpdatedAt, profile.ID)
+		profile.MaxConcurrency, profile.AgentRole, profile.Prompt, profile.UpdatedAt, profile.ID)
 	if err != nil {
 		return fmt.Errorf("update agent profile %q: %w", profile.ID, err)
 	}
@@ -174,11 +174,12 @@ func scanAgentProfileRow(scanner interface{ Scan(...any) error }) (*models.Agent
 	p := &models.AgentProfile{}
 	var desc sql.NullString
 	var role sql.NullString
+	var prompt sql.NullString
 	var createdAt, updatedAt sql.NullTime
 
 	err := scanner.Scan(
 		&p.ID, &p.Name, &desc,
-		&p.MaxConcurrency, &role, &createdAt, &updatedAt)
+		&p.MaxConcurrency, &role, &prompt, &createdAt, &updatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("agent_profile: %w", ErrNotFound)
@@ -188,6 +189,7 @@ func scanAgentProfileRow(scanner interface{ Scan(...any) error }) (*models.Agent
 
 	p.Description = stringOrZero(desc)
 	p.AgentRole = stringOrZero(role)
+	p.Prompt = stringOrZero(prompt)
 	p.CreatedAt = timeOrZero(createdAt)
 	p.UpdatedAt = timeOrZero(updatedAt)
 	return p, nil

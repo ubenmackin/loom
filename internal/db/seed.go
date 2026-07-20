@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -80,24 +81,103 @@ func SeedDefaultProjects(ctx context.Context, projectStore ProjectSeeder) error 
 type AgentProfileSeeder interface {
 	Create(ctx context.Context, p *models.AgentProfile) error
 	List(ctx context.Context) ([]*models.AgentProfile, error)
+	// Update is used by the post-migration-016 backfill pass to stamp a
+	// default prompt onto pre-existing profiles whose prompt column is
+	// still empty. Only rows whose name matches a known built-in default
+	// profile AND whose prompt is blank are touched, so re-runs are safe.
+	Update(ctx context.Context, p *models.AgentProfile) error
 }
 
 // SeedDefaultAgentProfiles creates the built-in agent profiles (planner,
-// executor, builder, reviewer) if no agent profiles exist yet.
+// executor, builder, reviewer, security-auditor, release-manager,
+// workspace-setup) if no agent profiles exist yet. It also runs a
+// post-migration-016 backfill pass that stamps the default role prompts
+// onto any existing profile rows whose prompt column is still empty (and
+// whose name matches a known built-in default), so existing installs pick
+// up the new prompt column without needing to drop and re-create their
+// profiles.
 func SeedDefaultAgentProfiles(ctx context.Context, profileStore AgentProfileSeeder) error {
 	profiles, err := profileStore.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list existing agent profiles: %w", err)
 	}
 
+	now := time.Now().UTC()
+
+	// defaultPromptsByRole maps a profile's role-key (the value stored in
+	// the agent_role column — or the profile name when agent_role is
+	// blank) to the canonical role-prompt const declared in
+	// seed_prompts.go. These are the SOURCE OF TRUTH for the per-role
+	// prompt text; seed.go is the new home for that expression (it was
+	// previously hard-coded as unexported consts in
+	// internal/gateway/prompts.go).
+	defaultPromptsByRole := map[string]string{
+		"planner":          PlannerPrompt,
+		"executor":         ExecutorPrompt,
+		"builder":          BuilderPrompt,
+		"reviewer":         ReviewerPrompt,
+		"security-auditor": SecurityAuditorPrompt,
+		"release-manager":  ReleaseManagerPrompt,
+		"workspace-setup":  WorkspaceSetupPrompt,
+		"git-manager":      GitManagerPrompt,
+	}
+
+	// promptForProfile returns the default prompt text for the given
+	// profile's role. The role key resolves to agent_role if non-empty,
+	// otherwise the profile name — the same role-key resolution that
+	// ProfilePrompt in internal/gateway/prompts.go applies at runtime.
+	promptForProfile := func(p *models.AgentProfile) string {
+		role := p.AgentRole
+		if role == "" {
+			role = p.Name
+		}
+		if prompt, ok := defaultPromptsByRole[role]; ok {
+			return prompt
+		}
+		return DefaultPrompt
+	}
+
+	// Backfill pass: existing rows whose prompt is empty get stamped with
+	// the default for their role. Idempotent — only rows with an empty
+	// prompt are touched, so re-runs are safe. This runs unconditionally
+	// so installs that already had profiles before migration 016 land
+	// pick up the new prompt column on their next startup.
 	if len(profiles) > 0 {
-		log.Printf("Agent profiles already exist (%d), skipping seed", len(profiles))
+		backfilled := 0
+		for _, p := range profiles {
+			if p == nil {
+				continue
+			}
+			if strings.TrimSpace(p.Prompt) != "" {
+				continue
+			}
+			// Only backfill rows whose role maps to a known built-in
+			// default — custom profiles inserted by the user keep an
+			// empty prompt (and the gateway falls back to the static
+			// DefaultPrompt via ProfilePrompt at session-build time).
+			role := p.AgentRole
+			if role == "" {
+				role = p.Name
+			}
+			if _, known := defaultPromptsByRole[role]; !known {
+				continue
+			}
+			p.Prompt = promptForProfile(p)
+			if err := profileStore.Update(ctx, p); err != nil {
+				return fmt.Errorf("backfill prompt for agent profile %q: %w", p.Name, err)
+			}
+			backfilled++
+			log.Printf("Backfilled agent profile prompt: %s (%s)", p.Name, p.ID)
+		}
+		if backfilled > 0 {
+			log.Printf("Backfilled %d agent profile prompt(s) after migration 016", backfilled)
+		} else {
+			log.Printf("Agent profiles already exist (%d) and have prompts, skipping seed", len(profiles))
+		}
 		return nil
 	}
 
 	log.Println("No agent profiles found, seeding default profiles...")
-
-	now := time.Now().UTC()
 
 	defaultProfiles := []*models.AgentProfile{
 		{
@@ -107,6 +187,7 @@ func SeedDefaultAgentProfiles(ctx context.Context, profileStore AgentProfileSeed
 			MaxConcurrency: 2,
 			AgentRole:      "planner",
 			TaskTypes:      []string{"planning"},
+			Prompt:         PlannerPrompt,
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		},
@@ -117,6 +198,7 @@ func SeedDefaultAgentProfiles(ctx context.Context, profileStore AgentProfileSeed
 			MaxConcurrency: 5,
 			AgentRole:      "executor",
 			TaskTypes:      []string{"code"},
+			Prompt:         ExecutorPrompt,
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		},
@@ -127,6 +209,7 @@ func SeedDefaultAgentProfiles(ctx context.Context, profileStore AgentProfileSeed
 			MaxConcurrency: 2,
 			AgentRole:      "builder",
 			TaskTypes:      []string{"build"},
+			Prompt:         BuilderPrompt,
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		},
@@ -137,6 +220,7 @@ func SeedDefaultAgentProfiles(ctx context.Context, profileStore AgentProfileSeed
 			MaxConcurrency: 3,
 			AgentRole:      "reviewer",
 			TaskTypes:      []string{"review"},
+			Prompt:         ReviewerPrompt,
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		},
@@ -147,6 +231,7 @@ func SeedDefaultAgentProfiles(ctx context.Context, profileStore AgentProfileSeed
 			MaxConcurrency: 2,
 			AgentRole:      "security-auditor",
 			TaskTypes:      []string{"security"},
+			Prompt:         SecurityAuditorPrompt,
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		},
@@ -157,6 +242,7 @@ func SeedDefaultAgentProfiles(ctx context.Context, profileStore AgentProfileSeed
 			MaxConcurrency: 1,
 			AgentRole:      "release-manager",
 			TaskTypes:      []string{"release"},
+			Prompt:         ReleaseManagerPrompt,
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		},
@@ -167,6 +253,7 @@ func SeedDefaultAgentProfiles(ctx context.Context, profileStore AgentProfileSeed
 			MaxConcurrency: 1,
 			AgentRole:      "workspace-setup",
 			TaskTypes:      []string{}, // No task type — ephemeral, spawned by Gateway
+			Prompt:         WorkspaceSetupPrompt,
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		},

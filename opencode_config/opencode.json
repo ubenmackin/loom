@@ -4,11 +4,12 @@
   "mcp": {
     "loom": {
       "type": "local",
+      "_comment": "Loom MCP server. The paths below are environment-specific and intentionally NOT hardcoded to a developer's home directory. Replace them with the location of your local Loom checkout: (1) command[0] is the path to the built loom-server binary (often $LOOM_CHECKOUT/dist/loom-server), and (2) --db-path is the path to the loom SQLite database (often $LOOM_CHECKOUT/loom.db). opencode does not expand env variables in command arrays, so use literal absolute or relative paths resolved against the directory you spawn opencode from.",
       "command": [
-        "/Users/kupan787/opencode/Loom/dist/loom-server",
+        "./dist/loom-server",
         "--mcp",
         "--db-path",
-        "/Users/kupan787/opencode/Loom/loom.db"
+        "./loom.db"
       ],
       "enabled": true
     }
@@ -48,6 +49,7 @@
       "mode": "primary",
       "color": "#4dabf7",
       "description": "Lead Architect responsible for codebase analysis and creating execution blueprints.",
+      "_comment": "Read-only planner. Reads the filesystem via the global 'read' permission and inspects repo structure via architect_* tools; interacts with the Loom board via MCP. bash and edit are deny — the planner never executes shell commands or mutates source.",
       "prompt": "{file:./prompts/planner.txt}",
       "permission": {
         "skill": {
@@ -126,7 +128,7 @@
         },
         "edit": "allow",
         "google_search": "deny",
-        "webfetch": "deny",
+        "webfetch": "allow",
         "architect_map_workspace": "allow",
         "architect_summarize_structure": "allow",
         "register_session": "allow",
@@ -150,6 +152,7 @@
       "color": "#51cf66",
       "description": "Build Engineer: Verification and syntax fixes.",
       "prompt": "{file:./prompts/builder.txt}",
+      "_comment": "Builder uses a narrow bash allowlist (build/test/lint commands only) with edit denied. opencode's permission model supports this granularity, so the narrow form is preferred over granting full edit. If a project ever requires the builder to patch source to fix syntax errors, flip 'edit' to 'allow' here.",
       "permission": {
         "skill": "allow",
         "task": "deny",
@@ -203,7 +206,7 @@
       "permission": {
         "skill": "allow",
         "task": "deny",
-        "bash": "allow",
+        "bash": "deny",
         "edit": "deny",
         "architect_map_workspace": "allow",
         "architect_summarize_structure": "allow",
@@ -226,6 +229,8 @@
       "mode": "all",
       "color": "#f06595",
       "description": "Security Auditor: Vulnerability scanning and credential leak detection.",
+      "prompt": "{file:./prompts/security-auditor.txt}",
+      "_comment": "Scan-only posture. opencode does not expose a per-tool allowlist primitive separate from the bash glob map; the bash glob map below is the allowlist. 'edit' is deny and 'webfetch'/'google_search' are deny so the auditor cannot reshape code or phone home. Add scanner binaries (e.g. 'grype *', 'trivy *', 'gitleaks *') to the bash allowlist as they become available.",
       "permission": {
         "skill": "allow",
         "task": "deny",
@@ -235,7 +240,10 @@
           "npm audit *": "allow",
           "grep *": "allow",
           "rg *": "allow",
-          "find *": "allow"
+          "find *": "allow",
+          "grype *": "allow",
+          "trivy *": "allow",
+          "gitleaks *": "allow"
         },
         "edit": "deny",
         "google_search": "deny",
@@ -256,6 +264,8 @@
       "mode": "all",
       "color": "#20c997",
       "description": "Release Manager: Commit, push, and create PRs.",
+      "prompt": "{file:./prompts/release-manager.txt}",
+      "_comment": "The release path mutates the repo. edit is 'allow' so release-manager can write PR body, CHANGELOG entries, and similar release artifacts. bash is narrowed to git + gh operations; general bash is denied.",
       "permission": {
         "skill": "allow",
         "task": "deny",
@@ -268,7 +278,7 @@
           "gh pr *": "allow",
           "git worktree *": "allow"
         },
-        "edit": "deny",
+        "edit": "allow",
         "google_search": "deny",
         "webfetch": "deny",
         "register_session": "allow",
@@ -286,6 +296,8 @@
       "mode": "all",
       "color": "#7950f2",
       "description": "Workspace Setup: Git worktree isolation for executor sessions.",
+      "prompt": "{file:./prompts/workspace-setup.txt}",
+      "_comment": "Scoped to worktree/boot operations. edit is 'allow' so workspace-setup can write files into the new worktree dir during boot (e.g. session markers, branch context files). bash is narrowed to git worktree, branch checkout, and mkdir.",
       "permission": {
         "skill": "allow",
         "task": "deny",
@@ -296,7 +308,7 @@
           "mkdir *": "allow",
           "git status": "allow"
         },
-        "edit": "deny",
+        "edit": "allow",
         "google_search": "deny",
         "webfetch": "deny",
         "register_session": "allow",
@@ -314,7 +326,8 @@
       "mode": "all",
       "color": "#20c997",
       "description": "Git Specialist: Commits and branching.",
-      "prompt": "You are the Git Manager. Handle commits and branching.\n\n- Always check `git status` first. Do not push without confirmation.",
+      "prompt": "{file:./prompts/git-manager.txt}",
+      "_comment": "Git-only command shell. bash is narrowed to 'git *' (with push/reset gated to 'ask' for human confirmation). 'cat *' is intentionally NOT granted — git-manager may not read arbitrary files outside git operations; it relies on the global 'read' permission for fs inspection. edit is deny; release-manager owns repo-mutating writes.",
       "permission": {
         "skill": "allow",
         "task": "deny",
@@ -322,8 +335,7 @@
           "*": "deny",
           "git *": "allow",
           "git push*": "ask",
-          "git reset*": "ask",
-          "cat *": "ask"
+          "git reset*": "ask"
         },
         "edit": "deny",
         "google_search": "deny",

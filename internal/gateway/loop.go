@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -33,6 +32,25 @@ const stalenessCheckInterval = 30 * time.Second
 // its status via the WebSocket hub. Set to 2–3 seconds for near-realtime
 // updates without saturating the broadcast channel.
 const gatewayStatusBroadcastInterval = 2500 * time.Millisecond
+
+// validAgentTypes is the closed set of opencode agent block names that may
+// appear in event payloads as "agent_type". It matches exactly the 8-name
+// enum validated by the MCP create_task path (internal/mcp/tools.go). The
+// public Gateway.SubmitEvent API accepts events from any emitter, so the
+// payload-extracted agent_type must be validated the same way here —
+// otherwise a crafty emitter could pass e.g. "executor" to bypass
+// defaultRoleForTaskType(task.TaskType) for a review-type task and gain
+// executor permissions. (Stage-4 security audit finding 2.)
+var validAgentTypes = map[string]struct{}{
+	"planner":          {},
+	"executor":         {},
+	"builder":          {},
+	"reviewer":         {},
+	"security-auditor": {},
+	"release-manager":  {},
+	"workspace-setup":  {},
+	"git-manager":      {},
+}
 
 // ---------------------------------------------------------------------------
 // File-collision-aware parallel scheduling
@@ -196,52 +214,41 @@ func (g *Gateway) processEvent(ctx context.Context, event dispatcher.Event) {
 
 // resolveAgentType extracts the agent type from the event by inspecting the
 // referenced task (if available), the event payload, or the session.
+//
+// NOTE (TASK-005): the capability-search path (profileTaskTypes) was removed.
+// Routing is now driven directly by task.AgentType, with
+// defaultRoleForTaskType applied as the fallback when the task has no explicit
+// AgentType.
 func (g *Gateway) resolveAgentType(ctx context.Context, event dispatcher.Event) string {
 	// If the event has a task ID, look up the task.
 	if event.TaskID != "" {
 		task, err := g.taskStore.GetByID(ctx, event.TaskID)
 		if err == nil && task != nil {
-			// First, try capability-based matching using task_type.
-			if task.TaskType != "" {
-				g.mu.RLock()
-				// Collect matching profile names for deterministic iteration.
-				var candidates []string
-				for name, taskTypes := range g.profileTaskTypes {
-					for _, tt := range taskTypes {
-						if tt == string(task.TaskType) {
-							candidates = append(candidates, name)
-							break
-						}
-					}
-				}
-
-				if len(candidates) > 0 {
-					// Sort for deterministic behavior (first alphabetically).
-					sort.Strings(candidates)
-					// Resolve the agent role key for the chosen profile. A
-					// profile's AgentRole (or Name if blank) is the key into
-					// the system-prompt switch in prompts.go. The lookup
-					// happens under the same RLock as the candidate
-					// collection above.
-					role := g.profileRoles[candidates[0]]
-					g.mu.RUnlock()
-					return role
-				}
-				g.mu.RUnlock()
-			}
-
-			// Fall back to the task's agent_type field.
+			// Prefer the task's explicit AgentType.
 			if task.AgentType != "" {
 				return task.AgentType
+			}
+			// Fall back to the static task-type → role table.
+			if task.TaskType != "" {
+				return defaultRoleForTaskType(string(task.TaskType))
 			}
 		}
 	}
 
 	// Try to extract agent_type from the payload (if it's a map).
+	// Validate against validAgentTypes — the public SubmitEvent API
+	// accepts events from any emitter, so a payload-supplied agent_type
+	// must be in the canonical 8-name enum (Stage-4 audit finding 2). A
+	// non-empty value that is NOT in the set is rejected (falls through to
+	// the next lookup) rather than returned unchecked, so a crafty emitter
+	// cannot pass "executor" to bypass defaultRoleForTaskType for a
+	// review-type task.
 	if event.Payload != nil {
 		if m, ok := event.Payload.(map[string]interface{}); ok {
 			if at, ok := m["agent_type"].(string); ok && at != "" {
-				return at
+				if _, valid := validAgentTypes[at]; valid {
+					return at
+				}
 			}
 		}
 	}
@@ -521,20 +528,54 @@ func (g *Gateway) createACPSession(ctx context.Context, projectID, agentType, st
 		}
 	}
 
-	// Create the ACP session.
-	sessionID, err := client.NewSession(ctx, acp.NewSessionRequest{
+	// Create the ACP session and capture the available modes/config options
+	// the agent advertised (used by the session-mode routing in TASK-005).
+	newSessionResp, err := client.NewSessionWithModes(ctx, acp.NewSessionRequest{
 		Cwd:        cwd,
 		MCPServers: mcpServers,
 	})
 	if err != nil {
 		return fmt.Errorf("new acp session: %w", err)
 	}
+	sessionID := newSessionResp.SessionID
+	availableModes := client.ExtractAvailableModes(newSessionResp)
+	if len(availableModes) > 0 {
+		slog.Debug("gateway: agent advertised available modes for session",
+			"project_id", projectID,
+			"agent_type", agentType,
+			"session_id", sessionID,
+			"available_modes", availableModes)
+	}
 
 	// Register the session in the tracker with the real session ID.
 	_ = g.tracker.RegisterSession(projectID, agentType, sessionID)
 
+	// Stash the advertised available modes on the per-subprocess session
+	// record so the routing layer (TASK-005) can validate requested mode IDs
+	// against the set the agent actually supports. Use the tracker accessor
+	// (Stage-4 audit fix) instead of a direct field write — the tracker's
+	// internal mutex only guards map membership, not the GatewaySession
+	// struct fields, so a bare field write races with concurrent readers.
+	g.tracker.SetAvailableModes(projectID, agentType, availableModes)
+
+	// Auto-clear (Decisions 4 / TASK-010): if the agent now advertises a
+	// block that was previously recorded as missing for this project, drop
+	// the stale mismatch so the UI stops warning the user.
+	g.ClearMissingBlocksForProject(projectID, availableModes)
+
 	// Register the session client for future prompt sends.
 	g.RegisterSessionClient(sessionID, client)
+
+	// Route the session to the intended opencode agent block via
+	// session/set_config_option (configId="mode"). Per TASK-005: role comes
+	// from agentType (already resolved by resolveAgentType from
+	// task.AgentType with defaultRoleForTaskType fallback); validate against
+	// the modes the agent advertised and degrade if missing. On error the
+	// session cannot be routed to the requested block.
+	role := agentType
+	if rErr := g.routeSessionMode(ctx, client, sessionID, projectID, role, agentType, availableModes); rErr != nil {
+		return fmt.Errorf("route session mode: %w", rErr)
+	}
 
 	// Build and send the initial context as a prompt.
 	acpCtx, err := g.buildACPContext(ctx, storyID, taskID, agentType, false)
@@ -581,8 +622,19 @@ func (g *Gateway) buildACPContext(ctx context.Context, storyID, taskID, agentTyp
 		b.WriteString("[CONTEXT UPDATE] The user has answered your question.\n\n")
 	}
 
-	// System prompt.
-	b.WriteString(SystemPrompt(agentType))
+	// System prompt. Per TASK-006 the per-profile prompt text lives in the
+	// agent_profiles.prompt column (added in migration 016) and is resolved
+	// through ProfilePrompt. Look up the loaded AgentProfile by its name
+	// (agentType is the profile name in the gateway's resolution model —
+	// see resolveAgentType). When the profile is absent (e.g. an
+	// unrecognized agent_type from a payload, or before profiles have been
+	// seeded), ProfilePrompt(nil) falls back to db.DefaultPrompt so the
+	// session still receives a minimal Loom system prompt.
+	g.mu.RLock()
+	profile := g.profilesByName[agentType]
+	g.mu.RUnlock()
+
+	b.WriteString(ProfilePrompt(profile))
 	b.WriteString("\n\n## CONTEXT\n\n")
 
 	// MCP server hint.
@@ -671,6 +723,13 @@ func (g *Gateway) buildACPContext(ctx context.Context, storyID, taskID, agentTyp
 // resumeACPSession re-establishes an existing session by re-registering the
 // session client. The client's Connect() already auto-initializes, so no
 // resume message is needed.
+//
+// NOTE (TASK-005): even though resumeACPSession reuses the existing ACP
+// session ID rather than calling NewSession, the opencode subprocess may have
+// reset its mode back to default_agent on reconnect. To keep the session
+// pinned to the intended agent block, the same session/set_config_option call
+// is re-issued here against the stashed gs.AvailableModes (populated at the
+// original NewSessionWithModes call by TASK-004).
 func (g *Gateway) resumeACPSession(ctx context.Context, session *GatewaySession) error {
 	client, err := g.getOrCreateACPClient(ctx, session.ProjectID, session.AgentType)
 	if err != nil {
@@ -679,6 +738,27 @@ func (g *Gateway) resumeACPSession(ctx context.Context, session *GatewaySession)
 
 	// Re-register the session client.
 	g.RegisterSessionClient(session.SessionID, client)
+
+	// Re-apply the session mode routing so the resumed session is pinned to
+	// the intended opencode agent block. Role = session.AgentType (the
+	// sticky role persisted on the per-subprocess record at creation time
+	// — TASK-005 step 4). Degrade via recordConfigMismatch if the requested
+	// role is not among the modes the session advertised on first creation.
+	role := session.AgentType
+	// Read the stashed available modes through the tracker accessor (Stage-4
+	// audit fix) instead of touching session.AvailableModes directly — the
+	// tracker's internal mutex only guards map membership, not the struct
+	// fields, so a bare read races with concurrent SetAvailableModes writes.
+	availableModes := g.tracker.GetAvailableModes(session.ProjectID, session.AgentType)
+	if rErr := g.routeSessionMode(ctx, client, session.SessionID, session.ProjectID, role, session.AgentType, availableModes); rErr != nil {
+		// Routing failure on resume is non-fatal — the session can still
+		// operate with default_agent. Log and continue.
+		slog.Warn("gateway: failed to re-route session mode on resume, continuing",
+			"project_id", session.ProjectID,
+			"agent_type", session.AgentType,
+			"session_id", session.SessionID,
+			"error", rErr)
+	}
 
 	// Update the session status.
 	if _, err := g.tracker.UpdateStatus(session.ProjectID, session.AgentType, SessionActive); err != nil {
@@ -881,16 +961,50 @@ func (g *Gateway) assignTaskToSession(ctx context.Context, projectID, agentType,
 			}
 		}
 
-		sessionID, err := client.NewSession(ctx, acp.NewSessionRequest{
+		newSessionResp, err := client.NewSessionWithModes(ctx, acp.NewSessionRequest{
 			Cwd:        cwd,
 			MCPServers: mcpServers,
 		})
 		if err != nil {
 			return fmt.Errorf("new acp session for task assignment: %w", err)
 		}
+		sessionID := newSessionResp.SessionID
 
 		gs = g.tracker.RegisterSession(projectID, agentType, sessionID)
 		g.RegisterSessionClient(sessionID, client)
+
+		// Stash the advertised available modes on the per-subprocess session
+		// record so the routing layer (TASK-005) can validate requested mode
+		// IDs against the set the agent actually supports.
+		availableModes := client.ExtractAvailableModes(newSessionResp)
+		if len(availableModes) > 0 {
+			slog.Debug("gateway: agent advertised available modes for task assignment",
+				"project_id", projectID,
+				"agent_type", agentType,
+				"session_id", sessionID,
+				"available_modes", availableModes)
+		}
+		g.tracker.SetAvailableModes(projectID, agentType, availableModes)
+
+		// Auto-clear (Decisions 4 / TASK-010): if the agent now advertises
+		// a block that was previously recorded as missing for this
+		// project, drop the stale mismatch so the UI stops warning the
+		// user.
+		g.ClearMissingBlocksForProject(projectID, availableModes)
+
+		// Route the freshly-created session to the intended opencode agent
+		// block via session/set_config_option (configId="mode"). Per
+		// TASK-005: role resolves from task.AgentType (or
+		// defaultRoleForTaskType(task.TaskType) fallback — already
+		// expressed by the agentType parameter); validate against the
+		// advertised modes and degrade if missing.
+		role := task.AgentType
+		if role == "" {
+			role = defaultRoleForTaskType(string(task.TaskType))
+		}
+		if rErr := g.routeSessionMode(ctx, client, sessionID, projectID, role, task.AgentType, availableModes); rErr != nil {
+			return fmt.Errorf("route session mode: %w", rErr)
+		}
 	}
 
 	// Build task context and send as a prompt.
