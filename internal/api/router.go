@@ -250,6 +250,12 @@ func NewRouter(
 		r.Put("/projects/{id}", h.updateProject)
 		r.Delete("/projects/{id}", h.deleteProject)
 
+		// Project config-mismatch surface (Decisions 4 / TASK-010):
+		// read-only view of opencode-block mismatches recorded by the
+		// gateway per project. Admin-only to match the surrounding
+		// /projects/{id} management endpoints.
+		r.Get("/projects/{id}/config-status", h.handleProjectConfigStatus)
+
 		// Story failure reset (admin-only: bypass circuit breaker).
 		r.Post("/stories/{id}/reset-failures", h.resetStoryFailures)
 

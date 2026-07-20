@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -116,10 +118,20 @@ type Gateway struct {
 	eventsProcessed atomic.Int64
 	startedAt       time.Time
 
-	acpCommand       string              // e.g., "opencode acp"
-	profileTaskTypes map[string][]string // profile name -> task types (protected by mu)
-	profileRoles     map[string]string   // profile name -> agent role key (protected by mu)
-	filesInUse       map[string]string   // file path → taskID (protected by mu)
+	acpCommand     string                          // e.g., "opencode acp"
+	profilesByName map[string]*models.AgentProfile // profile name -> full profile (protected by mu); used to resolve Prompt for ProfilePrompt (TASK-006)
+	filesInUse     map[string]string               // file path → taskID (protected by mu)
+
+	// missingBlocks records per-project opencode configuration mismatches
+	// (Decisions 4 / TASK-010): the routing layer (routeSessionMode in
+	// loop.go) calls recordConfigMismatch when the requested agent block is
+	// not in the modes the opencode session actually advertised, and the
+	// auto-clear hook prunes entries once the agent advertises them again.
+	// Both the outer and inner maps are guarded by g.mu. Outer key is
+	// projectID, inner key is the block name (e.g. "missing_block:executor").
+	// NOTE: no TTL is applied in v1; future work may swap the inner count
+	// for a last-seen timestamp and prune stale entries.
+	missingBlocks map[string]map[string]int // protected by mu
 
 	worktreeManager *WorktreeManager // git worktree management for story isolation
 	settingStore    SettingStore     // settings store for dynamic configuration
@@ -181,9 +193,9 @@ func NewGateway(
 		eventCh:           make(chan dispatcher.Event, 256),
 		done:              make(chan struct{}),
 		acpCommand:        acpCommand,
-		profileTaskTypes:  make(map[string][]string),
-		profileRoles:      make(map[string]string),
+		profilesByName:    make(map[string]*models.AgentProfile),
 		filesInUse:        make(map[string]string),
+		missingBlocks:     make(map[string]map[string]int),
 		worktreeManager:   NewWorktreeManager(".loom/worktrees"),
 		settingStore:      settingStore,
 	}
@@ -309,6 +321,12 @@ func (g *Gateway) RegisterSessionClient(sessionID string, client *acp.Client) {
 // SendContextUpdate sends a context update to an existing ACP session.
 // It looks up the client by session ID, builds the new context with
 // isUpdate=true, and sends it as a prompt.
+//
+// NOTE (TASK-005): per the spec, the Q&A resume path (user answers a planner
+// question — see handlers_comments.go) re-issues the session/set_config_option
+// routing call before sending the new prompt, so the resumed prompt uses the
+// intended opencode agent block. The session's availableModes are looked up
+// from the tracker by ACP session ID; on an empty payload no-op degrade.
 func (g *Gateway) SendContextUpdate(ctx context.Context, sessionID, storyID, taskID, agentType, newContext string) error {
 	g.mu.RLock()
 	client, ok := g.sessionIDtoClient[sessionID]
@@ -316,6 +334,32 @@ func (g *Gateway) SendContextUpdate(ctx context.Context, sessionID, storyID, tas
 
 	if !ok {
 		return fmt.Errorf("no client found for session %q", sessionID)
+	}
+
+	// Re-apply session mode routing so the resumed Q&A prompt is pinned to
+	// the intended opencode agent block. We resolve the per-subprocess
+	// GatewaySession by ACP session ID to retrieve the stashed
+	// gs.AvailableModes (populated at the original NewSessionWithModes call
+	// by TASK-004). Routing failure is non-fatal — log and continue with
+	// the prompt send so a mode-routing glitch does not block the Q&A flow.
+	if gs, ok := g.tracker.GetBySessionID(sessionID); ok {
+		role := agentType
+		if role == "" {
+			role = gs.AgentType
+		}
+		// Read the stashed available modes through the tracker accessor
+		// (Stage-4 audit fix). The tracker's internal lock only guards
+		// map membership, not the GatewaySession struct fields, so a bare
+		// gs.AvailableModes read races with concurrent SetAvailableModes
+		// writes during the ACP session-create path.
+		availableModes := g.tracker.GetAvailableModesBySessionID(sessionID)
+		if rErr := g.routeSessionMode(ctx, client, sessionID, gs.ProjectID, role, agentType, availableModes); rErr != nil {
+			slog.Warn("gateway: failed to re-route session mode on context update, continuing",
+				"project_id", gs.ProjectID,
+				"agent_type", gs.AgentType,
+				"session_id", sessionID,
+				"error", rErr)
+		}
 	}
 
 	// We accept newContext as a parameter, OR we build it here.
@@ -503,27 +547,245 @@ func (g *Gateway) loadProfiles(ctx context.Context) error {
 	}
 
 	g.mu.Lock()
-	// Clear and rebuild the profile task types map.
-	g.profileTaskTypes = make(map[string][]string, len(profiles))
-	g.profileRoles = make(map[string]string, len(profiles))
+	// Rebuild the profile-name → full-profile lookup. The capability-search
+	// map (profileTaskTypes) and the role-key map that predated TASK-005
+	// were both removed; routing is now driven directly by task.AgentType
+	// with a defaultRoleForTaskType fallback, and per-profile prompt text
+	// is resolved through profilesByName + ProfilePrompt (TASK-006).
+	// profilesByName retains the full loaded profile (including the
+	// prompt column added in migration 016) so buildACPContext can resolve
+	// the per-profile prompt text via ProfilePrompt (TASK-006).
+	g.profilesByName = make(map[string]*models.AgentProfile, len(profiles))
 	for _, p := range profiles {
 		g.queue.SetConcurrency(p.Name, p.MaxConcurrency)
-		g.profileTaskTypes[p.Name] = p.TaskTypes
-		// AgentRole is the key into the system-prompt switch in prompts.go.
-		// Blank means "use the profile name" for back-compat with
-		// pre-migration-015 rows.
-		if p.AgentRole == "" {
-			g.profileRoles[p.Name] = p.Name
-		} else {
-			g.profileRoles[p.Name] = p.AgentRole
-		}
+		g.profilesByName[p.Name] = p
 		slog.Info("gateway: configured concurrency from profile",
 			"agent_type", p.Name,
 			"max_concurrency", p.MaxConcurrency,
-			"task_types", p.TaskTypes,
 			"agent_role", p.AgentRole)
 	}
 	g.mu.Unlock()
 
 	return nil
+}
+
+// defaultRoleForTaskType returns the canonical opencode agent block name (the
+// "mode" advertised by opencode serve) for a given models.TaskType string.
+// It is used as a fallback when a task has no explicit AgentType. The table is
+// static; unrecognized task types (including the empty string) fall back to
+// "planner".
+//
+// NOTE (TASK-005): routing is now driven by task.AgentType (with this helper
+// as the fallback) instead of the old capability-search profileTaskTypes map.
+func defaultRoleForTaskType(taskType string) string {
+	switch taskType {
+	case "planning":
+		return "planner"
+	case "code":
+		return "executor"
+	case "build":
+		return "builder"
+	case "review":
+		return "reviewer"
+	case "security":
+		return "security-auditor"
+	case "release":
+		return "release-manager"
+	case "workspace_setup":
+		return "workspace-setup"
+	case "":
+		return "planner"
+	default:
+		return "planner"
+	}
+}
+
+// recordConfigMismatch records a per-project opencode configuration
+// mismatch surfaced by the routing layer (see routeSessionMode in loop.go):
+// the requested agent block was not in the modes the opencode session
+// actually advertised. The mismatch is logged AND accumulated in
+// g.missingBlocks (Decisions 4 / TASK-010) so the API surface
+// (GET /api/projects/{id}/config-status via MissingOpencodeBlocks) can
+// surface it to the user.
+//
+// The accumulated entry key is shaped as "missing_block:<requestedAgentType>"
+// by the caller. Both the outer (projectID) and inner (blockName) maps are
+// guarded by g.mu. The inner value is a monotonically increasing count — v1
+// does not apply a TTL; see the missingBlocks field comment for future work.
+func (g *Gateway) recordConfigMismatch(projectID, blockName string) {
+	slog.Warn("gateway: opencode config mismatch recorded",
+		"project_id", projectID,
+		"block_name", blockName)
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.missingBlocks == nil {
+		g.missingBlocks = make(map[string]map[string]int)
+	}
+	inner, ok := g.missingBlocks[projectID]
+	if !ok {
+		inner = make(map[string]int)
+		g.missingBlocks[projectID] = inner
+	}
+	inner[blockName]++
+}
+
+// MissingOpencodeBlocks returns a deterministic, deduplicated snapshot of the
+// opencode block names recorded as missing for the given project. The slice
+// is sorted lexicographically so the API response is stable for caching and
+// for the UI to render deterministically. Returns an empty (non-nil) slice
+// when no entries are recorded for the project.
+//
+// This is the read surface consumed by GET /api/projects/{id}/config-status
+// (internal/api/config_status.go, TASK-010). It is read-only and safe to
+// call concurrently with recordConfigMismatch / ClearMissingBlocksForProject.
+func (g *Gateway) MissingOpencodeBlocks(projectID string) []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	inner, ok := g.missingBlocks[projectID]
+	if !ok || len(inner) == 0 {
+		return []string{}
+	}
+	out := make([]string, 0, len(inner))
+	for name := range inner {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ClearMissingBlocksForProject prunes the per-project missing-blocks map
+// down to entries NOT present in availableModes. It is the auto-clear hook
+// (Decisions 4 / TASK-010): once the opencode session advertises a block
+// (captured in gs.AvailableModes by loop.go after NewSessionWithModes),
+// any prior "missing_block:<agentType>" record for that block becomes stale
+// and is dropped so the UI stops warning the user.
+//
+// The match is on the recorded block-name suffix: recorded keys are shaped
+// as "missing_block:<requestedAgentType>", so a recorded entry is cleared
+// when availableModes contains the "<requestedAgentType>" suffix. Entries
+// that do not correspond to any advertised mode are retained.
+func (g *Gateway) ClearMissingBlocksForProject(projectID string, availableModes []string) {
+	if len(availableModes) == 0 {
+		return
+	}
+	available := make(map[string]struct{}, len(availableModes))
+	for _, m := range availableModes {
+		available[m] = struct{}{}
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	inner, ok := g.missingBlocks[projectID]
+	if !ok || len(inner) == 0 {
+		return
+	}
+	const prefix = "missing_block:"
+	for recorded := range inner {
+		if !strings.HasPrefix(recorded, prefix) {
+			continue
+		}
+		suffix := recorded[len(prefix):]
+		if _, has := available[suffix]; has {
+			delete(inner, recorded)
+		}
+	}
+	if len(inner) == 0 {
+		delete(g.missingBlocks, projectID)
+	}
+}
+
+// routeSessionMode issues a session/set_config_option call (configId="mode")
+// against a freshly-created or resumed ACP session so opencode uses the
+// intended agent block for subsequent prompts. The intended role is validated
+// against the modes the opencode session actually advertised
+// (gs.AvailableModes, populated by TASK-004 from NewSessionWithModes).
+//
+// Behavior:
+//   - If availableModes is nil/empty: skip the call entirely (older opencode
+//     returns no modes payload; let opencode use its default_agent). A
+//     one-line debug log records the absence.
+//   - If role is in availableModes: send set_config_option(mode=role).
+//   - If role is NOT in availableModes: log a warning, record
+//     "missing_block:<requestedAgentType>" via recordConfigMismatch, and
+//     degrade to availableModes[0] (or "" if the slice is somehow empty
+//     after the non-nil check), then send set_config_option with the
+//     degraded value.
+//
+// requestedAgentType is the role originally requested for the task (matching
+// task.AgentType); it is recorded as the source of the mismatch to make the
+// degradation traceable to which opencode block was expected.
+//
+// This helper is invoked by loop.go after every NewSessionWithModes call
+// (createACPSession + assignTaskToSession !ok branch) and after the
+// SendContextUpdate resume path re-spawns a session.
+//
+// The client parameter accepts a narrow interface rather than *acp.Client
+// directly so tests (TASK-011) can substitute a mock that records
+// SetSessionConfigOption calls without standing up a real ACP subprocess.
+// The concrete *acp.Client satisfies this interface in production.
+func (g *Gateway) routeSessionMode(
+	ctx context.Context,
+	client modeRoutingClient,
+	sessionID, projectID, role, requestedAgentType string,
+	availableModes []string,
+) error {
+	if len(availableModes) == 0 {
+		// Older opencode did not advertise any modes payload. Skip the
+		// set_config_option call so opencode uses its default_agent.
+		slog.Debug("gateway: no available modes advertised, skipping session mode routing",
+			"project_id", projectID,
+			"session_id", sessionID,
+			"requested_role", role)
+		return nil
+	}
+
+	// Validate role against advertised modes; degrade to the first mode
+	// (or empty string) when the requested role is not supported.
+	resolvedRole := role
+	if !modeListContains(availableModes, role) {
+		slog.Warn("gateway: opencode agent block not found, degrading",
+			"project_id", projectID,
+			"session_id", sessionID,
+			"role", role,
+			"available_modes", availableModes)
+		g.recordConfigMismatch(projectID, "missing_block:"+requestedAgentType)
+		if len(availableModes) > 0 {
+			resolvedRole = availableModes[0]
+		} else {
+			resolvedRole = ""
+		}
+	}
+
+	if _, err := client.SetSessionConfigOption(ctx, sessionID, "mode", resolvedRole); err != nil {
+		return fmt.Errorf("set session mode %q: %w", resolvedRole, err)
+	}
+	slog.Info("gateway: session mode set",
+		"project_id", projectID,
+		"session_id", sessionID,
+		"mode", resolvedRole,
+		"requested_role", role)
+	return nil
+}
+
+// modeListContains reports whether the given mode id is present in the
+// available modes slice.
+func modeListContains(modes []string, want string) bool {
+	for _, m := range modes {
+		if m == want {
+			return true
+		}
+	}
+	return false
+}
+
+// modeRoutingClient is the narrow ACP client surface required by
+// routeSessionMode. Extracting this minimal interface (instead of depending
+// on the concrete *acp.Client) lets in-package tests (gateway_test.go,
+// TASK-011) substitute a recording mock without standing up a real ACP
+// subprocess via in-memory pipes. The concrete *acp.Client satisfies this
+// interface in production.
+type modeRoutingClient interface {
+	SetSessionConfigOption(ctx context.Context, sessionID, configID, value string) (*acp.SetSessionConfigOptionResponse, error)
 }

@@ -399,3 +399,35 @@ func TestIsConnected(t *testing.T) {
 		t.Error("expected IsConnected() = false after cleanup")
 	}
 }
+
+// TestSetSessionMode verifies that SetSessionMode sends a "session/set_mode"
+// JSON-RPC request with the expected session id and mode id, and that the
+// (empty-_meta) response is unmarshaled without error so the method returns
+// nil. This is a smoke test: it exercises the legacy session/set_mode path
+// retained for fallback and for tests that want to drive the legacy flow
+// (plan.md Decision 1) so it is not silently broken by future refactorings.
+func TestSetSessionMode(t *testing.T) {
+	client, requests, respond, _, cleanup := testClientWithPipes(t)
+	defer cleanup()
+
+	setInitialized(client)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Respond as soon as we see the request — io.Pipe provides natural
+	// synchronization so no artificial sleep is needed.
+	go func() {
+		req := <-requests
+		if req.Method != "session/set_mode" {
+			t.Errorf("request method = %q, want %q", req.Method, "session/set_mode")
+		}
+		// session/set_mode returns only the reserved _meta field; an empty
+		// _meta is a valid response per the spec.
+		respond(req.ID, SetSessionModeResponse{}, nil)
+	}()
+
+	if err := client.SetSessionMode(ctx, "session-test", "planner"); err != nil {
+		t.Fatalf("SetSessionMode() returned unexpected error: %v", err)
+	}
+}

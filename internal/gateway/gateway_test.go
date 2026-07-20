@@ -105,9 +105,9 @@ func newTestGateway(profiles []*models.AgentProfile) *Gateway {
 		queue:             NewJobQueue(),
 		acpClients:        make(map[string]*acp.Client),
 		sessionIDtoClient: make(map[string]*acp.Client),
-		profileTaskTypes:  make(map[string][]string),
-		profileRoles:      make(map[string]string),
+		profilesByName:    make(map[string]*models.AgentProfile),
 		filesInUse:        make(map[string]string),
+		missingBlocks:     make(map[string]map[string]int),
 		profileStore:      &mockProfileStore{profiles: profiles},
 		taskStore:         &mockTaskStore{tasks: make(map[string]*models.Task)},
 		sessionStore:      &mockSessionStore{},
@@ -118,211 +118,6 @@ func newTestGateway(profiles []*models.AgentProfile) *Gateway {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
-func TestLoadProfiles_PopulatesProfileTaskTypes(t *testing.T) {
-	profiles := []*models.AgentProfile{
-		{ID: "1", Name: "Coder", TaskTypes: []string{"code", "build"}, MaxConcurrency: 1},
-		{ID: "2", Name: "Reviewer", TaskTypes: []string{"review"}, MaxConcurrency: 1},
-		{ID: "3", Name: "Planner", TaskTypes: []string{"planning"}, MaxConcurrency: 1},
-	}
-
-	g := newTestGateway(profiles)
-	err := g.loadProfiles(context.Background())
-	if err != nil {
-		t.Fatalf("loadProfiles() returned error: %v", err)
-	}
-
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-
-	if len(g.profileTaskTypes) != 3 {
-		t.Fatalf("profileTaskTypes length = %d, want 3", len(g.profileTaskTypes))
-	}
-
-	expected := map[string][]string{
-		"Coder":    {"code", "build"},
-		"Reviewer": {"review"},
-		"Planner":  {"planning"},
-	}
-
-	for name, expectedTypes := range expected {
-		got, ok := g.profileTaskTypes[name]
-		if !ok {
-			t.Errorf("missing profileTaskTypes entry for %q", name)
-			continue
-		}
-		if len(got) != len(expectedTypes) {
-			t.Errorf("profileTaskTypes[%q] length = %d, want %d", name, len(got), len(expectedTypes))
-			continue
-		}
-		for i := range got {
-			if got[i] != expectedTypes[i] {
-				t.Errorf("profileTaskTypes[%q][%d] = %q, want %q", name, i, got[i], expectedTypes[i])
-			}
-		}
-	}
-}
-
-func TestResolveAgentType_MatchByTaskType(t *testing.T) {
-	profiles := []*models.AgentProfile{
-		{ID: "1", Name: "CodeAgent", TaskTypes: []string{"code", "build"}, MaxConcurrency: 1},
-		{ID: "2", Name: "ReviewAgent", TaskTypes: []string{"review"}, MaxConcurrency: 1},
-	}
-
-	g := newTestGateway(profiles)
-	err := g.loadProfiles(context.Background())
-	if err != nil {
-		t.Fatalf("loadProfiles() returned error: %v", err)
-	}
-
-	// Add a task with task_type "code" and no explicit AgentType.
-	g.taskStore.(*mockTaskStore).tasks["task-1"] = &models.Task{
-		ID:       "task-1",
-		TaskType: models.TaskTypeCode,
-	}
-
-	event := dispatcher.Event{
-		TaskID: "task-1",
-	}
-
-	agentType := g.resolveAgentType(context.Background(), event)
-	if agentType != "CodeAgent" {
-		t.Errorf("resolveAgentType() = %q, want %q", agentType, "CodeAgent")
-	}
-}
-
-func TestResolveAgentType_FallbackToTaskAgentType(t *testing.T) {
-	profiles := []*models.AgentProfile{
-		{ID: "1", Name: "CodeAgent", TaskTypes: []string{"code"}, MaxConcurrency: 1},
-	}
-
-	g := newTestGateway(profiles)
-	_ = g.loadProfiles(context.Background())
-
-	// Task has task_type "review" which no profile handles, but has an explicit AgentType.
-	g.taskStore.(*mockTaskStore).tasks["task-1"] = &models.Task{
-		ID:        "task-1",
-		TaskType:  models.TaskTypeReview,
-		AgentType: "fallback-agent",
-	}
-
-	event := dispatcher.Event{
-		TaskID: "task-1",
-	}
-
-	agentType := g.resolveAgentType(context.Background(), event)
-	if agentType != "fallback-agent" {
-		t.Errorf("resolveAgentType() = %q, want %q", agentType, "fallback-agent")
-	}
-}
-
-func TestResolveAgentType_NoMatchReturnsEmpty(t *testing.T) {
-	profiles := []*models.AgentProfile{
-		{ID: "1", Name: "CodeAgent", TaskTypes: []string{"code"}, MaxConcurrency: 1},
-	}
-
-	g := newTestGateway(profiles)
-	_ = g.loadProfiles(context.Background())
-
-	// Task with "planning" task_type, no profiles handle "planning".
-	g.taskStore.(*mockTaskStore).tasks["task-1"] = &models.Task{
-		ID:       "task-1",
-		TaskType: models.TaskTypePlanning,
-	}
-
-	event := dispatcher.Event{
-		TaskID: "task-1",
-	}
-
-	agentType := g.resolveAgentType(context.Background(), event)
-	if agentType != "" {
-		t.Errorf("resolveAgentType() = %q, want empty string", agentType)
-	}
-}
-
-func TestResolveAgentType_DeterministicPickWhenMultipleMatch(t *testing.T) {
-	// Both profiles handle "code". Should pick the first alphabetically.
-	profiles := []*models.AgentProfile{
-		{ID: "1", Name: "ZuluAgent", TaskTypes: []string{"code"}, MaxConcurrency: 1},
-		{ID: "2", Name: "AlphaAgent", TaskTypes: []string{"code"}, MaxConcurrency: 1},
-	}
-
-	g := newTestGateway(profiles)
-	_ = g.loadProfiles(context.Background())
-
-	g.taskStore.(*mockTaskStore).tasks["task-1"] = &models.Task{
-		ID:       "task-1",
-		TaskType: models.TaskTypeCode,
-	}
-
-	event := dispatcher.Event{
-		TaskID: "task-1",
-	}
-
-	agentType := g.resolveAgentType(context.Background(), event)
-	if agentType != "AlphaAgent" {
-		t.Errorf("resolveAgentType() = %q, want %q (first alphabetically)", agentType, "AlphaAgent")
-	}
-}
-
-func TestResolveAgentType_PrefersAgentRoleOverName(t *testing.T) {
-	// A profile named "renamed-executor" declares AgentRole: "executor".
-	// resolveAgentType should return the AgentRole ("executor"), not the
-	// profile name — the AgentRole is the key into the system-prompt
-	// switch in prompts.go.
-	profiles := []*models.AgentProfile{
-		{ID: "1", Name: "renamed-executor", AgentRole: "executor", TaskTypes: []string{"code"}, MaxConcurrency: 1},
-	}
-
-	g := newTestGateway(profiles)
-	err := g.loadProfiles(context.Background())
-	if err != nil {
-		t.Fatalf("loadProfiles() returned error: %v", err)
-	}
-
-	g.taskStore.(*mockTaskStore).tasks["task-1"] = &models.Task{
-		ID:       "task-1",
-		TaskType: models.TaskTypeCode,
-	}
-
-	event := dispatcher.Event{
-		TaskID: "task-1",
-	}
-
-	agentType := g.resolveAgentType(context.Background(), event)
-	if agentType != "executor" {
-		t.Errorf("resolveAgentType() = %q, want %q (AgentRole, not profile Name)", agentType, "executor")
-	}
-}
-
-func TestResolveAgentType_BlankRoleFallsBackToName(t *testing.T) {
-	// A profile named "custom-bot" with a blank AgentRole should fall
-	// back to its Name as the prompt key (back-compat with
-	// pre-migration-015 rows).
-	profiles := []*models.AgentProfile{
-		{ID: "1", Name: "custom-bot", AgentRole: "", TaskTypes: []string{"code"}, MaxConcurrency: 1},
-	}
-
-	g := newTestGateway(profiles)
-	err := g.loadProfiles(context.Background())
-	if err != nil {
-		t.Fatalf("loadProfiles() returned error: %v", err)
-	}
-
-	g.taskStore.(*mockTaskStore).tasks["task-1"] = &models.Task{
-		ID:       "task-1",
-		TaskType: models.TaskTypeCode,
-	}
-
-	event := dispatcher.Event{
-		TaskID: "task-1",
-	}
-
-	agentType := g.resolveAgentType(context.Background(), event)
-	if agentType != "custom-bot" {
-		t.Errorf("resolveAgentType() = %q, want %q (profile Name on blank AgentRole)", agentType, "custom-bot")
-	}
-}
 
 func TestNewGateway_LoadsGlobalMaxConcurrency(t *testing.T) {
 	ss := &mockSettingStore{
@@ -493,55 +288,16 @@ func TestNewGateway_InvalidSettingValue_UsesDefaultMaxTotal(t *testing.T) {
 	}
 }
 
-func TestResolveAgentType_ConcurrentSafety(t *testing.T) {
-	profiles := []*models.AgentProfile{
-		{ID: "1", Name: "CodeAgent", TaskTypes: []string{"code"}, MaxConcurrency: 1},
-	}
-
-	g := newTestGateway(profiles)
-	_ = g.loadProfiles(context.Background())
-
-	g.taskStore.(*mockTaskStore).tasks["task-1"] = &models.Task{
-		ID:       "task-1",
-		TaskType: models.TaskTypeCode,
-	}
-
-	event := dispatcher.Event{TaskID: "task-1"}
-
-	// Run resolveAgentType concurrently with ReloadProfiles.
-	done := make(chan struct{})
-	const goroutines = 10
-	for i := 0; i < goroutines; i++ {
-		go func() {
-			for {
-				select {
-				case <-done:
-					return
-				default:
-					g.resolveAgentType(context.Background(), event)
-				}
-			}
-		}()
-	}
-
-	// Reload while reads are happening.
-	for i := 0; i < 100; i++ {
-		_ = g.ReloadProfiles(context.Background())
-	}
-
-	close(done)
-
-	// Verify no panics and final state is correct.
-	agentType := g.resolveAgentType(context.Background(), event)
-	if agentType != "CodeAgent" {
-		t.Errorf("resolveAgentType() = %q, want %q", agentType, "CodeAgent")
-	}
-}
-
 func TestReloadProfiles_PicksUpChanges(t *testing.T) {
+	// Verify ReloadProfiles surfaces profile changes that affect the job
+	// queue's concurrency configuration without requiring a server
+	// restart. The profileTaskTypes capability-search map (which the
+	// original version of this test asserted on) was removed in TASK-005;
+	// routing now goes through task.AgentType directly. MaxConcurrency is
+	// the remaining loadProfiles-cast gateway state, so we assert on it.
 	profileStore := &mockProfileStore{
 		profiles: []*models.AgentProfile{
-			{ID: "1", Name: "CodeAgent", TaskTypes: []string{"code"}, MaxConcurrency: 1},
+			{ID: "1", Name: "CodeAgent", MaxConcurrency: 1},
 		},
 	}
 
@@ -549,25 +305,19 @@ func TestReloadProfiles_PicksUpChanges(t *testing.T) {
 	g.profileStore = profileStore // ensure the store is the mock
 	_ = g.loadProfiles(context.Background())
 
-	// Initially, no profile handles "build".
-	g.taskStore.(*mockTaskStore).tasks["task-1"] = &models.Task{
-		ID:       "task-1",
-		TaskType: models.TaskTypeBuild,
+	// Initially, the profile advertises MaxConcurrency=1.
+	if got := g.queue.MaxConcurrency("CodeAgent"); got != 1 {
+		t.Fatalf("before reload: MaxConcurrency(CodeAgent) = %d, want 1", got)
 	}
 
-	event := dispatcher.Event{TaskID: "task-1"}
-	agentType := g.resolveAgentType(context.Background(), event)
-	if agentType != "" {
-		t.Errorf("before reload: resolveAgentType() = %q, want empty string", agentType)
+	// Pump the profile's MaxConcurrency and reload.
+	profileStore.profiles[0].MaxConcurrency = 4
+	if err := g.ReloadProfiles(context.Background()); err != nil {
+		t.Fatalf("ReloadProfiles() returned error: %v", err)
 	}
 
-	// Update the profile to also handle "build".
-	profileStore.profiles[0].TaskTypes = []string{"code", "build"}
-	_ = g.ReloadProfiles(context.Background())
-
-	agentType = g.resolveAgentType(context.Background(), event)
-	if agentType != "CodeAgent" {
-		t.Errorf("after reload: resolveAgentType() = %q, want %q", agentType, "CodeAgent")
+	if got := g.queue.MaxConcurrency("CodeAgent"); got != 4 {
+		t.Errorf("after reload: MaxConcurrency(CodeAgent) = %d, want 4", got)
 	}
 }
 
@@ -848,5 +598,250 @@ func TestCreateWorktree_Idempotent(t *testing.T) {
 	}
 	if branch2 != branch1 {
 		t.Fatalf("CreateWorktree (second call): branch = %q, want %q", branch2, branch1)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Session-mode routing tests (TASK-005 / TASK-010 — see Architectural
+// Decision 9). The old TestResolveAgentType_* / TestLoadProfiles_
+// PopulatesProfileTaskTypes tests (which asserted the now-removed
+// profileTaskTypes capability-search) were deleted in favor of the
+// following tests exercising the new agent-type → SetSessionConfigOption
+// routing pipeline driven by task.AgentType + defaultRoleForTaskType.
+// ---------------------------------------------------------------------------
+
+// mockModeRoutingClient is the in-package test double for the
+// modeRoutingClient interface declared alongside routeSessionMode in
+// internal/gateway/gateway.go. It records every SetSessionConfigOption call
+// so a test can assert the routed session/mode pair without standing up a
+// real opencode subprocess.
+type mockModeRoutingClient struct {
+	mu    sync.Mutex
+	calls []setSessionConfigOptionCall
+}
+
+type setSessionConfigOptionCall struct {
+	sessionID string
+	configID  string
+	value     string
+}
+
+func (m *mockModeRoutingClient) SetSessionConfigOption(_ context.Context, sessionID, configID, value string) (*acp.SetSessionConfigOptionResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, setSessionConfigOptionCall{
+		sessionID: sessionID,
+		configID:  configID,
+		value:     value,
+	})
+	return &acp.SetSessionConfigOptionResponse{}, nil
+}
+
+// snapshot returns a copy of the recorded SetSessionConfigOption calls so a
+// test can assert on them without racing against the production mutator.
+func (m *mockModeRoutingClient) snapshot() []setSessionConfigOptionCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]setSessionConfigOptionCall, len(m.calls))
+	copy(out, m.calls)
+	return out
+}
+
+// TestSetSessionConfigOption_OnNewSession_SwitchesMode exercises the happy
+// path through routeSessionMode for a freshly-created session whose agent
+// advertised the requested opencode block. With role="executor" and an
+// availableModes slice that contains "executor", the mock ACP client must
+// observe a single SetSessionConfigOption(ctx, sessionID, "mode", "executor")
+// call. No config-mismatch entry should be recorded.
+func TestSetSessionConfigOption_OnNewSession_SwitchesMode(t *testing.T) {
+	const (
+		projectID = "p1"
+		sessionID = "sess-1"
+	)
+
+	g := newTestGateway(nil)
+	client := &mockModeRoutingClient{}
+
+	availableModes := []string{"planner", "executor", "reviewer"}
+	if err := g.routeSessionMode(context.Background(), client, sessionID, projectID, "executor", "executor", availableModes); err != nil {
+		t.Fatalf("routeSessionMode() returned unexpected error: %v", err)
+	}
+
+	calls := client.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("SetSessionConfigOption call count = %d, want 1 (full calls: %v)", len(calls), calls)
+	}
+	c := calls[0]
+	if c.sessionID != sessionID {
+		t.Errorf("SetSessionConfigOption sessionID = %q, want %q", c.sessionID, sessionID)
+	}
+	if c.configID != "mode" {
+		t.Errorf("SetSessionConfigOption configID = %q, want %q", c.configID, "mode")
+	}
+	if c.value != "executor" {
+		t.Errorf("SetSessionConfigOption value = %q, want %q", c.value, "executor")
+	}
+
+	if missing := g.MissingOpencodeBlocks(projectID); len(missing) != 0 {
+		t.Errorf("MissingOpencodeBlocks(%q) = %v, want empty (no mismatch should be recorded on the happy path)", projectID, missing)
+	}
+}
+
+// TestDefaultRoleForTaskType_StaticFallback is a table test asserting each
+// canonical models.TaskType value maps to the expected opencode agent block
+// name, with empty and unrecognized task types both falling back to
+// "planner" (the default_agent in opencode_config/opencode.json).
+func TestDefaultRoleForTaskType_StaticFallback(t *testing.T) {
+	tests := []struct {
+		name     string
+		taskType string
+		want     string
+	}{
+		{name: "planning maps to planner", taskType: "planning", want: "planner"},
+		{name: "code maps to executor", taskType: "code", want: "executor"},
+		{name: "build maps to builder", taskType: "build", want: "builder"},
+		{name: "review maps to reviewer", taskType: "review", want: "reviewer"},
+		{name: "security maps to security-auditor", taskType: "security", want: "security-auditor"},
+		{name: "release maps to release-manager", taskType: "release", want: "release-manager"},
+		{name: "workspace_setup maps to workspace-setup", taskType: "workspace_setup", want: "workspace-setup"},
+		{name: "empty maps to planner default", taskType: "", want: "planner"},
+		{name: "unrecognized maps to planner default", taskType: "not-a-real-task-type", want: "planner"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := defaultRoleForTaskType(tt.taskType); got != tt.want {
+				t.Errorf("defaultRoleForTaskType(%q) = %q, want %q", tt.taskType, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRouteAgent_MissingModeDegradesToDefault verifies the graceful-
+// degradation path: when the opencode session does NOT advertise the
+// requested "executor" block (availableModes is just ["planner"]),
+// routeSessionMode must (1) fall back to availableModes[0] ("planner")
+// when issuing SetSessionConfigOption, and (2) record the missing block via
+// recordConfigMismatch so MissingOpencodeBlocks surfaces it in the UI
+// (Decisions 4 / TASK-010).
+func TestRouteAgent_MissingModeDegradesToDefault(t *testing.T) {
+	const (
+		projectID          = "p-mismatch"
+		sessionID          = "sess-degrade"
+		requestedAgentType = "executor"
+	)
+
+	g := newTestGateway(nil)
+	client := &mockModeRoutingClient{}
+
+	availableModes := []string{"planner"} // missing "executor"
+	if err := g.routeSessionMode(context.Background(), client, sessionID, projectID, requestedAgentType, requestedAgentType, availableModes); err != nil {
+		t.Fatalf("routeSessionMode() returned unexpected error: %v", err)
+	}
+
+	calls := client.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("SetSessionConfigOption call count = %d, want 1 (calls: %v)", len(calls), calls)
+	}
+	if got := calls[0].value; got != "planner" {
+		t.Errorf("degraded SetSessionConfigOption value = %q, want %q (availableModes[0])", got, "planner")
+	}
+	if got := calls[0].sessionID; got != sessionID {
+		t.Errorf("degraded SetSessionConfigOption sessionID = %q, want %q", got, sessionID)
+	}
+	if got := calls[0].configID; got != "mode" {
+		t.Errorf("degraded SetSessionConfigOption configID = %q, want %q", got, "mode")
+	}
+
+	// The mismatch must be recorded so the API surface can surface it to
+	// the operator. recordConfigMismatch stores it as
+	// "missing_block:<requestedAgentType>".
+	missing := g.MissingOpencodeBlocks(projectID)
+	wantBlock := "missing_block:" + requestedAgentType
+	found := false
+	for _, b := range missing {
+		if b == wantBlock {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("MissingOpencodeBlocks(%q) = %v, want slice containing %q", projectID, missing, wantBlock)
+	}
+}
+
+// TestRouteAgent_EmptyAgentTypeFallsBackToTaskTypeDefault verifies that when
+// a task arrives with a blank AgentType (e.g. an old task or a non-MCP
+// emitter like the workspace-setup auto-task), routeSessionMode falls back
+// to the static task-type → role table. With TaskType="code" the resolved
+// role is "executor", so SetSessionConfigOption must be called with
+// value="executor".
+func TestRouteAgent_EmptyAgentTypeFallsBackToTaskTypeDefault(t *testing.T) {
+	const (
+		projectID = "p-blank-role"
+		sessionID = "sess-blank"
+	)
+
+	g := newTestGateway(nil)
+	client := &mockModeRoutingClient{}
+
+	availableModes := []string{"planner", "executor", "reviewer"}
+	// role is resolved by the caller as defaultRoleForTaskType("code")
+	// in the real loop.go flow; here we mirror that resolution and pass
+	// the resolved role straight through, just like loop.go does.
+	role := defaultRoleForTaskType(string(models.TaskTypeCode))
+	if role != "executor" {
+		t.Fatalf("test setup invariant: defaultRoleForTaskType(code) = %q, want %q", role, "executor")
+	}
+	if err := g.routeSessionMode(context.Background(), client, sessionID, projectID, role, "", availableModes); err != nil {
+		t.Fatalf("routeSessionMode() returned unexpected error: %v", err)
+	}
+
+	calls := client.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("SetSessionConfigOption call count = %d, want 1 (calls: %v)", len(calls), calls)
+	}
+	if got := calls[0].value; got != "executor" {
+		t.Errorf("SetSessionConfigOption value = %q, want %q (defaultRoleForTaskType(code))", got, "executor")
+	}
+
+	// Empty requestedAgentType should NOT record a mismatch — the caller
+	// had no explicit preference (this is the soft back-compat path, not
+	// the degradation path).
+	if missing := g.MissingOpencodeBlocks(projectID); len(missing) != 0 {
+		t.Errorf("MissingOpencodeBlocks(%q) = %v, want empty (empty AgentType must not record a mismatch)", projectID, missing)
+	}
+}
+
+// TestRouteAgent_AppliesSetSessionConfigOption is the canonical happy-path
+// routing test: a task with task.AgentType="reviewer" that contains an
+// "reviewer" mode in availableModes must produce a SetSessionConfigOption
+// call whose value is exactly task.AgentType.
+func TestRouteAgent_AppliesSetSessionConfigOption(t *testing.T) {
+	const (
+		projectID = "p-happy"
+		sessionID = "sess-happy"
+		agentType = "reviewer"
+	)
+
+	g := newTestGateway(nil)
+	client := &mockModeRoutingClient{}
+
+	availableModes := []string{"planner", "executor", "reviewer", "security-auditor"}
+	if err := g.routeSessionMode(context.Background(), client, sessionID, projectID, agentType, agentType, availableModes); err != nil {
+		t.Fatalf("routeSessionMode() returned unexpected error: %v", err)
+	}
+
+	calls := client.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("SetSessionConfigOption call count = %d, want 1 (calls: %v)", len(calls), calls)
+	}
+	if calls[0].value != agentType {
+		t.Errorf("SetSessionConfigOption value = %q, want %q (matches task.AgentType)", calls[0].value, agentType)
+	}
+	if calls[0].sessionID != sessionID {
+		t.Errorf("SetSessionConfigOption sessionID = %q, want %q", calls[0].sessionID, sessionID)
+	}
+	if calls[0].configID != "mode" {
+		t.Errorf("SetSessionConfigOption configID = %q, want %q", calls[0].configID, "mode")
 	}
 }

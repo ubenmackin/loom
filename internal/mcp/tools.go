@@ -221,6 +221,11 @@ func (s *Server) registerTools() {
 						"items":       map[string]any{"type": "string"},
 						"description": "Optional list of task IDs this task depends on",
 					},
+					"agent_type": map[string]any{
+						"type":        "string",
+						"description": "The opencode agent block / Loom profile name to route this task to. Must match one of the available opencode agent block names (planner, executor, builder, reviewer, security-auditor, release-manager, workspace-setup, git-manager). Will be used by the gateway as the ACP session mode ID. If omitted, gateway falls back to a default role for the task_type.",
+						"enum":        []string{"planner", "executor", "builder", "reviewer", "security-auditor", "release-manager", "workspace-setup", "git-manager"},
+					},
 				},
 				"required": []string{"story_id", "title"},
 			},
@@ -746,6 +751,18 @@ func (s *Server) handleCreateTask(ctx context.Context, params map[string]any) (*
 	description := getOptionalString(params, "description")
 	taskType := getOptionalString(params, "task_type")
 	taskStatus := getOptionalString(params, "status")
+	agentType := getOptionalString(params, "agent_type")
+
+	// Validate agent_type against the allowed set of opencode agent block names.
+	// Empty is allowed: gateway falls back to defaultRoleForTaskType(task.TaskType).
+	if agentType != "" {
+		switch agentType {
+		case "planner", "executor", "builder", "reviewer", "security-auditor", "release-manager", "workspace-setup", "git-manager":
+			// ok
+		default:
+			return nil, fmt.Errorf("invalid agent_type %q: must be one of planner, executor, builder, reviewer, security-auditor, release-manager, workspace-setup, git-manager (or omitted to use the gateway default for the task_type)", agentType)
+		}
+	}
 
 	// Fetch the parent story once — needed for both status validation and gateway events.
 	story, err := s.stories.GetByID(ctx, storyID)
@@ -774,6 +791,7 @@ func (s *Server) handleCreateTask(ctx context.Context, params map[string]any) (*
 		Description: description,
 		TaskType:    models.TaskType(taskType),
 		Status:      status,
+		AgentType:   agentType,
 	}
 
 	// Require target_files for code tasks.
@@ -820,13 +838,21 @@ func (s *Server) handleCreateTask(ctx context.Context, params map[string]any) (*
 		}
 
 		// Submit EventWorkRequested to both the dispatcher and the gateway.
+		payload := map[string]interface{}{
+			"story_id":   storyID,
+			"project_id": story.ProjectID,
+		}
+		// Only set agent_type on the payload when explicitly provided.
+		// An empty value MUST be omitted so the gateway falls back to
+		// defaultRoleForTaskType(task.TaskType) — setting "" would
+		// short-circuit that fallback path.
+		if agentType != "" {
+			payload["agent_type"] = agentType
+		}
 		event := dispatcher.Event{
-			Type:   dispatcher.EventWorkRequested,
-			TaskID: task.ID,
-			Payload: map[string]interface{}{
-				"story_id":   storyID,
-				"project_id": story.ProjectID,
-			},
+			Type:    dispatcher.EventWorkRequested,
+			TaskID:  task.ID,
+			Payload: payload,
 		}
 		s.submitEvent(ctx, event)
 		if s.gateway != nil {

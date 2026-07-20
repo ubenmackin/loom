@@ -185,3 +185,93 @@ func (st *SessionTracker) Count() int {
 
 	return len(st.sessions)
 }
+
+// SetAvailableModes stashes the advertised available modes on the per-subprocess
+// session record for the given (projectID, agentType) pair. The write is
+// performed while holding the tracker's write lock, making it safe against
+// concurrent GetAvailableModes reads on the same entry. If the session does
+// not exist, the call is a no-op (callers register the session before setting
+// modes). A defensive copy of the slice is stored so later mutation of the
+// caller's slice does not corrupt the stashed state.
+//
+// This accessor exists to close the data race documented in the Stage-4
+// security audit: direct field writes/reads on a *GatewaySession returned
+// from GetSession/GetBySessionID race with the tracker's internal lock, which
+// only guards map membership — not the struct fields.
+func (st *SessionTracker) SetAvailableModes(projectID, agentType string, modes []string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	s, ok := st.sessions[key(projectID, agentType)]
+	if !ok {
+		return
+	}
+	if modes == nil {
+		s.AvailableModes = nil
+		return
+	}
+	cp := make([]string, len(modes))
+	copy(cp, modes)
+	s.AvailableModes = cp
+}
+
+// GetAvailableModes returns a defensive copy of the available modes stashed
+// on the per-subprocess session record for the given (projectID, agentType)
+// pair, or nil if the session does not exist. The copy is taken while
+// holding the tracker's read lock so the read does not race with
+// SetAvailableModes writes.
+func (st *SessionTracker) GetAvailableModes(projectID, agentType string) []string {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+
+	s, ok := st.sessions[key(projectID, agentType)]
+	if !ok {
+		return nil
+	}
+	if s.AvailableModes == nil {
+		return nil
+	}
+	cp := make([]string, len(s.AvailableModes))
+	copy(cp, s.AvailableModes)
+	return cp
+}
+
+// SetAvailableModesBySessionID is the session-ID-keyed variant of
+// SetAvailableModes for paths that only have an ACP session ID (e.g. the
+// resume path). It is O(n) over the tracked entries. No-op if not found.
+func (st *SessionTracker) SetAvailableModesBySessionID(sessionID string, modes []string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	for _, s := range st.sessions {
+		if s.SessionID == sessionID {
+			if modes == nil {
+				s.AvailableModes = nil
+				return
+			}
+			cp := make([]string, len(modes))
+			copy(cp, modes)
+			s.AvailableModes = cp
+			return
+		}
+	}
+}
+
+// GetAvailableModesBySessionID is the session-ID-keyed variant of
+// GetAvailableModes. Returns nil if the session is not tracked.
+func (st *SessionTracker) GetAvailableModesBySessionID(sessionID string) []string {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+
+	for _, s := range st.sessions {
+		if s.SessionID == sessionID {
+			if s.AvailableModes == nil {
+				return nil
+			}
+			cp := make([]string, len(s.AvailableModes))
+			copy(cp, s.AvailableModes)
+			return cp
+		}
+	}
+	return nil
+}

@@ -82,6 +82,20 @@ func (jq *JobQueue) SetConcurrency(agentType string, max int) {
 	jq.concurrency[agentType] = max
 }
 
+// MaxConcurrency returns the configured per-agent-type concurrency limit,
+// or 1 when no limit has been set (mirroring the HasCapacity fallback).
+// It exists primarily for tests that need to assert loadProfiles surfaced
+// profile.MaxConcurrency onto the queue.
+func (jq *JobQueue) MaxConcurrency(agentType string) int {
+	jq.mu.RLock()
+	defer jq.mu.RUnlock()
+	max, ok := jq.concurrency[agentType]
+	if !ok {
+		return 1
+	}
+	return max
+}
+
 // Enqueue creates a new Job with a unique UUID, appends it to the FIFO
 // queue for the given (projectID, agentType) pair, and returns the job.
 func (jq *JobQueue) Enqueue(projectID, agentType, taskID, eventRef string) *Job {

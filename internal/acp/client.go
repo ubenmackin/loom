@@ -302,16 +302,83 @@ func (c *Client) Initialize(ctx context.Context, info *ClientInfo) (*InitializeR
 }
 
 // NewSession sends a session/new request and returns the created session ID.
+//
+// It is a thin wrapper around NewSessionWithModes that preserves the
+// historical (string-returning) signature for existing callers; new callers
+// that need the available modes/config options should use
+// NewSessionWithModes directly.
 func (c *Client) NewSession(ctx context.Context, req NewSessionRequest) (string, error) {
-	raw, err := c.sendRequest(ctx, "session/new", req)
+	resp, err := c.NewSessionWithModes(ctx, req)
 	if err != nil {
 		return "", err
 	}
+	return resp.SessionID, nil
+}
+
+// NewSessionWithModes sends a session/new request and returns the full
+// NewSessionResponse, including the optional Modes and ConfigOptions that
+// the gateway uses to drive session-mode routing (TASK-004).
+func (c *Client) NewSessionWithModes(ctx context.Context, req NewSessionRequest) (*NewSessionResponse, error) {
+	raw, err := c.sendRequest(ctx, "session/new", req)
+	if err != nil {
+		return nil, err
+	}
 	var resp NewSessionResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return "", fmt.Errorf("acp: unmarshal new session response: %w", err)
+		return nil, fmt.Errorf("acp: unmarshal new session response: %w", err)
 	}
-	return resp.SessionID, nil
+	return &resp, nil
+}
+
+// ExtractAvailableModes returns the list of selectable mode IDs advertised by
+// the server in a session/new response. The preference order mirrors the
+// ACP v1 evolution:
+//
+//  1. If ConfigOptions is non-empty, find the option whose Category == "mode"
+//     (falling back to ID == "mode" when Category is not populated) and return
+//     its Options[].Value. This is the modern session/set_config_option surface.
+//  2. Else if Modes is non-nil and advertises AvailableModes, return each
+//     AvailableModes[].ID. This is the legacy session/set_mode surface.
+//  3. Else return nil (the server did not advertise any modes).
+func (c *Client) ExtractAvailableModes(resp *NewSessionResponse) []string {
+	return extractAvailableModes(resp)
+}
+
+// extractAvailableModes is the package-level form of the helper; it has no
+// receiver state and is the canonical implementation used by the bound method
+// above.
+func extractAvailableModes(resp *NewSessionResponse) []string {
+	if resp == nil {
+		return nil
+	}
+
+	// 1. Prefer the modern ConfigOptions surface.
+	if len(resp.ConfigOptions) > 0 {
+		for _, opt := range resp.ConfigOptions {
+			if opt.Category == "mode" || (opt.Category == "" && opt.ID == "mode") {
+				if len(opt.Options) == 0 {
+					return nil
+				}
+				modes := make([]string, 0, len(opt.Options))
+				for _, o := range opt.Options {
+					modes = append(modes, o.Value)
+				}
+				return modes
+			}
+		}
+	}
+
+	// 2. Fall back to the legacy Modes surface.
+	if resp.Modes != nil && len(resp.Modes.AvailableModes) > 0 {
+		modes := make([]string, 0, len(resp.Modes.AvailableModes))
+		for _, m := range resp.Modes.AvailableModes {
+			modes = append(modes, m.ID)
+		}
+		return modes
+	}
+
+	// 3. Nothing advertised.
+	return nil
 }
 
 // SendPrompt sends a prompt to an existing ACP session and returns the stop reason.
@@ -331,6 +398,47 @@ func (c *Client) SendPrompt(ctx context.Context, sessionID string, promptText st
 		return "", fmt.Errorf("acp: unmarshal prompt response: %w", err)
 	}
 	return resp.StopReason, nil
+}
+
+// SetSessionMode sends a session/set_mode request to change the currently
+// active mode for an existing ACP session. The server returns only the
+// reserved `_meta` field (no useful payload); on success the error is nil.
+func (c *Client) SetSessionMode(ctx context.Context, sessionID, modeID string) error {
+	req := SetSessionModeRequest{
+		SessionID: sessionID,
+		ModeID:    modeID,
+	}
+	raw, err := c.sendRequest(ctx, "session/set_mode", req)
+	if err != nil {
+		return err
+	}
+	var resp SetSessionModeResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Errorf("acp: unmarshal set mode response: %w", err)
+	}
+	return nil
+}
+
+// SetSessionConfigOption sends a session/set_config_option request to change
+// the current value of a session configuration option. For v1 the `value`
+// argument is a string (Loom only uses the select-type mode selector). The
+// response carries the full refreshed config-options list, which is returned
+// to the caller.
+func (c *Client) SetSessionConfigOption(ctx context.Context, sessionID, configID, value string) (*SetSessionConfigOptionResponse, error) {
+	req := SetSessionConfigOptionRequest{
+		SessionID: sessionID,
+		ConfigID:  configID,
+		Value:     value,
+	}
+	raw, err := c.sendRequest(ctx, "session/set_config_option", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp SetSessionConfigOptionResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("acp: unmarshal set config option response: %w", err)
+	}
+	return &resp, nil
 }
 
 // Receive returns the channel that delivers raw JSON messages received
